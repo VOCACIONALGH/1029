@@ -155,22 +155,24 @@ function processFrame() {
     if(bC){b={x:bX/bC,y:bY/bC};ctx.fillStyle="blue";ctx.beginPath();ctx.arc(b.x,b.y,6,0,Math.PI*2);ctx.fill();}
     if(gC){g={x:gX/gC,y:gY/gC};ctx.fillStyle="green";ctx.beginPath();ctx.arc(g.x,g.y,6,0,Math.PI*2);ctx.fill();}
 
-    if(r&&b){
-        const distPx=Math.hypot(b.x-r.x,b.y-r.y);
-        currentScale = distPx / ARROW_LENGTH_MM;
-        scaleEl.textContent=currentScale.toFixed(3);
-        drawArrowFromCenter(r.x,r.y,b.x-r.x,b.y-r.y,ARROW_LENGTH_MM*currentScale,"blue");
+    let currentPixelDistance = 0;
+
+    if(r && b){
+        currentPixelDistance = Math.hypot(b.x - r.x, b.y - r.y);
+        currentScale = currentPixelDistance / ARROW_LENGTH_MM;
+        scaleEl.textContent = currentScale.toFixed(3);
+        drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * currentScale, "blue");
     }
 
-    if(r&&g){
-        drawArrowFromCenter(r.x,r.y,g.x-r.x,g.y-r.y,ARROW_LENGTH_MM*currentScale,"green");
+    if(r && g){
+        drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * currentScale, "green");
     }
 
-    if (basePixelDistance && currentScale) {
-        const dzMm = (ARROW_LENGTH_MM * currentScale - basePixelDistance) / currentScale;
+    if (basePixelDistance && currentScale && currentPixelDistance) {
+        const dzMm = (basePixelDistance - currentPixelDistance) / currentScale;
         zEl.textContent = (baseZmm + dzMm).toFixed(2);
     }
 
-    redCountDisplay.textContent=`Pixels vermelhos: ${rC}`;
+    redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
 }
