@@ -1,16 +1,13 @@
+// js/ui.js
 export function initUI(button, startCallback) {
+    const container = document.getElementById("scannerContainer");
+
     button.addEventListener("click", () => {
-        const container = document.getElementById("scannerContainer");
-        container.style.display = "flex";
+        // ativa a divisão de tela (usa a classe .active definida no CSS)
+        container.classList.add("active");
+        // esconde o botão conforme pedido
         button.style.display = "none";
-
-        const video = document.getElementById("cameraFeed");
-        const black = document.getElementById("blackScreen");
-
-        // Ajuste explícito para duas partes iguais
-        video.style.height = "50%";
-        black.style.height = "50%";
-
+        // inicia a câmera (módulo scanner)
         startCallback();
     });
 }
