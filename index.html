@@ -1,33 +1,34 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <title>Escâner Web</title>
+    <meta charset="UTF-8">
+    <title>Escâner Web</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#000000">
 
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <link rel="stylesheet" href="css/estrutura.css">
-  <link rel="stylesheet" href="css/interface.css">
+    <link rel="manifest" href="manifest.json">
+    <link rel="stylesheet" href="layout.css">
 </head>
-
 <body>
 
-  <main id="app">
-    <video id="camera" autoplay playsinline></video>
+    <div class="app">
+        <h1>ESCÂNER</h1>
 
-    <!-- Canvas auxiliar (não visível) -->
-    <canvas id="frame"></canvas>
+        <button id="scanBtn">ESCÂNER</button>
 
-    <!-- Informação ao usuário -->
-    <div id="pixelInfo">Pixels vermelhos: 0</div>
+        <video id="video" autoplay playsinline></video>
 
-    <button id="scanBtn">ESCÂNER</button>
-  </main>
+        <p id="status">Aguardando ação do usuário</p>
+    </div>
 
-  <script type="module" src="js/estrutura.js"></script>
-  <script type="module" src="js/interface.js"></script>
-  <script type="module" src="js/geometria.js"></script>
-  <script type="module" src="js/exportacao.js"></script>
+    <script src="main.js"></script>
+    <script src="export.js"></script>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('service-worker.js');
+        }
+    </script>
 
 </body>
 </html>
