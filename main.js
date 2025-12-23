@@ -1,4 +1,6 @@
 const scanBtn = document.getElementById("scanBtn");
+const calibrateBtn = document.getElementById("calibrateBtn");
+
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -8,12 +10,17 @@ const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
 const scaleEl = document.getElementById("scaleValue");
+const zEl = document.getElementById("zValue");
 
 const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
 const greenThresholdSlider = document.getElementById("greenThreshold");
 
 const ARROW_LENGTH_MM = 100;
+
+let baseZmm = 0;
+let basePixelDistance = 0;
+let currentScale = 0;
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -39,6 +46,17 @@ scanBtn.addEventListener("click", async () => {
         canvas.height = video.videoHeight;
         requestAnimationFrame(processFrame);
     }, { once: true });
+});
+
+calibrateBtn.addEventListener("click", () => {
+    const input = prompt("Informe o valor atual de +Z (em mm):");
+    if (input === null) return;
+
+    const z = parseFloat(input);
+    if (isNaN(z)) return;
+
+    baseZmm = z;
+    basePixelDistance = ARROW_LENGTH_MM * currentScale;
 });
 
 function rgbToHsv(r, g, b) {
@@ -88,15 +106,19 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
 
     ctx.beginPath();
     ctx.moveTo(x2, y2);
-    ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI/6),
-               y2 - headLen * Math.sin(angle - Math.PI/6));
-    ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI/6),
-               y2 - headLen * Math.sin(angle + Math.PI/6));
+    ctx.lineTo(
+        x2 - headLen * Math.cos(angle - Math.PI / 6),
+        y2 - headLen * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.lineTo(
+        x2 - headLen * Math.cos(angle + Math.PI / 6),
+        y2 - headLen * Math.sin(angle + Math.PI / 6)
+    );
     ctx.closePath();
     ctx.fill();
 }
 
-function processFrame(){
+function processFrame() {
     ctx.drawImage(video,0,0,canvas.width,canvas.height);
     const img=ctx.getImageData(0,0,canvas.width,canvas.height);
     const d=img.data;
@@ -135,15 +157,18 @@ function processFrame(){
 
     if(r&&b){
         const distPx=Math.hypot(b.x-r.x,b.y-r.y);
-        const pxPerMm=distPx/ARROW_LENGTH_MM;
-        scaleEl.textContent=pxPerMm.toFixed(3);
-        drawArrowFromCenter(r.x,r.y,b.x-r.x,b.y-r.y,ARROW_LENGTH_MM*pxPerMm,"blue");
+        currentScale = distPx / ARROW_LENGTH_MM;
+        scaleEl.textContent=currentScale.toFixed(3);
+        drawArrowFromCenter(r.x,r.y,b.x-r.x,b.y-r.y,ARROW_LENGTH_MM*currentScale,"blue");
     }
 
     if(r&&g){
-        const distPx=Math.hypot(g.x-r.x,g.y-r.y);
-        const pxPerMm=distPx/ARROW_LENGTH_MM;
-        drawArrowFromCenter(r.x,r.y,g.x-r.x,g.y-r.y,ARROW_LENGTH_MM*pxPerMm,"green");
+        drawArrowFromCenter(r.x,r.y,g.x-r.x,g.y-r.y,ARROW_LENGTH_MM*currentScale,"green");
+    }
+
+    if (basePixelDistance && currentScale) {
+        const dzMm = (ARROW_LENGTH_MM * currentScale - basePixelDistance) / currentScale;
+        zEl.textContent = (baseZmm + dzMm).toFixed(2);
     }
 
     redCountDisplay.textContent=`Pixels vermelhos: ${rC}`;
