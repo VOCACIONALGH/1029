@@ -25,13 +25,12 @@
 
   <div id="app">
 
-    <!-- ÁREA DA CÂMERA -->
     <div id="cameraArea">
-      <video id="camera" autoplay playsinline></video>
+      <!-- muted + autoplay + playsinline DEVEM estar no HTML -->
+      <video id="camera" muted autoplay playsinline></video>
       <canvas id="visionCanvas"></canvas>
     </div>
 
-    <!-- ÁREA DA INTERFACE -->
     <div id="uiArea">
       <button id="scanButton">ESCÂNER 3D</button>
       <div id="redPixelCounter">Pixels vermelhos: 0</div>
@@ -49,12 +48,6 @@
   <script src="js/interface.js"></script>
   <script src="js/debug.js"></script>
   <script src="js/matematica.js"></script>
-
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js');
-    }
-  </script>
 
 </body>
 </html>
