@@ -3,6 +3,7 @@ const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const redCountDisplay = document.getElementById("redCount");
+const redThresholdSlider = document.getElementById("redThreshold");
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -27,6 +28,7 @@ function processFrame() {
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
 
+    const redThreshold = Number(redThresholdSlider.value);
     let redPixels = 0;
 
     for (let i = 0; i < data.length; i += 4) {
@@ -34,19 +36,16 @@ function processFrame() {
         const g = data[i + 1];
         const b = data[i + 2];
 
-        if (r > 150 && g < 80 && b < 80) {
-            // contabiliza
+        if (r > redThreshold && g < redThreshold * 0.5 && b < redThreshold * 0.5) {
             redPixels++;
 
-            // transforma vermelho → laranja
             data[i]     = 255; // R
             data[i + 1] = 165; // G
-            data[i + 2] = 0;   // B
+            data[i + 2] = 0;   // B (laranja)
         }
     }
 
     ctx.putImageData(imageData, 0, 0);
-
     redCountDisplay.textContent = `Pixels vermelhos: ${redPixels}`;
 
     requestAnimationFrame(processFrame);
