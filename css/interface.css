@@ -5,22 +5,28 @@
   flex-direction: column;
 }
 
-/* Área da câmera ocupa o topo */
 #cameraArea {
   flex: 1;
   background: black;
+  position: relative;
 }
 
-/* Área da interface fica fora da câmera */
 #uiArea {
-  height: 80px;
+  height: 100px;
   background: #000;
+  color: #fff;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
 }
 
 button {
   padding: 14px 28px;
   font-size: 18px;
+}
+
+#redPixelCounter {
+  font-size: 14px;
 }
