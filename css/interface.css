@@ -4,6 +4,17 @@
   object-fit: cover;
 }
 
+#pixelInfo {
+  position: absolute;
+  bottom: 80px;
+  width: 100%;
+  text-align: center;
+  color: #00ffcc;
+  font-size: 16px;
+  background: rgba(0,0,0,0.6);
+  padding: 6px 0;
+}
+
 #scanBtn {
   position: absolute;
   bottom: 20px;
