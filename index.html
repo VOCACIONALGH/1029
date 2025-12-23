@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-    <meta charset="UTF-8">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Escâner</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="layout.css">
@@ -19,6 +19,7 @@
         <input type="range" id="redThreshold" min="50" max="255" value="150">
     </label>
 
+    <!-- vídeo é a fonte oculta; canvas mostra o resultado (com pixels laranja) -->
     <video id="camera" autoplay playsinline hidden></video>
     <canvas id="canvas"></canvas>
 
@@ -30,6 +31,5 @@
             navigator.serviceWorker.register('service-worker.js');
         }
     </script>
-
 </body>
 </html>
