@@ -6,97 +6,65 @@ const ctx = canvas.getContext('2d');
 
 let orangeTolerance = 40;
 
-// Origem estabilizada
 let stableX = null;
 let stableY = null;
 const stabilizationFactor = 0.15;
 
-export function setOrangeTolerance(value) {
-  orangeTolerance = value;
+export function setOrangeTolerance(v) {
+  orangeTolerance = v;
 }
 
 function isOrangeHSV(h, s, v) {
-  /*
-    Escala de LARANJA extremamente abrangente:
-    - Hue central ~30°
-    - Inclui amarelo-alaranjado e vermelho-alaranjado
-    - Saturação pode variar bastante
-    - Valor pode ser baixo ou alto
-  */
-
-  const hueCenter = 30;
-  const hueOrange =
-    h >= hueCenter - orangeTolerance &&
-    h <= hueCenter + orangeTolerance;
-
-  const saturationOrange =
-    s >= 0.2 || v <= 0.4;
-
-  const valueOrange =
-    v >= 0.15;
-
-  return hueOrange && saturationOrange && valueOrange;
+  return (
+    h >= 30 - orangeTolerance &&
+    h <= 30 + orangeTolerance &&
+    s >= 0.2 &&
+    v >= 0.15
+  );
 }
 
-function contarPixelsLaranja() {
-  if (videoElement.videoWidth === 0) return;
+function process() {
+  if (videoElement.videoWidth === 0) return requestAnimationFrame(process);
 
   canvas.width = videoElement.videoWidth;
   canvas.height = videoElement.videoHeight;
 
-  ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-
+  ctx.drawImage(videoElement, 0, 0);
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = frame.data;
+  const d = frame.data;
 
-  let orangeCount = 0;
-  let sumX = 0;
-  let sumY = 0;
+  let count = 0, sx = 0, sy = 0;
 
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-
-    const { h, s, v } = rgbToHsv(r, g, b);
-
+  for (let i = 0; i < d.length; i += 4) {
+    const { h, s, v } = rgbToHsv(d[i], d[i+1], d[i+2]);
     if (isOrangeHSV(h, s, v)) {
-      orangeCount++;
-
-      const index = i / 4;
-      const x = index % canvas.width;
-      const y = Math.floor(index / canvas.width);
-
-      sumX += x;
-      sumY += y;
+      const p = i / 4;
+      sx += p % canvas.width;
+      sy += Math.floor(p / canvas.width);
+      count++;
     }
   }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  if (orangeCount > 0) {
-    const centerX = sumX / orangeCount;
-    const centerY = sumY / orangeCount;
+  if (count > 0) {
+    const cx = sx / count;
+    const cy = sy / count;
 
-    // Estabilização temporal da origem
-    if (stableX === null || stableY === null) {
-      stableX = centerX;
-      stableY = centerY;
-    } else {
-      stableX += (centerX - stableX) * stabilizationFactor;
-      stableY += (centerY - stableY) * stabilizationFactor;
-    }
+    stableX ??= cx;
+    stableY ??= cy;
 
+    stableX += (cx - stableX) * stabilizationFactor;
+    stableY += (cy - stableY) * stabilizationFactor;
+
+    ctx.fillStyle = 'orange';
     ctx.beginPath();
     ctx.arc(stableX, stableY, 6, 0, Math.PI * 2);
-    ctx.fillStyle = 'orange';
     ctx.fill();
   }
 
-  window.orangePixelCount = orangeCount;
-  requestAnimationFrame(contarPixelsLaranja);
+  window.orangePixelCount = count;
+  requestAnimationFrame(process);
 }
 
-videoElement.addEventListener('play', () => {
-  requestAnimationFrame(contarPixelsLaranja);
-});
+videoElement.addEventListener('play', process);
