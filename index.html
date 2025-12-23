@@ -26,7 +26,6 @@
   <div id="app">
 
     <div id="cameraArea">
-      <!-- muted + autoplay + playsinline DEVEM estar no HTML -->
       <video id="camera" muted autoplay playsinline></video>
       <canvas id="visionCanvas"></canvas>
     </div>
@@ -38,16 +37,16 @@
 
   </div>
 
-  <!-- JS -->
-  <script src="js/estrutura.js"></script>
-  <script src="js/visao.js"></script>
-  <script src="js/geometria.js"></script>
-  <script src="js/pontos.js"></script>
-  <script src="js/rastreamento.js"></script>
-  <script src="js/exportacao.js"></script>
-  <script src="js/interface.js"></script>
-  <script src="js/debug.js"></script>
-  <script src="js/matematica.js"></script>
+  <!-- JS (ES Modules) -->
+  <script type="module" src="js/estrutura.js"></script>
+  <script type="module" src="js/visao.js"></script>
+  <script type="module" src="js/geometria.js"></script>
+  <script type="module" src="js/pontos.js"></script>
+  <script type="module" src="js/rastreamento.js"></script>
+  <script type="module" src="js/exportacao.js"></script>
+  <script type="module" src="js/interface.js"></script>
+  <script type="module" src="js/debug.js"></script>
+  <script type="module" src="js/matematica.js"></script>
 
 </body>
 </html>
