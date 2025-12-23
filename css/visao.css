@@ -16,7 +16,8 @@
   object-fit: cover;
 }
 
-/* overlay não intercepta eventos */
+/* canvas intercepta cliques (para seleção de pixel) */
 #visionCanvas {
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: crosshair;
 }
