@@ -1,19 +1,27 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Escâner PWA</title>
-    <link rel="stylesheet" href="styles.css">
-    <link rel="manifest" href="manifest.json">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/styles.css" />
+  <title>Escâner Simples</title>
 </head>
 <body>
-    <button id="btnStart">Abrir escâner</button>
-    <div id="scannerContainer">
-        <video id="cameraFeed" autoplay playsinline></video>
-        <div id="blackScreen"></div>
+  <main id="app">
+    <div id="landing" class="center">
+      <button id="openScannerBtn" class="btn">Abrir escâner</button>
     </div>
 
-    <script type="module" src="js/main.js"></script>
+    <section id="split" class="hidden">
+      <div id="topPane" class="pane">
+        <video id="cameraVideo" autoplay playsinline muted></video>
+      </div>
+      <div id="bottomPane" class="pane black"></div>
+    </section>
+  </main>
+
+  <script type="module" src="/js/main.js"></script>
 </body>
 </html>
