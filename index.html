@@ -1,36 +1,40 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Scanner 3D</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Escâner 3D — Modo Cosmos</title>
 
+  <!-- CSS por tema -->
   <link rel="stylesheet" href="css/estrutura.css" />
+  <link rel="stylesheet" href="css/visao.css" />
+  <link rel="stylesheet" href="css/geometria.css" />
+  <link rel="stylesheet" href="css/pontos.css" />
+  <link rel="stylesheet" href="css/rastreamento.css" />
+  <link rel="stylesheet" href="css/exportacao.css" />
   <link rel="stylesheet" href="css/interface.css" />
+  <link rel="stylesheet" href="css/debug.css" />
+  <link rel="stylesheet" href="css/matematica.css" />
 </head>
 <body>
-
   <div id="app">
-
-    <div id="camera-container">
-      <video
-        id="camera"
-        autoplay
-        muted
-        playsinline
-      ></video>
-
-      <canvas id="visionCanvas"></canvas>
+    <div id="cameraArea">
+      <!-- atributos importantes para mobile: muted, autoplay, playsinline -->
+      <video id="camera" muted autoplay playsinline></video>
+      <canvas id="visionCanvas" aria-hidden="true"></canvas>
     </div>
 
-    <div id="ui">
-      <button id="scanBtn">ESCÂNER 3D</button>
-      <div id="pixelCount">Pixels laranja: 0</div>
-      <input type="range" id="toleranceSlider" min="5" max="60" value="40">
-    </div>
+    <div id="uiArea">
+      <button id="scanButton">ESCÂNER 3D</button>
 
+      <label for="toleranceSlider" id="toleranceLabel">Escala de laranja (tolerância)</label>
+      <input id="toleranceSlider" type="range" min="5" max="80" value="40" />
+
+      <div id="pixelCounter">Pixels laranja: 0</div>
+    </div>
   </div>
 
+  <!-- ES Modules (entrada: estrutura.js) -->
   <script type="module" src="js/estrutura.js"></script>
 </body>
 </html>
