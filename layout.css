@@ -13,11 +13,11 @@ body {
 }
 
 button {
-    padding: 14px 28px;
-    font-size: 18px;
+    padding: 16px 32px;
+    font-size: 20px;
     font-weight: bold;
     cursor: pointer;
-    margin-bottom: 8px;
+    margin-bottom: 12px;
     border-radius: 8px;
     border: none;
     background: #111;
@@ -43,15 +43,26 @@ button {
 #scaleInfo {
     font-family: monospace;
     font-size: 14px;
-    margin-bottom: 4px;
+    margin-bottom: 10px;
     color: #ffaa00;
 }
 
-#zInfo {
+/* seção +Z (calibrar) */
+#zSection {
     font-family: monospace;
     font-size: 14px;
+    color: #88ccff;
     margin-bottom: 10px;
-    color: #00aaff;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+#zSection button {
+    padding: 8px 12px;
+    font-size: 14px;
+    background: #004488;
+    border-radius: 6px;
 }
 
 #calibrators {
