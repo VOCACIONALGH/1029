@@ -6,13 +6,33 @@ const ctx = canvas.getContext('2d');
 
 let redTolerance = 80;
 
-// Origem estabilizada (estado interno)
+// Origem estabilizada
 let stableX = null;
 let stableY = null;
-const stabilizationFactor = 0.15; // quanto menor, mais estável
+const stabilizationFactor = 0.15;
 
 export function setRedTolerance(value) {
   redTolerance = value;
+}
+
+function isRedHSV(h, s, v) {
+  /*
+    Escala de vermelho EXTREMAMENTE abrangente:
+    - Hue próximo de 0° ou 360°
+    - Saturação pode ser baixa (vermelho claro / rosado)
+    - Valor pode ser baixo (vermelho escuro / vinho)
+  */
+
+  const hueRed =
+    h <= redTolerance || h >= 360 - redTolerance;
+
+  const saturationRed =
+    s >= 0.15 || v <= 0.35;
+
+  const valueRed =
+    v >= 0.15;
+
+  return hueRed && saturationRed && valueRed;
 }
 
 function contarPixelsVermelhos() {
@@ -37,14 +57,7 @@ function contarPixelsVermelhos() {
 
     const { h, s, v } = rgbToHsv(r, g, b);
 
-    // Vermelho em HSV:
-    // Hue perto de 0° ou 360°
-    const isRed =
-      (h < redTolerance || h > 360 - redTolerance) &&
-      s > 0.4 &&
-      v > 0.2;
-
-    if (isRed) {
+    if (isRedHSV(h, s, v)) {
       redCount++;
 
       const index = i / 4;
@@ -62,7 +75,7 @@ function contarPixelsVermelhos() {
     const centerX = sumX / redCount;
     const centerY = sumY / redCount;
 
-    // Estabilização da origem
+    // Estabilização temporal da origem
     if (stableX === null || stableY === null) {
       stableX = centerX;
       stableY = centerY;
