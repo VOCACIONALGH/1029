@@ -11,6 +11,8 @@ const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
 const scaleEl = document.getElementById("scaleValue");
 const zEl = document.getElementById("zValue");
+const xEl = document.getElementById("xValue");
+const yEl = document.getElementById("yValue");
 
 const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
@@ -18,9 +20,15 @@ const greenThresholdSlider = document.getElementById("greenThreshold");
 
 const ARROW_LENGTH_MM = 100;
 
+// calibration / locking state
 let baseZmm = 0;
-let basePixelDistance = 0;
-let currentScale = 0;
+let lockedScale = 0;           // px per mm locked at calibration
+let basePixelDistance = 0;     // calibrated arrow length in px (ARROW_LENGTH_MM * lockedScale)
+let baseOriginScreen = null;   // {x,y} of origin in screen coords at calibration
+let isCalibrated = false;
+
+let lastRcentroid = null;     // {x,y} of last detected red centroid
+let currentScale = 0;         // px/mm live estimate (before locking)
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -34,52 +42,86 @@ scanBtn.addEventListener("click", async () => {
         rollEl.textContent = (e.gamma ?? 0).toFixed(1);
     });
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { exact: "environment" } },
-        audio: false
-    });
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { exact: "environment" } },
+            audio: false
+        });
 
-    video.srcObject = stream;
+        video.srcObject = stream;
 
-    video.addEventListener("loadedmetadata", () => {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        requestAnimationFrame(processFrame);
-    }, { once: true });
+        video.addEventListener("loadedmetadata", () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            requestAnimationFrame(processFrame);
+        }, { once: true });
+    } catch (err) {
+        console.error("Erro ao acessar câmera:", err);
+    }
 });
 
+// Calibrar: pede +Z(mm), trava escala e registra origem (apenas se origem detectada)
 calibrateBtn.addEventListener("click", () => {
+    if (!lastRcentroid) {
+        alert("Origem (ponto vermelho) não detectada. Posicione a câmera sobre a origem antes de calibrar.");
+        return;
+    }
+    if (!currentScale || currentScale === 0) {
+        alert("Escala atual inválida. Aguarde detecção e tente novamente.");
+        return;
+    }
+
     const input = prompt("Informe o valor atual de +Z (em mm):");
     if (input === null) return;
 
     const z = parseFloat(input);
-    if (isNaN(z)) return;
+    if (isNaN(z)) {
+        alert("Valor inválido. Calibração cancelada.");
+        return;
+    }
 
     baseZmm = z;
-    basePixelDistance = ARROW_LENGTH_MM * currentScale;
+    lockedScale = currentScale; // px per mm
+    basePixelDistance = ARROW_LENGTH_MM * lockedScale;
+    baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
+    isCalibrated = true;
+
+    // update displayed scale immediately
+    scaleEl.textContent = lockedScale.toFixed(3);
+    // zero translations at calibration (camera over origin)
+    xEl.textContent = "0.00";
+    yEl.textContent = "0.00";
+    zEl.textContent = baseZmm.toFixed(2);
 });
 
 function rgbToHsv(r, g, b) {
-    const rN=r/255,gN=g/255,bN=b/255;
-    const max=Math.max(rN,gN,bN),min=Math.min(rN,gN,bN);
-    const d=max-min;
-    let h=0;
-    if(d){
-        if(max===rN) h=((gN-bN)/d)%6;
-        else if(max===gN) h=(bN-rN)/d+2;
-        else h=(rN-gN)/d+4;
-        h*=60;if(h<0)h+=360;
+    const rN = r / 255, gN = g / 255, bN = b / 255;
+    const max = Math.max(rN, gN, bN);
+    const min = Math.min(rN, gN, bN);
+    const d = max - min;
+
+    let h = 0;
+    if (d !== 0) {
+        if (max === rN) h = ((gN - bN) / d) % 6;
+        else if (max === gN) h = (bN - rN) / d + 2;
+        else h = (rN - gN) / d + 4;
+        h *= 60;
+        if (h < 0) h += 360;
     }
-    return {h,s:max?d/max:0,v:max};
+
+    const s = max === 0 ? 0 : d / max;
+    const v = max;
+
+    return { h, s, v };
 }
 
-function sliderToHueTolerance(v){
-    return 5+((v-50)/(255-50))*55;
+function sliderToHueTolerance(v) {
+    return 5 + ((v - 50) / (255 - 50)) * 55;
 }
 
-function hueDistance(a,b){
-    let d=Math.abs(a-b);
-    return d>180?360-d:d;
+function hueDistance(a, b) {
+    let d = Math.abs(a - b);
+    return d > 180 ? 360 - d : d;
 }
 
 function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
@@ -119,58 +161,111 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
 }
 
 function processFrame() {
-    ctx.drawImage(video,0,0,canvas.width,canvas.height);
-    const img=ctx.getImageData(0,0,canvas.width,canvas.height);
-    const d=img.data;
+    if (!video || video.readyState < 2) {
+        requestAnimationFrame(processFrame);
+        return;
+    }
 
-    const rTol=sliderToHueTolerance(redThresholdSlider.value);
-    const bTol=sliderToHueTolerance(blueThresholdSlider.value);
-    const gTol=sliderToHueTolerance(greenThresholdSlider.value);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = img.data;
 
-    let rC=0,rX=0,rY=0;
-    let bC=0,bX=0,bY=0;
-    let gC=0,gX=0,gY=0;
+    const rTol = sliderToHueTolerance(redThresholdSlider.value);
+    const bTol = sliderToHueTolerance(blueThresholdSlider.value);
+    const gTol = sliderToHueTolerance(greenThresholdSlider.value);
 
-    for(let i=0;i<d.length;i+=4){
-        const {h,s,v}=rgbToHsv(d[i],d[i+1],d[i+2]);
-        if(s<0.35||v<0.12) continue;
-        const p=i/4,x=p%canvas.width,y=(p/canvas.width)|0;
+    let rC = 0, rX = 0, rY = 0;
+    let bC = 0, bX = 0, bY = 0;
+    let gC = 0, gX = 0, gY = 0;
 
-        if(hueDistance(h,0)<=rTol){
-            rC++;rX+=x;rY+=y;
-            d[i]=255;d[i+1]=165;d[i+2]=0;
-        } else if(hueDistance(h,230)<=bTol){
-            bC++;bX+=x;bY+=y;
-            d[i]=255;d[i+1]=255;d[i+2]=255;
-        } else if(hueDistance(h,120)<=gTol){
-            gC++;gX+=x;gY+=y;
-            d[i]=160;d[i+1]=32;d[i+2]=240;
+    for (let i = 0; i < d.length; i += 4) {
+        const { h, s, v } = rgbToHsv(d[i], d[i + 1], d[i + 2]);
+        if (s < 0.35 || v < 0.12) continue;
+        const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
+
+        if (hueDistance(h, 0) <= rTol) {
+            rC++; rX += x; rY += y;
+            d[i] = 255; d[i + 1] = 165; d[i + 2] = 0;
+        } else if (hueDistance(h, 230) <= bTol) {
+            bC++; bX += x; bY += y;
+            d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
+        } else if (hueDistance(h, 120) <= gTol) {
+            gC++; gX += x; gY += y;
+            d[i] = 160; d[i + 1] = 32; d[i + 2] = 240;
         }
     }
 
-    ctx.putImageData(img,0,0);
+    ctx.putImageData(img, 0, 0);
 
-    let r,b,g;
-    if(rC){r={x:rX/rC,y:rY/rC};ctx.fillStyle="red";ctx.beginPath();ctx.arc(r.x,r.y,6,0,Math.PI*2);ctx.fill();}
-    if(bC){b={x:bX/bC,y:bY/bC};ctx.fillStyle="blue";ctx.beginPath();ctx.arc(b.x,b.y,6,0,Math.PI*2);ctx.fill();}
-    if(gC){g={x:gX/gC,y:gY/gC};ctx.fillStyle="green";ctx.beginPath();ctx.arc(g.x,g.y,6,0,Math.PI*2);ctx.fill();}
+    let r = null, b = null, g = null;
 
+    if (rC) {
+        r = { x: rX / rC, y: rY / rC };
+        lastRcentroid = r; // update last seen origin
+        ctx.fillStyle = "red";
+        ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
+    } else {
+        lastRcentroid = null;
+    }
+
+    if (bC) {
+        b = { x: bX / bC, y: bY / bC };
+        ctx.fillStyle = "blue";
+        ctx.beginPath(); ctx.arc(b.x, b.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+
+    if (gC) {
+        g = { x: gX / gC, y: gY / gC };
+        ctx.fillStyle = "green";
+        ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // compute live scale (px/mm) from red->blue if available (before locking)
     let currentPixelDistance = 0;
-
-    if(r && b){
+    if (r && b) {
         currentPixelDistance = Math.hypot(b.x - r.x, b.y - r.y);
-        currentScale = currentPixelDistance / ARROW_LENGTH_MM;
-        scaleEl.textContent = currentScale.toFixed(3);
-        drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * currentScale, "blue");
+        currentScale = currentPixelDistance / ARROW_LENGTH_MM; // px/mm
+        // only display live scale if not locked; if locked, display lockedScale instead
+        if (!isCalibrated) {
+            scaleEl.textContent = currentScale.toFixed(3);
+        } else {
+            scaleEl.textContent = lockedScale.toFixed(3);
+        }
+        drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * (isCalibrated ? lockedScale : currentScale), "blue");
     }
 
-    if(r && g){
-        drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * currentScale, "green");
+    if (r && g) {
+        drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * (isCalibrated ? lockedScale : currentScale), "green");
     }
 
-    if (basePixelDistance && currentScale && currentPixelDistance) {
-        const dzMm = (basePixelDistance - currentPixelDistance) / currentScale;
+    // +Z calculation (uses lockedScale if calibrated)
+    if (isCalibrated && currentPixelDistance) {
+        // currentPixelDistance = length in px of the blue arrow; basePixelDistance = calibrated px length
+        // corrected sign: smaller arrow px ⇒ larger +Z
+        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale;
         zEl.textContent = (baseZmm + dzMm).toFixed(2);
+    } else {
+        // show 0 or base if calibrated but no blue detection
+        if (!isCalibrated) zEl.textContent = "0.00";
+        else zEl.textContent = baseZmm.toFixed(2);
+    }
+
+    // +X and +Y calculations (camera translation), only after calibration and if origin detected
+    if (isCalibrated && lastRcentroid && baseOriginScreen) {
+        // Δpixels from base origin to current origin
+        const dxPixels = lastRcentroid.x - baseOriginScreen.x;
+        const dyPixels = lastRcentroid.y - baseOriginScreen.y;
+
+        // camera translation in mm: negative of origin movement (object movement in image)
+        const txMm = -(dxPixels) / lockedScale;
+        const tyMm = -(dyPixels) / lockedScale;
+
+        xEl.textContent = txMm.toFixed(2);
+        yEl.textContent = tyMm.toFixed(2);
+    } else {
+        // reset display if not calibrated or origin not found
+        if (!isCalibrated) { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
+        else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
