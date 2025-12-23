@@ -1,3 +1,9 @@
+/* main.js
+   Mantive todas as funcionalidades anteriores e adicionei:
+   - modo de "calibragem ativa" iniciado no clique de Calibrar (se condições válidas)
+   - ao clicar Calibrar novamente: finaliza calibragem, gera JSON com os frames capturados e baixa automaticamente
+*/
+
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
 
@@ -26,6 +32,10 @@ let lockedScale = 0;           // px per mm locked at calibration
 let basePixelDistance = 0;     // calibrated arrow length in px (ARROW_LENGTH_MM * lockedScale)
 let baseOriginScreen = null;   // {x,y} of origin in screen coords at calibration
 let isCalibrated = false;
+
+// new: calibragem ativa (coleta de frames)
+let isCalibrating = false;
+let calibrationFrames = []; // array of frame objects saved during calibragem
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
@@ -60,38 +70,88 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
-// Calibrar: pede +Z(mm), trava escala e registra origem (apenas se origem detectada)
+/*
+ Calibrar button behavior:
+ - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
+ - If currently calibrating: finish collecting, generate JSON file with recorded frames, trigger download, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+*/
 calibrateBtn.addEventListener("click", () => {
-    if (!lastRcentroid) {
-        alert("Origem (ponto vermelho) não detectada. Posicione a câmera sobre a origem antes de calibrar.");
+    // If not calibrating, start calibration (requires origin detected and live scale)
+    if (!isCalibrating) {
+        if (!lastRcentroid) {
+            alert("Origem (ponto vermelho) não detectada. Posicione a câmera sobre a origem antes de calibrar.");
+            return;
+        }
+        if (!currentScale || currentScale === 0 || !isFinite(currentScale)) {
+            alert("Escala atual inválida. Aguarde detecção e tente novamente.");
+            return;
+        }
+
+        const input = prompt("Informe o valor atual de +Z (em mm):");
+        if (input === null) return;
+
+        const z = parseFloat(input);
+        if (isNaN(z)) {
+            alert("Valor inválido. Calibração cancelada.");
+            return;
+        }
+
+        // lock calibration parameters
+        baseZmm = z;
+        lockedScale = currentScale; // px per mm locked now
+        basePixelDistance = ARROW_LENGTH_MM * lockedScale;
+        baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
+        isCalibrated = true;
+
+        // start collecting frames
+        isCalibrating = true;
+        calibrationFrames = []; // reset array
+
+        // display locked scale & base Z
+        scaleEl.textContent = lockedScale.toFixed(3);
+        zEl.textContent = baseZmm.toFixed(2);
+        xEl.textContent = "0.00";
+        yEl.textContent = "0.00";
+
+        // inform user
+        alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
     }
-    if (!currentScale || currentScale === 0) {
-        alert("Escala atual inválida. Aguarde detecção e tente novamente.");
+
+    // If we are calibrating, finalize and download the JSON
+    if (isCalibrating) {
+        isCalibrating = false;
+
+        if (calibrationFrames.length === 0) {
+            alert("Nenhum frame coletado durante a calibragem.");
+            return;
+        }
+
+        // Build JSON
+        const payload = {
+            createdAt: new Date().toISOString(),
+            baseZmm,
+            lockedScale,
+            baseOriginScreen,
+            frames: calibrationFrames
+        };
+
+        const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        alert(`Calibragem finalizada. Arquivo "${filename}" baixado.`);
+
+        // keep calibration locked (isCalibrated = true) and keep base values; calibrationFrames kept in memory until next calibragem
         return;
     }
-
-    const input = prompt("Informe o valor atual de +Z (em mm):");
-    if (input === null) return;
-
-    const z = parseFloat(input);
-    if (isNaN(z)) {
-        alert("Valor inválido. Calibração cancelada.");
-        return;
-    }
-
-    baseZmm = z;
-    lockedScale = currentScale; // px per mm
-    basePixelDistance = ARROW_LENGTH_MM * lockedScale;
-    baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
-    isCalibrated = true;
-
-    // update displayed scale immediately
-    scaleEl.textContent = lockedScale.toFixed(3);
-    // zero translations at calibration (camera over origin)
-    xEl.textContent = "0.00";
-    yEl.textContent = "0.00";
-    zEl.textContent = baseZmm.toFixed(2);
 });
 
 function rgbToHsv(r, g, b) {
@@ -239,18 +299,18 @@ function processFrame() {
     }
 
     // +Z calculation (uses lockedScale if calibrated)
+    let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
-        // currentPixelDistance = length in px of the blue arrow; basePixelDistance = calibrated px length
-        // corrected sign: smaller arrow px ⇒ larger +Z
-        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale;
-        zEl.textContent = (baseZmm + dzMm).toFixed(2);
+        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale; // smaller arrow px => larger +Z
+        computedZ = baseZmm + dzMm;
+        zEl.textContent = computedZ.toFixed(2);
     } else {
-        // show 0 or base if calibrated but no blue detection
         if (!isCalibrated) zEl.textContent = "0.00";
         else zEl.textContent = baseZmm.toFixed(2);
     }
 
     // +X and +Y calculations (camera translation), only after calibration and if origin detected
+    let txMm = null, tyMm = null;
     if (isCalibrated && lastRcentroid && baseOriginScreen) {
         // Δpixels from base origin to current origin (image coords)
         const dxPixels = lastRcentroid.x - baseOriginScreen.x;
@@ -258,16 +318,35 @@ function processFrame() {
 
         // camera translation in mm:
         //  +X: negative of origin movement in x (same convention as before)
-        const txMm = -(dxPixels) / lockedScale;
-        //  +Y: POSITIVE when origin moves down (screen y increases), so use positive dyPixels
-        const tyMm = (dyPixels) / lockedScale;
+        txMm = -(dxPixels) / lockedScale;
+        //  +Y: POSITIVE when origin moves down (screen y increases)
+        tyMm = (dyPixels) / lockedScale;
 
         xEl.textContent = txMm.toFixed(2);
         yEl.textContent = tyMm.toFixed(2);
     } else {
-        // reset display if not calibrated or origin not found
         if (!isCalibrated) { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
+    }
+
+    // If calibragem ativa, save a frame record
+    if (isCalibrating) {
+        // Collect pitch/yaw/roll currently displayed (they are updated via deviceorientation listener)
+        const pitch = parseFloat(pitchEl.textContent) || 0;
+        const yaw = parseFloat(yawEl.textContent) || 0;
+        const roll = parseFloat(rollEl.textContent) || 0;
+
+        // Save X,Y,Z values (use null if not available)
+        const record = {
+            timestamp: new Date().toISOString(),
+            x_mm: txMm !== null ? Number(txMm.toFixed(4)) : null,
+            y_mm: tyMm !== null ? Number(tyMm.toFixed(4)) : null,
+            z_mm: computedZ !== null ? Number(computedZ.toFixed(4)) : null,
+            pitch_deg: Number(pitch.toFixed(3)),
+            yaw_deg: Number(yaw.toFixed(3)),
+            roll_deg: Number(roll.toFixed(3))
+        };
+        calibrationFrames.push(record);
     }
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
