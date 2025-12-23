@@ -61,6 +61,13 @@ button {
     color: #aaff66;
 }
 
+#raysInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: #ff88ff;
+}
+
 #calibrators {
     display: flex;
     gap: 12px;
