@@ -14,6 +14,12 @@
 
     <div id="redCount">Pixels vermelhos: 0</div>
 
+    <div id="orientation">
+        <div>Pitch: <span id="pitch">0</span>°</div>
+        <div>Yaw: <span id="yaw">0</span>°</div>
+        <div>Roll: <span id="roll">0</span>°</div>
+    </div>
+
     <div id="calibrators">
         <label class="calLabel">
             Sensibilidade do vermelho
@@ -31,7 +37,6 @@
         </label>
     </div>
 
-    <!-- vídeo é a fonte oculta; canvas mostra o resultado (com pixels transformados) -->
     <video id="camera" autoplay playsinline hidden></video>
     <canvas id="canvas"></canvas>
 
