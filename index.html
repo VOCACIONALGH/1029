@@ -5,9 +5,6 @@
   <title>Escâner Web</title>
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#000000">
-
-  <link rel="manifest" href="manifest.json">
 
   <link rel="stylesheet" href="css/estrutura.css">
   <link rel="stylesheet" href="css/interface.css">
@@ -18,6 +15,12 @@
   <main id="app">
     <video id="camera" autoplay playsinline></video>
 
+    <!-- Canvas auxiliar (não visível) -->
+    <canvas id="frame"></canvas>
+
+    <!-- Informação ao usuário -->
+    <div id="pixelInfo">Pixels vermelhos: 0</div>
+
     <button id="scanBtn">ESCÂNER</button>
   </main>
 
@@ -25,12 +28,6 @@
   <script type="module" src="js/interface.js"></script>
   <script type="module" src="js/geometria.js"></script>
   <script type="module" src="js/exportacao.js"></script>
-
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js');
-    }
-  </script>
 
 </body>
 </html>
