@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Escâner 3D — Modo Cosmos</title>
+  <title>Escâner 3D — Seletor de Cor</title>
 
   <!-- CSS por tema -->
   <link rel="stylesheet" href="css/estrutura.css" />
@@ -21,20 +21,22 @@
     <div id="cameraArea">
       <!-- atributos importantes para mobile: muted, autoplay, playsinline -->
       <video id="camera" muted autoplay playsinline></video>
+      <!-- canvas usado para leitura e overlay; pointer-events ativo para capturar clique -->
       <canvas id="visionCanvas" aria-hidden="true"></canvas>
     </div>
 
     <div id="uiArea">
       <button id="scanButton">ESCÂNER 3D</button>
 
-      <label for="toleranceSlider" id="toleranceLabel">Escala de laranja (tolerância)</label>
+      <label for="toleranceSlider" id="toleranceLabel">Tolerância (hue ±)</label>
       <input id="toleranceSlider" type="range" min="5" max="80" value="40" />
 
-      <div id="pixelCounter">Pixels laranja: 0</div>
+      <div id="pixelCounter">Pixels detectados: 0</div>
+      <div id="selectedColor">Cor selecionada: nenhuma</div>
     </div>
   </div>
 
-  <!-- ES Modules (entrada: estrutura.js) -->
+  <!-- Entrada (ES Module) -->
   <script type="module" src="js/estrutura.js"></script>
 </body>
 </html>
