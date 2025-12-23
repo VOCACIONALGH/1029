@@ -1,42 +1,36 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Escâner 3D — Seletor de Cor</title>
+  <meta charset="UTF-8">
+  <title>Escâner Web</title>
 
-  <!-- CSS por tema -->
-  <link rel="stylesheet" href="css/estrutura.css" />
-  <link rel="stylesheet" href="css/visao.css" />
-  <link rel="stylesheet" href="css/geometria.css" />
-  <link rel="stylesheet" href="css/pontos.css" />
-  <link rel="stylesheet" href="css/rastreamento.css" />
-  <link rel="stylesheet" href="css/exportacao.css" />
-  <link rel="stylesheet" href="css/interface.css" />
-  <link rel="stylesheet" href="css/debug.css" />
-  <link rel="stylesheet" href="css/matematica.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#000000">
+
+  <link rel="manifest" href="manifest.json">
+
+  <link rel="stylesheet" href="css/estrutura.css">
+  <link rel="stylesheet" href="css/interface.css">
 </head>
+
 <body>
-  <div id="app">
-    <div id="cameraArea">
-      <!-- atributos importantes para mobile: muted, autoplay, playsinline -->
-      <video id="camera" muted autoplay playsinline></video>
-      <!-- canvas usado para leitura e overlay; pointer-events ativo para capturar clique -->
-      <canvas id="visionCanvas" aria-hidden="true"></canvas>
-    </div>
 
-    <div id="uiArea">
-      <button id="scanButton">ESCÂNER 3D</button>
+  <main id="app">
+    <video id="camera" autoplay playsinline></video>
 
-      <label for="toleranceSlider" id="toleranceLabel">Tolerância (hue ±)</label>
-      <input id="toleranceSlider" type="range" min="5" max="80" value="40" />
+    <button id="scanBtn">ESCÂNER</button>
+  </main>
 
-      <div id="pixelCounter">Pixels detectados: 0</div>
-      <div id="selectedColor">Cor selecionada: nenhuma</div>
-    </div>
-  </div>
-
-  <!-- Entrada (ES Module) -->
   <script type="module" src="js/estrutura.js"></script>
+  <script type="module" src="js/interface.js"></script>
+  <script type="module" src="js/geometria.js"></script>
+  <script type="module" src="js/exportacao.js"></script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js');
+    }
+  </script>
+
 </body>
 </html>
