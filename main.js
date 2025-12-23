@@ -35,9 +35,17 @@ function processFrame() {
         const b = data[i + 2];
 
         if (r > 150 && g < 80 && b < 80) {
+            // contabiliza
             redPixels++;
+
+            // transforma vermelho → laranja
+            data[i]     = 255; // R
+            data[i + 1] = 165; // G
+            data[i + 2] = 0;   // B
         }
     }
+
+    ctx.putImageData(imageData, 0, 0);
 
     redCountDisplay.textContent = `Pixels vermelhos: ${redPixels}`;
 
