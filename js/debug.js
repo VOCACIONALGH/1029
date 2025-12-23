@@ -1,1 +1,2 @@
-console.log('DEBUG ativo — câmera traseira aguardando interação do usuário');
+// DEBUG: mensagens úteis
+console.log('Módulo debug carregado — ambiente inicializado.');
