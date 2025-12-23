@@ -4,38 +4,41 @@ const videoElement = document.getElementById('camera');
 const canvas = document.getElementById('visionCanvas');
 const ctx = canvas.getContext('2d');
 
-let redTolerance = 80;
+let orangeTolerance = 40;
 
 // Origem estabilizada
 let stableX = null;
 let stableY = null;
 const stabilizationFactor = 0.15;
 
-export function setRedTolerance(value) {
-  redTolerance = value;
+export function setOrangeTolerance(value) {
+  orangeTolerance = value;
 }
 
-function isRedHSV(h, s, v) {
+function isOrangeHSV(h, s, v) {
   /*
-    Escala de vermelho EXTREMAMENTE abrangente:
-    - Hue próximo de 0° ou 360°
-    - Saturação pode ser baixa (vermelho claro / rosado)
-    - Valor pode ser baixo (vermelho escuro / vinho)
+    Escala de LARANJA extremamente abrangente:
+    - Hue central ~30°
+    - Inclui amarelo-alaranjado e vermelho-alaranjado
+    - Saturação pode variar bastante
+    - Valor pode ser baixo ou alto
   */
 
-  const hueRed =
-    h <= redTolerance || h >= 360 - redTolerance;
+  const hueCenter = 30;
+  const hueOrange =
+    h >= hueCenter - orangeTolerance &&
+    h <= hueCenter + orangeTolerance;
 
-  const saturationRed =
-    s >= 0.15 || v <= 0.35;
+  const saturationOrange =
+    s >= 0.2 || v <= 0.4;
 
-  const valueRed =
+  const valueOrange =
     v >= 0.15;
 
-  return hueRed && saturationRed && valueRed;
+  return hueOrange && saturationOrange && valueOrange;
 }
 
-function contarPixelsVermelhos() {
+function contarPixelsLaranja() {
   if (videoElement.videoWidth === 0) return;
 
   canvas.width = videoElement.videoWidth;
@@ -46,7 +49,7 @@ function contarPixelsVermelhos() {
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = frame.data;
 
-  let redCount = 0;
+  let orangeCount = 0;
   let sumX = 0;
   let sumY = 0;
 
@@ -57,8 +60,8 @@ function contarPixelsVermelhos() {
 
     const { h, s, v } = rgbToHsv(r, g, b);
 
-    if (isRedHSV(h, s, v)) {
-      redCount++;
+    if (isOrangeHSV(h, s, v)) {
+      orangeCount++;
 
       const index = i / 4;
       const x = index % canvas.width;
@@ -71,9 +74,9 @@ function contarPixelsVermelhos() {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  if (redCount > 0) {
-    const centerX = sumX / redCount;
-    const centerY = sumY / redCount;
+  if (orangeCount > 0) {
+    const centerX = sumX / orangeCount;
+    const centerY = sumY / orangeCount;
 
     // Estabilização temporal da origem
     if (stableX === null || stableY === null) {
@@ -86,14 +89,14 @@ function contarPixelsVermelhos() {
 
     ctx.beginPath();
     ctx.arc(stableX, stableY, 6, 0, Math.PI * 2);
-    ctx.fillStyle = 'red';
+    ctx.fillStyle = 'orange';
     ctx.fill();
   }
 
-  window.redPixelCount = redCount;
-  requestAnimationFrame(contarPixelsVermelhos);
+  window.orangePixelCount = orangeCount;
+  requestAnimationFrame(contarPixelsLaranja);
 }
 
 videoElement.addEventListener('play', () => {
-  requestAnimationFrame(contarPixelsVermelhos);
+  requestAnimationFrame(contarPixelsLaranja);
 });
