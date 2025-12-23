@@ -1,65 +1,36 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <title>Escâner 3D</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Scanner 3D</title>
 
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#000000">
-
-  <link rel="manifest" href="manifest.json">
-
-  <!-- CSS -->
-  <link rel="stylesheet" href="css/estrutura.css">
-  <link rel="stylesheet" href="css/visao.css">
-  <link rel="stylesheet" href="css/geometria.css">
-  <link rel="stylesheet" href="css/pontos.css">
-  <link rel="stylesheet" href="css/rastreamento.css">
-  <link rel="stylesheet" href="css/exportacao.css">
-  <link rel="stylesheet" href="css/interface.css">
-  <link rel="stylesheet" href="css/debug.css">
-  <link rel="stylesheet" href="css/matematica.css">
+  <link rel="stylesheet" href="css/estrutura.css" />
+  <link rel="stylesheet" href="css/interface.css" />
 </head>
-
 <body>
 
   <div id="app">
 
-    <div id="cameraArea">
-      <video id="camera" muted autoplay playsinline></video>
+    <div id="camera-container">
+      <video
+        id="camera"
+        autoplay
+        muted
+        playsinline
+      ></video>
+
       <canvas id="visionCanvas"></canvas>
     </div>
 
-    <div id="uiArea">
-      <button id="scanButton">ESCÂNER 3D</button>
-
-      <label for="redThreshold">
-        Calibração do vermelho
-      </label>
-
-      <input
-        type="range"
-        id="redThreshold"
-        min="0"
-        max="255"
-        value="80"
-      />
-
-      <div id="redPixelCounter">Pixels vermelhos: 0</div>
+    <div id="ui">
+      <button id="scanBtn">ESCÂNER 3D</button>
+      <div id="pixelCount">Pixels laranja: 0</div>
+      <input type="range" id="toleranceSlider" min="5" max="60" value="40">
     </div>
 
   </div>
 
-  <!-- JS (ES Modules) -->
   <script type="module" src="js/estrutura.js"></script>
-  <script type="module" src="js/visao.js"></script>
-  <script type="module" src="js/geometria.js"></script>
-  <script type="module" src="js/pontos.js"></script>
-  <script type="module" src="js/rastreamento.js"></script>
-  <script type="module" src="js/exportacao.js"></script>
-  <script type="module" src="js/interface.js"></script>
-  <script type="module" src="js/debug.js"></script>
-  <script type="module" src="js/matematica.js"></script>
-
 </body>
 </html>
