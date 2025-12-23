@@ -252,13 +252,15 @@ function processFrame() {
 
     // +X and +Y calculations (camera translation), only after calibration and if origin detected
     if (isCalibrated && lastRcentroid && baseOriginScreen) {
-        // Δpixels from base origin to current origin
+        // Δpixels from base origin to current origin (image coords)
         const dxPixels = lastRcentroid.x - baseOriginScreen.x;
         const dyPixels = lastRcentroid.y - baseOriginScreen.y;
 
-        // camera translation in mm: negative of origin movement (object movement in image)
+        // camera translation in mm:
+        //  +X: negative of origin movement in x (same convention as before)
         const txMm = -(dxPixels) / lockedScale;
-        const tyMm = -(dyPixels) / lockedScale;
+        //  +Y: POSITIVE when origin moves down (screen y increases), so use positive dyPixels
+        const tyMm = (dyPixels) / lockedScale;
 
         xEl.textContent = txMm.toFixed(2);
         yEl.textContent = tyMm.toFixed(2);
