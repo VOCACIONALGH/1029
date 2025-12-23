@@ -2,24 +2,17 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Escâner Web</title>
+    <title>Escâner</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#000000">
 
     <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="layout.css">
 </head>
 <body>
 
-    <div class="app">
-        <h1>ESCÂNER</h1>
+    <button id="scanBtn">ESCÂNER</button>
 
-        <button id="scanBtn">ESCÂNER</button>
-
-        <video id="video" autoplay playsinline></video>
-
-        <p id="status">Aguardando ação do usuário</p>
-    </div>
+    <video id="camera" autoplay playsinline></video>
 
     <script src="main.js"></script>
     <script src="export.js"></script>
