@@ -2,19 +2,19 @@ const scanButton = document.getElementById('scanButton');
 const video = document.getElementById('camera');
 const counter = document.getElementById('redPixelCounter');
 
-scanButton.addEventListener('click', () => {
-  navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-    .then(stream => {
-      video.srcObject = stream;
+scanButton.addEventListener('click', async () => {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: "environment"
+    },
+    audio: false
+  });
 
-      // garante execução após metadata
-      video.onloadedmetadata = () => {
-        video.play();
-      };
-    })
-    .catch(err => {
-      console.error('Erro ao abrir câmera:', err);
-    });
+  video.srcObject = stream;
+
+  video.onloadedmetadata = () => {
+    video.play();
+  };
 });
 
 function atualizarContador() {
