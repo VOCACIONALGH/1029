@@ -50,8 +50,15 @@ button {
 #zInfo {
     font-family: monospace;
     font-size: 14px;
-    margin-bottom: 10px;
+    margin-bottom: 4px;
     color: #00aaff;
+}
+
+#xyInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: #aaff66;
 }
 
 #calibrators {
