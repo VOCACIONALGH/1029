@@ -14,8 +14,12 @@
 
     <div id="redCount">Pixels vermelhos: 0</div>
 
-    <video id="camera" autoplay playsinline hidden></video>
+    <label id="calibrationLabel">
+        Sensibilidade do vermelho
+        <input type="range" id="redThreshold" min="50" max="255" value="150">
+    </label>
 
+    <video id="camera" autoplay playsinline hidden></video>
     <canvas id="canvas"></canvas>
 
     <script src="main.js"></script>
