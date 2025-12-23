@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Escâner PWA</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="manifest" href="manifest.json">
+</head>
+<body>
+    <button id="btnStart">Abrir escâner</button>
+    <div id="scannerContainer">
+        <video id="cameraFeed" autoplay playsinline></video>
+        <div id="blackScreen"></div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
