@@ -2,6 +2,12 @@ const videoElement = document.getElementById('camera');
 const canvas = document.getElementById('visionCanvas');
 const ctx = canvas.getContext('2d');
 
+let redTolerance = 80;
+
+export function setRedTolerance(value) {
+  redTolerance = value;
+}
+
 function contarPixelsVermelhos() {
   if (videoElement.videoWidth === 0) return;
 
@@ -20,7 +26,11 @@ function contarPixelsVermelhos() {
     const g = data[i + 1];
     const b = data[i + 2];
 
-    if (r > 200 && g < 80 && b < 80) {
+    if (
+      r > 150 &&
+      g < redTolerance &&
+      b < redTolerance
+    ) {
       redCount++;
     }
   }
