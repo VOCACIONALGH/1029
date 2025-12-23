@@ -4,7 +4,10 @@ video {
   object-fit: cover;
 }
 
-/* canvas NÃO pode interceptar eventos */
+/* Canvas de visão sobreposto à câmera */
 canvas {
-  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
 }
