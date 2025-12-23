@@ -1,24 +1,13 @@
-import './interface.js';
-import './visao.js';
-import './debug.js';
+// ESTRUTURA: ponto de entrada — importa módulos temáticos
+import './debug.js';          // logging e informações
+import './geometria.js';     // stub
+import './pontos.js';        // stub
+import './rastreamento.js';  // stub
+import './exportacao.js';    // stub
+import './matematica.js';    // utilidades
+import { openRearCamera } from './visao.js';
+import './interface.js';     // interface irá usar visao (import circular evitado)
 
-const scanBtn = document.getElementById('scanBtn');
-const video = document.getElementById('camera');
+console.log('estrutura.js carregado — módulos temáticos importados.');
 
-scanBtn.addEventListener('click', async () => {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { exact: 'environment' }
-      },
-      audio: false
-    });
-
-    video.srcObject = stream;
-    await video.play();
-
-  } catch (err) {
-    console.error('Erro ao abrir câmera traseira:', err);
-    alert('Não foi possível acessar a câmera traseira.\nUse HTTPS ou localhost.');
-  }
-});
+// nenhuma lógica extra aqui — interface.js se encarrega dos handlers de UI
