@@ -3,65 +3,74 @@ const video = document.getElementById('camera');
 const counter = document.getElementById('redPixelCounter');
 
 /**
- * Compat layer para getUserMedia (inclui prefixed legacy APIs)
- * Retorna uma Promise que resolve com o MediaStream ou rejeita com erro.
+ * Handle a MediaStream for the video element (works with older and modern browsers).
  */
-function getUserMediaCompat(constraints) {
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-    return navigator.mediaDevices.getUserMedia(constraints);
+function handleStream(stream) {
+  if ("srcObject" in video) {
+    video.srcObject = stream;
+  } else {
+    // Older browsers
+    video.src = window.URL.createObjectURL(stream);
   }
-
-  const getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
-  if (!getUserMedia) {
-    return Promise.reject(new Error('getUserMedia não suportado neste navegador'));
-  }
-
-  return new Promise((resolve, reject) => {
-    getUserMedia.call(navigator, constraints, resolve, reject);
+  // Mute the element to help autoplay on some mobile browsers
+  video.muted = true;
+  // Try to play (user clicked the button so should succeed)
+  video.play().catch(() => {
+    // ignore play() rejection — stream is still attached
   });
 }
 
-scanButton.addEventListener('click', async () => {
-  try {
-    let stream = null;
+/**
+ * Open camera, robust across modern and legacy implementations.
+ * - tenta preferir a traseira (facingMode: "environment")
+ * - se falhar, tenta com video: true
+ * - suporta callbacks legacy (webkitGetUserMedia / mozGetUserMedia)
+ */
+async function openCamera() {
+  const preferredConstraints = { video: { facingMode: "environment" }, audio: false };
+  const fallbackConstraints = { video: true, audio: false };
 
-    // 1) Tenta preferir câmera traseira (ideal) — se falhar, cai no fallback abaixo
+  // If modern API exists, try it first
+  if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
     try {
-      stream = await getUserMediaCompat({
-        video: { facingMode: { ideal: 'environment' } },
-        audio: false
-      });
-    } catch (e) {
-      // 2) Fallback simples: pede qualquer câmera (máxima compatibilidade)
-      stream = await getUserMediaCompat({ video: true, audio: false });
-    }
-
-    // Atribui o stream ao elemento <video>
-    try {
-      video.srcObject = stream;
-    } catch (e) {
-      // alguns browsers antigos usam URL.createObjectURL
+      const stream = await navigator.mediaDevices.getUserMedia(preferredConstraints);
+      handleStream(stream);
+      return;
+    } catch (err) {
+      // Tentar fallback moderno
       try {
-        video.src = window.URL.createObjectURL(stream);
-      } catch (_) {
-        // se mesmo isso falhar, rethrow para cair no catch externo
-        throw e;
+        const stream2 = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+        handleStream(stream2);
+        return;
+      } catch (err2) {
+        console.error('Falha ao obter câmera (modern API):', err2);
       }
     }
-
-    // Alguns navegadores exigem chamada explícita a play() após atribuição do srcObject
-    try {
-      await video.play();
-    } catch (playError) {
-      // Se play falhar, apenas registre — não adicionamos outra função
-      console.warn('video.play() falhou (pode ser política de autoplay).', playError);
-    }
-  } catch (err) {
-    // Log para debug — sem alterar fluxo do programa
-    console.error('Falha ao abrir câmera:', err);
   }
+
+  // Legacy API (callback style)
+  const legacyGet = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+  if (legacyGet) {
+    // Primeiro try preferredConstraints, se falhar tenta fallbackConstraints
+    legacyGet.call(navigator, preferredConstraints, handleStream, async function () {
+      // onError -> tentar fallback
+      legacyGet.call(navigator, fallbackConstraints, handleStream, function (err) {
+        console.error('Falha ao obter câmera (legacy API):', err);
+      });
+    });
+    return;
+  }
+
+  // Se chegamos aqui, getUserMedia não suportado
+  console.error('getUserMedia não suportado neste navegador / contexto. Execute em https:// ou http://localhost.');
+}
+
+// Evento do botão (única ação do botão: abrir a câmera)
+scanButton.addEventListener('click', () => {
+  openCamera();
 });
 
+/* Contador continua igual (não alterei lógica) */
 function atualizarContador() {
   if (typeof window.redPixelCount === 'number') {
     counter.textContent = `Pixels vermelhos: ${window.redPixelCount}`;
