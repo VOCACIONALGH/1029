@@ -4,7 +4,7 @@ const counter = document.getElementById('redPixelCounter');
 
 scanButton.addEventListener('click', async () => {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: "environment" } },
+    video: true,
     audio: false
   });
 
