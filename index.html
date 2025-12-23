@@ -30,8 +30,7 @@
     </div>
 
     <div id="xyInfo">
-        +X: <span id="xValue">0</span> mm |
-        +Y: <span id="yValue">0</span> mm
+        +X: <span id="xValue">0</span> mm &nbsp;&nbsp; +Y: <span id="yValue">0</span> mm
     </div>
 
     <div id="calibrators">
@@ -56,5 +55,11 @@
 
     <script src="main.js"></script>
     <script src="export.js"></script>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('service-worker.js');
+        }
+    </script>
 </body>
 </html>
