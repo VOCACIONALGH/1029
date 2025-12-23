@@ -1,17 +1,33 @@
-#ui {
-  background: #111;
-  color: white;
-  padding: 12px;
+/* INTERFACE DO USUÁRIO */
+#uiArea {
+  background: var(--ui-bg);
+  padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  align-items: center;
+  justify-content: center;
 }
 
-button {
-  font-size: 18px;
-  padding: 10px;
+#scanButton {
+  padding: 12px 20px;
+  font-size: 16px;
+  border-radius: 8px;
+  border: none;
+  background: #ff8a00;
+  color: #000;
+  cursor: pointer;
 }
 
-input[type="range"] {
-  width: 100%;
+#toleranceSlider {
+  width: 85%;
+}
+
+#toleranceLabel {
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+#pixelCounter {
+  font-size: 14px;
 }
