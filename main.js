@@ -57,9 +57,9 @@ function processFrame() {
 
     let redPixels = 0;
 
-    // acumuladores para o centro
-    let sumX = 0;
-    let sumY = 0;
+    let rSumX = 0, rSumY = 0;
+    let bSumX = 0, bSumY = 0, bCount = 0;
+    let gSumX = 0, gSumY = 0, gCount = 0;
 
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
@@ -67,35 +67,69 @@ function processFrame() {
         const b = data[i + 2];
 
         const { h, s, v } = rgbToHsv(r, g, b);
+        if (s < minS || v < minV) continue;
 
-        const isRedHue = (h <= hueTol) || (h >= 360 - hueTol);
+        const pixelIndex = i / 4;
+        const x = pixelIndex % canvas.width;
+        const y = Math.floor(pixelIndex / canvas.width);
 
-        if (isRedHue && s >= minS && v >= minV) {
+        // 🔴 VERMELHO
+        if (h <= hueTol || h >= 360 - hueTol) {
             redPixels++;
-
-            const pixelIndex = i / 4;
-            const x = pixelIndex % canvas.width;
-            const y = Math.floor(pixelIndex / canvas.width);
-
-            sumX += x;
-            sumY += y;
+            rSumX += x;
+            rSumY += y;
 
             data[i]     = 255;
             data[i + 1] = 165;
             data[i + 2] = 0;
         }
+
+        // 🔵 AZUL (≈ 200–260°)
+        else if (h >= 200 && h <= 260) {
+            bCount++;
+            bSumX += x;
+            bSumY += y;
+
+            data[i]     = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+        }
+
+        // 🟢 VERDE (≈ 90–150°)
+        else if (h >= 90 && h <= 150) {
+            gCount++;
+            gSumX += x;
+            gSumY += y;
+
+            data[i]     = 160;
+            data[i + 1] = 32;
+            data[i + 2] = 240;
+        }
     }
 
     ctx.putImageData(imageData, 0, 0);
 
-    // desenha ponto de origem no centro dos pixels vermelhos
+    // 🔴 ponto vermelho
     if (redPixels > 0) {
-        const cx = sumX / redPixels;
-        const cy = sumY / redPixels;
-
         ctx.beginPath();
-        ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+        ctx.arc(rSumX / redPixels, rSumY / redPixels, 6, 0, Math.PI * 2);
         ctx.fillStyle = "red";
+        ctx.fill();
+    }
+
+    // 🔵 ponto azul
+    if (bCount > 0) {
+        ctx.beginPath();
+        ctx.arc(bSumX / bCount, bSumY / bCount, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "blue";
+        ctx.fill();
+    }
+
+    // 🟢 ponto verde
+    if (gCount > 0) {
+        ctx.beginPath();
+        ctx.arc(gSumX / gCount, gSumY / gCount, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "green";
         ctx.fill();
     }
 
