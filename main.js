@@ -3,7 +3,10 @@ const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const redCountDisplay = document.getElementById("redCount");
-const redThresholdSlider = document.getElementById("redThreshold");
+
+const redThresholdSlider   = document.getElementById("redThreshold");
+const blueThresholdSlider  = document.getElementById("blueThreshold");
+const greenThresholdSlider = document.getElementById("greenThreshold");
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -51,15 +54,17 @@ function processFrame() {
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
 
-    const hueTol = sliderToHueTolerance(Number(redThresholdSlider.value));
+    const redTol   = sliderToHueTolerance(Number(redThresholdSlider.value));
+    const blueTol  = sliderToHueTolerance(Number(blueThresholdSlider.value));
+    const greenTol = sliderToHueTolerance(Number(greenThresholdSlider.value));
+
     const minS = 0.35;
     const minV = 0.12;
 
-    let redPixels = 0;
-
-    let rSumX = 0, rSumY = 0;
-    let bSumX = 0, bSumY = 0, bCount = 0;
-    let gSumX = 0, gSumY = 0, gCount = 0;
+    let redCount = 0;
+    let rX = 0, rY = 0;
+    let bX = 0, bY = 0, bCount = 0;
+    let gX = 0, gY = 0, gCount = 0;
 
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
@@ -69,71 +74,59 @@ function processFrame() {
         const { h, s, v } = rgbToHsv(r, g, b);
         if (s < minS || v < minV) continue;
 
-        const pixelIndex = i / 4;
-        const x = pixelIndex % canvas.width;
-        const y = Math.floor(pixelIndex / canvas.width);
+        const idx = i / 4;
+        const x = idx % canvas.width;
+        const y = Math.floor(idx / canvas.width);
 
-        // 🔴 VERMELHO
-        if (h <= hueTol || h >= 360 - hueTol) {
-            redPixels++;
-            rSumX += x;
-            rSumY += y;
+        // 🔴 vermelho (0°)
+        if (h <= redTol || h >= 360 - redTol) {
+            redCount++;
+            rX += x; rY += y;
 
-            data[i]     = 255;
-            data[i + 1] = 165;
-            data[i + 2] = 0;
+            data[i] = 255; data[i + 1] = 165; data[i + 2] = 0;
         }
 
-        // 🔵 AZUL (≈ 200–260°)
-        else if (h >= 200 && h <= 260) {
+        // 🔵 azul (≈ 230°)
+        else if (Math.abs(h - 230) <= blueTol) {
             bCount++;
-            bSumX += x;
-            bSumY += y;
+            bX += x; bY += y;
 
-            data[i]     = 255;
-            data[i + 1] = 255;
-            data[i + 2] = 255;
+            data[i] = 255; data[i + 1] = 255; data[i + 2] = 255;
         }
 
-        // 🟢 VERDE (≈ 90–150°)
-        else if (h >= 90 && h <= 150) {
+        // 🟢 verde (≈ 120°)
+        else if (Math.abs(h - 120) <= greenTol) {
             gCount++;
-            gSumX += x;
-            gSumY += y;
+            gX += x; gY += y;
 
-            data[i]     = 160;
-            data[i + 1] = 32;
-            data[i + 2] = 240;
+            data[i] = 160; data[i + 1] = 32; data[i + 2] = 240;
         }
     }
 
     ctx.putImageData(imageData, 0, 0);
 
-    // 🔴 ponto vermelho
-    if (redPixels > 0) {
+    if (redCount > 0) {
         ctx.beginPath();
-        ctx.arc(rSumX / redPixels, rSumY / redPixels, 6, 0, Math.PI * 2);
+        ctx.arc(rX / redCount, rY / redCount, 6, 0, Math.PI * 2);
         ctx.fillStyle = "red";
         ctx.fill();
     }
 
-    // 🔵 ponto azul
     if (bCount > 0) {
         ctx.beginPath();
-        ctx.arc(bSumX / bCount, bSumY / bCount, 6, 0, Math.PI * 2);
+        ctx.arc(bX / bCount, bY / bCount, 6, 0, Math.PI * 2);
         ctx.fillStyle = "blue";
         ctx.fill();
     }
 
-    // 🟢 ponto verde
     if (gCount > 0) {
         ctx.beginPath();
-        ctx.arc(gSumX / gCount, gSumY / gCount, 6, 0, Math.PI * 2);
+        ctx.arc(gX / gCount, gY / gCount, 6, 0, Math.PI * 2);
         ctx.fillStyle = "green";
         ctx.fill();
     }
 
-    redCountDisplay.textContent = `Pixels vermelhos: ${redPixels}`;
+    redCountDisplay.textContent = `Pixels vermelhos: ${redCount}`;
 
     requestAnimationFrame(processFrame);
 }
