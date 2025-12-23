@@ -1,2 +1,1 @@
-// Reservado para futuras funções de exportação
-console.log("export.js carregado");
+// Nenhuma função adicional conforme solicitado
