@@ -1,8 +1,9 @@
 /* main.js
-   Atualizado: durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
-   Agora o programa usa aproximação pinhole para calcular a direção desse raio (vetor unitário)
-   e conta quantos pixels pretos tiveram direção definida no frame.
-   O número de raios definidos é mostrado em raysValue.
+   Atualizado: durante a calibragem, o programa coleta raios 3D (origem + direção)
+   referentes a pixels pretos detectados em múltiplas poses. Esses raios são agrupados
+   por proximidade angular/espacial para estimar posições 3D por triangulação simples.
+   O contador exibido em raysValue agora mostra a quantidade de pixels pretos cuja
+   posição 3D foi determinada (ou seja, pontos com >= 2 raios associados).
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -42,6 +43,14 @@ let calibrationFrames = []; // array of frame objects saved durante calibragem
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
+
+/* point cloud candidates built during calibragem
+   cada entry: { pos: {x,y,z}, raysCount: n, lastUpdated: timestamp }
+   representa um ponto 3D estimado a partir de múltiplos raios.
+*/
+const pointCandidates = [];
+const MAX_POINT_CANDIDATES = 50000; // limite de segurança
+const ASSOCIATION_DIST_MM = 5.0;    // distância máxima (mm) para associar um novo raio a um ponto existente
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
@@ -149,9 +158,7 @@ function computePinholeDirection(px, py) {
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
 
-    // Estimate focal length in pixels.
-    // Escolha razoável: use a maior dimensão e um fator para obter f em ordem de pixels.
-    // Isso é apenas uma aproximação (o real depende da câmera).
+    // Estimate focal length in pixels (aproximação simples).
     const f = Math.max(canvas.width, canvas.height) * 0.9;
 
     // coordinates in camera frame (z forward)
@@ -163,6 +170,160 @@ function computePinholeDirection(px, py) {
     if (!isFinite(norm) || norm === 0) return null;
 
     return { x: vx / norm, y: vy / norm, z: vz / norm };
+}
+
+/* --- EULER -> MATRIZ de rotação (deg -> rad) ---
+   Usamos a ordem Z (yaw / alpha) * X (pitch / beta) * Y (roll / gamma)
+   para transformar vetores da câmera para o referencial do mundo:
+   v_world = Rz(alpha) * Rx(beta) * Ry(gamma) * v_camera
+*/
+function degToRad(d) { return d * Math.PI / 180; }
+
+function eulerToRotationMatrix(alphaDeg, betaDeg, gammaDeg) {
+    const a = degToRad(alphaDeg || 0); // yaw
+    const b = degToRad(betaDeg || 0);  // pitch
+    const g = degToRad(gammaDeg || 0); // roll
+
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const cb = Math.cos(b), sb = Math.sin(b);
+    const cg = Math.cos(g), sg = Math.sin(g);
+
+    // Rz * Rx * Ry
+    // Rz:
+    // [ ca -sa 0 ]
+    // [ sa  ca 0 ]
+    // [  0   0 1 ]
+    // Rx:
+    // [1  0   0 ]
+    // [0 cb -sb ]
+    // [0 sb  cb ]
+    // Ry:
+    // [ cg 0 sg ]
+    // [  0 1  0 ]
+    // [-sg 0 cg ]
+    //
+    // Multiply them in order (Rz * Rx * Ry)
+    const r00 = ca * (1 * cg) + (-sa) * (0 * cg) + 0 * (-sg); // simplified multiplication done explicitly below
+    // to avoid errors, compute full multiplication:
+    // First compute A = Rz * Rx
+    const A00 = ca * 1 + (-sa) * 0 + 0 * 0;
+    const A01 = ca * 0 + (-sa) * cb + 0 * sb;
+    const A02 = ca * 0 + (-sa) * (-sb) + 0 * cb;
+
+    const A10 = sa * 1 + ca * 0 + 0 * 0;
+    const A11 = sa * 0 + ca * cb + 0 * sb;
+    const A12 = sa * 0 + ca * (-sb) + 0 * cb;
+
+    const A20 = 0 * 1 + 0 * 0 + 1 * 0;
+    const A21 = 0 * 0 + 0 * cb + 1 * sb;
+    const A22 = 0 * 0 + 0 * (-sb) + 1 * cb;
+
+    // Now R = A * Ry
+    const R00 = A00 * cg + A01 * 0 + A02 * (-sg);
+    const R01 = A00 * 0 + A01 * 1 + A02 * 0;
+    const R02 = A00 * sg + A01 * 0 + A02 * cg;
+
+    const R10 = A10 * cg + A11 * 0 + A12 * (-sg);
+    const R11 = A10 * 0 + A11 * 1 + A12 * 0;
+    const R12 = A10 * sg + A11 * 0 + A12 * cg;
+
+    const R20 = A20 * cg + A21 * 0 + A22 * (-sg);
+    const R21 = A20 * 0 + A21 * 1 + A22 * 0;
+    const R22 = A20 * sg + A21 * 0 + A22 * cg;
+
+    return [
+        [R00, R01, R02],
+        [R10, R11, R12],
+        [R20, R21, R22]
+    ];
+}
+
+function rotateVector(R, v) {
+    return {
+        x: R[0][0] * v.x + R[0][1] * v.y + R[0][2] * v.z,
+        y: R[1][0] * v.x + R[1][1] * v.y + R[1][2] * v.z,
+        z: R[2][0] * v.x + R[2][1] * v.y + R[2][2] * v.z
+    };
+}
+
+/* --- Triangulation helpers --- */
+
+/* distancia (mm) entre ponto P e reta (o + t*d) */
+function distancePointToRay(point, rayOrigin, rayDir) {
+    // vector from ray origin to point
+    const vx = point.x - rayOrigin.x;
+    const vy = point.y - rayOrigin.y;
+    const vz = point.z - rayOrigin.z;
+
+    // projection length along ray
+    const t = vx * rayDir.x + vy * rayDir.y + vz * rayDir.z;
+
+    const cx = rayOrigin.x + rayDir.x * t;
+    const cy = rayOrigin.y + rayDir.y * t;
+    const cz = rayOrigin.z + rayDir.z * t;
+
+    const dx = point.x - cx;
+    const dy = point.y - cy;
+    const dz = point.z - cz;
+
+    return Math.hypot(dx, dy, dz);
+}
+
+/* closest point on ray to given point */
+function closestPointOnRayToPoint(point, rayOrigin, rayDir) {
+    const vx = point.x - rayOrigin.x;
+    const vy = point.y - rayOrigin.y;
+    const vz = point.z - rayOrigin.z;
+    const t = vx * rayDir.x + vy * rayDir.y + vz * rayDir.z;
+    return {
+        x: rayOrigin.x + rayDir.x * t,
+        y: rayOrigin.y + rayDir.y * t,
+        z: rayOrigin.z + rayDir.z * t
+    };
+}
+
+/* adiciona um novo raio à nuvem de candidatos; tenta associar a um ponto existente,
+   caso contrário cria um novo candidato. */
+function addRayToCandidates(rayOrigin, rayDir) {
+    // tenta achar ponto existente com distância pequena ao raio
+    let bestIdx = -1;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < pointCandidates.length; i++) {
+        const pt = pointCandidates[i];
+        const dist = distancePointToRay(pt.pos, rayOrigin, rayDir);
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = i;
+        }
+    }
+
+    if (bestIdx !== -1 && bestDist <= ASSOCIATION_DIST_MM) {
+        // associa ao ponto bestIdx e o refina (média ponderada com a posição do ponto mais próxima no raio)
+        const existing = pointCandidates[bestIdx];
+        const closest = closestPointOnRayToPoint(existing.pos, rayOrigin, rayDir);
+
+        // atualizar posição média incrementalmente
+        const n = existing.raysCount;
+        existing.pos.x = (existing.pos.x * n + closest.x) / (n + 1);
+        existing.pos.y = (existing.pos.y * n + closest.y) / (n + 1);
+        existing.pos.z = (existing.pos.z * n + closest.z) / (n + 1);
+        existing.raysCount += 1;
+        existing.lastUpdated = Date.now();
+        return;
+    }
+
+    // se não achou, cria novo candidato (posição inicial: ponto a uma distância razoável ao longo do raio)
+    if (pointCandidates.length < MAX_POINT_CANDIDATES) {
+        // distância inicial em mm: use baseZmm se disponível, senão 100 mm
+        const initDist = (baseZmm && isFinite(baseZmm)) ? Math.abs(baseZmm) : 100;
+        const pos = {
+            x: rayOrigin.x + rayDir.x * initDist,
+            y: rayOrigin.y + rayDir.y * initDist,
+            z: rayOrigin.z + rayDir.z * initDist
+        };
+        pointCandidates.push({ pos, raysCount: 1, lastUpdated: Date.now() });
+    }
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -232,6 +393,9 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrating = true;
         calibrationFrames = [];
 
+        // reset pointCandidates for a fresh triangulação
+        pointCandidates.length = 0;
+
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
@@ -294,15 +458,11 @@ function processFrame() {
     let bC = 0, bX = 0, bY = 0;
     let gC = 0, gX = 0, gY = 0;
 
-    // NEW: count black pixels for ray estimation in this frame
-    let blackPixelCount = 0;
-    // NEW: count of black pixels for which we successfully defined a direction via pinhole
-    let raysDefinedCount = 0;
+    // NEW: collect black pixel screen coords in this frame for later triangulation
+    const blackPixelsThisFrame = [];
     const BLACK_THR = 30;
 
     // per-pixel detection + coloring
-    // Note: moved p/x/y computation to the top of the loop so black pixels (which may be skipped by HSV test)
-    // can also have their screen coordinates computed for direction.
     for (let i = 0; i < d.length; i += 4) {
         const r = d[i], g = d[i + 1], b = d[i + 2];
         const p = i / 4;
@@ -323,25 +483,16 @@ function processFrame() {
             }
         }
 
-        // ---- ADDED: during calibragem, recolor visualmente pixels pretos para vermelho, contar e calcular direção via pinhole ----
+        // recolor visualmente pixels pretos durante calibragem e registre sua tela para triangulação
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
             // paint visually red
             d[i] = 255;
             d[i + 1] = 0;
             d[i + 2] = 0;
 
-            // increment black pixel count (cada define um raio)
-            blackPixelCount++;
-
-            // compute pinhole direction for this pixel
-            const dir = computePinholeDirection(x, y);
-            if (dir && isFinite(dir.x) && isFinite(dir.y) && isFinite(dir.z)) {
-                // count as "raio definido"
-                raysDefinedCount++;
-                // (não armazenamos as direções para economizar memória — apenas as definimos/contamos)
-            }
+            // armazenar pixel (x,y) para processamento pós-loop
+            blackPixelsThisFrame.push({ x, y });
         }
-        // ---------------------------------------------------------------------------------------------------
     }
 
     // update visible image
@@ -439,6 +590,41 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
+    // --- Triangulação: processa blackPixelsThisFrame usando pose atual (txMm,tyMm,computedZ,pitch,yaw,roll) ---
+    if (isCalibrating && blackPixelsThisFrame.length > 0) {
+        // pose / orientation usados para transformar cada raio de câmera->mundo
+        const pitch = parseFloat(pitchEl.textContent) || 0;
+        const yaw = parseFloat(yawEl.textContent) || 0;
+        const roll = parseFloat(rollEl.textContent) || 0;
+
+        // se alguma das coordenadas da câmera for null, usamos fallback 0 / baseZmm
+        const camOrigin = {
+            x: (txMm !== null && isFinite(txMm)) ? txMm : 0,
+            y: (tyMm !== null && isFinite(tyMm)) ? tyMm : 0,
+            z: (computedZ !== null && isFinite(computedZ)) ? computedZ : (isFinite(baseZmm) ? baseZmm : 100)
+        };
+
+        const R = eulerToRotationMatrix(yaw, pitch, roll); // note: yaw (alpha), pitch (beta), roll (gamma)
+
+        // processar cada pixel preto deste frame
+        for (let idx = 0; idx < blackPixelsThisFrame.length; idx++) {
+            const px = blackPixelsThisFrame[idx].x;
+            const py = blackPixelsThisFrame[idx].y;
+
+            const dirCam = computePinholeDirection(px, py);
+            if (!dirCam) continue;
+
+            // converter direção para o referencial do mundo
+            const dirWorld = rotateVector(R, dirCam);
+            // garantir normalização
+            const norm = Math.hypot(dirWorld.x, dirWorld.y, dirWorld.z) || 1;
+            dirWorld.x /= norm; dirWorld.y /= norm; dirWorld.z /= norm;
+
+            // adicionar o raio ao conjunto de candidatos (triangulação incremental)
+            addRayToCandidates(camOrigin, dirWorld);
+        }
+    }
+
     // If calibragem ativa, save a frame record
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
@@ -456,8 +642,12 @@ function processFrame() {
         };
         calibrationFrames.push(record);
 
-        // update rays display (número de pixels pretos que tiveram direção definida)
-        raysEl.textContent = String(raysDefinedCount);
+        // atualizar contador: numeros de pontos com pelo menos 2 raios (triangulados)
+        let triangulatedCount = 0;
+        for (let i = 0; i < pointCandidates.length; i++) {
+            if (pointCandidates[i].raysCount >= 2) triangulatedCount++;
+        }
+        raysEl.textContent = String(triangulatedCount);
     } else {
         // quando não calibrando, contador deve mostrar 0
         raysEl.textContent = "0";
