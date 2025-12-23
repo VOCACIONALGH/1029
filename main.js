@@ -4,11 +4,32 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const redCountDisplay = document.getElementById("redCount");
 
+const pitchEl = document.getElementById("pitch");
+const yawEl = document.getElementById("yaw");
+const rollEl = document.getElementById("roll");
+
 const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
 const greenThresholdSlider = document.getElementById("greenThreshold");
 
 scanBtn.addEventListener("click", async () => {
+    if (typeof DeviceOrientationEvent !== "undefined" &&
+        typeof DeviceOrientationEvent.requestPermission === "function") {
+        try {
+            await DeviceOrientationEvent.requestPermission();
+        } catch {}
+    }
+
+    window.addEventListener("deviceorientation", (e) => {
+        const pitch = e.beta ?? 0;   // X
+        const roll = e.gamma ?? 0;   // Y
+        const yaw = e.alpha ?? 0;    // Z
+
+        pitchEl.textContent = pitch.toFixed(1);
+        yawEl.textContent = yaw.toFixed(1);
+        rollEl.textContent = roll.toFixed(1);
+    });
+
     const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { exact: "environment" } },
         audio: false
@@ -53,7 +74,6 @@ function hueDistance(a, b) {
     return d > 180 ? 360 - d : d;
 }
 
-// desenha seta do ponto (x1,y1) → (x2,y2)
 function drawArrow(x1, y1, x2, y2, color) {
     const headLen = 12;
     const angle = Math.atan2(y2 - y1, x2 - x1);
@@ -93,64 +113,53 @@ function processFrame() {
     const minS = 0.35;
     const minV = 0.12;
 
-    let rCount = 0, rX = 0, rY = 0;
-    let bCount = 0, bX = 0, bY = 0;
-    let gCount = 0, gX = 0, gY = 0;
+    let rCount=0,rX=0,rY=0;
+    let bCount=0,bX=0,bY=0;
+    let gCount=0,gX=0,gY=0;
 
-    for (let i = 0; i < data.length; i += 4) {
-        const { h, s, v } = rgbToHsv(data[i], data[i+1], data[i+2]);
-        if (s < minS || v < minV) continue;
+    for (let i=0;i<data.length;i+=4){
+        const {h,s,v}=rgbToHsv(data[i],data[i+1],data[i+2]);
+        if(s<minS||v<minV) continue;
 
-        const idx = i / 4;
-        const x = idx % canvas.width;
-        const y = Math.floor(idx / canvas.width);
+        const idx=i/4;
+        const x=idx%canvas.width;
+        const y=Math.floor(idx/canvas.width);
 
-        if (hueDistance(h, 0) <= redTol) {
-            rCount++; rX += x; rY += y;
-            data[i]=255; data[i+1]=165; data[i+2]=0;
-        } else if (hueDistance(h, 230) <= blueTol) {
-            bCount++; bX += x; bY += y;
-            data[i]=255; data[i+1]=255; data[i+2]=255;
-        } else if (hueDistance(h, 120) <= greenTol) {
-            gCount++; gX += x; gY += y;
-            data[i]=160; data[i+1]=32; data[i+2]=240;
+        if(hueDistance(h,0)<=redTol){
+            rCount++;rX+=x;rY+=y;
+            data[i]=255;data[i+1]=165;data[i+2]=0;
+        } else if(hueDistance(h,230)<=blueTol){
+            bCount++;bX+=x;bY+=y;
+            data[i]=255;data[i+1]=255;data[i+2]=255;
+        } else if(hueDistance(h,120)<=greenTol){
+            gCount++;gX+=x;gY+=y;
+            data[i]=160;data[i+1]=32;data[i+2]=240;
         }
     }
 
-    ctx.putImageData(imageData, 0, 0);
+    ctx.putImageData(imageData,0,0);
 
-    let rC, bC, gC;
+    let rC,bC,gC;
 
-    if (rCount > 0) {
-        rC = { x: rX / rCount, y: rY / rCount };
-        ctx.fillStyle = "red";
-        ctx.beginPath();
-        ctx.arc(rC.x, rC.y, 6, 0, Math.PI * 2);
-        ctx.fill();
+    if(rCount){
+        rC={x:rX/rCount,y:rY/rCount};
+        ctx.fillStyle="red";
+        ctx.beginPath();ctx.arc(rC.x,rC.y,6,0,Math.PI*2);ctx.fill();
+    }
+    if(bCount){
+        bC={x:bX/bCount,y:bY/bCount};
+        ctx.fillStyle="blue";
+        ctx.beginPath();ctx.arc(bC.x,bC.y,6,0,Math.PI*2);ctx.fill();
+    }
+    if(gCount){
+        gC={x:gX/gCount,y:gY/gCount};
+        ctx.fillStyle="green";
+        ctx.beginPath();ctx.arc(gC.x,gC.y,6,0,Math.PI*2);ctx.fill();
     }
 
-    if (bCount > 0) {
-        bC = { x: bX / bCount, y: bY / bCount };
-        ctx.fillStyle = "blue";
-        ctx.beginPath();
-        ctx.arc(bC.x, bC.y, 6, 0, Math.PI * 2);
-        ctx.fill();
-    }
+    if(rC&&bC) drawArrow(rC.x,rC.y,bC.x,bC.y,"blue");
+    if(rC&&gC) drawArrow(rC.x,rC.y,gC.x,gC.y,"green");
 
-    if (gCount > 0) {
-        gC = { x: gX / gCount, y: gY / gCount };
-        ctx.fillStyle = "green";
-        ctx.beginPath();
-        ctx.arc(gC.x, gC.y, 6, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    // ➡️ vetor +X (vermelho → azul)
-    if (rC && bC) drawArrow(rC.x, rC.y, bC.x, bC.y, "blue");
-
-    // ⬆️ vetor +Y (vermelho → verde)
-    if (rC && gC) drawArrow(rC.x, rC.y, gC.x, gC.y, "green");
-
-    redCountDisplay.textContent = `Pixels vermelhos: ${rCount}`;
+    redCountDisplay.textContent=`Pixels vermelhos: ${rCount}`;
     requestAnimationFrame(processFrame);
 }
