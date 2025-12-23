@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escâner 3D</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+
+<style>
+body {
+    margin: 0;
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+}
+
+button {
+    padding: 20px 40px;
+    font-size: 22px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+video {
+    width: 100%;
+    height: auto;
+    display: none;
+}
+</style>
+</head>
+
+<body>
+
+<button id="scanBtn">ESCÂNER 3D</button>
+<video id="video" autoplay playsinline></video>
+
+<script>
+document.getElementById("scanBtn").onclick = async () => {
+    const video = document.getElementById("video");
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: "environment" } }
+    });
+
+    video.srcObject = stream;
+    video.style.display = "block";
+};
+</script>
+
+<script>
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("service-worker.js");
+}
+</script>
+
+</body>
+</html>
