@@ -1,8 +1,15 @@
+import { rgbToHsv } from './matematica.js';
+
 const videoElement = document.getElementById('camera');
 const canvas = document.getElementById('visionCanvas');
 const ctx = canvas.getContext('2d');
 
 let redTolerance = 80;
+
+// Origem estabilizada (estado interno)
+let stableX = null;
+let stableY = null;
+const stabilizationFactor = 0.15; // quanto menor, mais estável
 
 export function setRedTolerance(value) {
   redTolerance = value;
@@ -28,28 +35,44 @@ function contarPixelsVermelhos() {
     const g = data[i + 1];
     const b = data[i + 2];
 
-    if (r > 150 && g < redTolerance && b < redTolerance) {
+    const { h, s, v } = rgbToHsv(r, g, b);
+
+    // Vermelho em HSV:
+    // Hue perto de 0° ou 360°
+    const isRed =
+      (h < redTolerance || h > 360 - redTolerance) &&
+      s > 0.4 &&
+      v > 0.2;
+
+    if (isRed) {
       redCount++;
 
-      const pixelIndex = i / 4;
-      const x = pixelIndex % canvas.width;
-      const y = Math.floor(pixelIndex / canvas.width);
+      const index = i / 4;
+      const x = index % canvas.width;
+      const y = Math.floor(index / canvas.width);
 
       sumX += x;
       sumY += y;
     }
   }
 
-  // Limpa apenas o overlay (evita acumular pontos)
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Se houver pixels vermelhos, desenha o ponto central (origem)
   if (redCount > 0) {
     const centerX = sumX / redCount;
     const centerY = sumY / redCount;
 
+    // Estabilização da origem
+    if (stableX === null || stableY === null) {
+      stableX = centerX;
+      stableY = centerY;
+    } else {
+      stableX += (centerX - stableX) * stabilizationFactor;
+      stableY += (centerY - stableY) * stabilizationFactor;
+    }
+
     ctx.beginPath();
-    ctx.arc(centerX, centerY, 6, 0, Math.PI * 2);
+    ctx.arc(stableX, stableY, 6, 0, Math.PI * 2);
     ctx.fillStyle = 'red';
     ctx.fill();
   }
