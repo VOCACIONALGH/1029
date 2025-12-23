@@ -1,11 +1,11 @@
-// VISÃO: detecção laranja, estabilização e desenho no canvas
+// js/visao.js
 import { rgbToHsv } from './matematica.js';
 
 const videoEl = document.getElementById('camera');
 const canvas = document.getElementById('visionCanvas');
 const ctx = canvas.getContext('2d');
 
-let tolerance = 40; // graus no hue
+let tolerance = 40; // em graus (hue)
 let processing = false;
 
 let stableX = null;
@@ -14,17 +14,12 @@ const stabilizationFactor = 0.15;
 
 let latestCount = 0;
 
-/**
- * Abre a câmera traseira de forma robusta.
- * - tenta facingMode exact
- * - se falhar, tenta ideal
- * - se falhar, tenta video:true
- * - suporta legacy callbacks como último recurso
- */
+// Target color em HSV {h,s,v} ou null se não selecionado
+let targetHSV = null;
+
+// Abre a câmera traseira (robusto, retorna true/false)
 export async function openRearCamera() {
-  // if already streaming, return
   try {
-    // prefer exact environment, fallback sequence
     const constraintsList = [
       { video: { facingMode: { exact: 'environment' } }, audio: false },
       { video: { facingMode: { ideal: 'environment' } }, audio: false },
@@ -34,17 +29,17 @@ export async function openRearCamera() {
     let stream = null;
 
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      for (const constraints of constraintsList) {
+      for (const c of constraintsList) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          stream = await navigator.mediaDevices.getUserMedia(c);
           break;
         } catch (e) {
-          // try next
+          // tenta próximo
         }
       }
     }
 
-    // legacy fallback
+    // fallback legacy (callbacks)
     if (!stream) {
       const legacyGet = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
       if (legacyGet) {
@@ -60,24 +55,20 @@ export async function openRearCamera() {
 
     if (!stream) throw new Error('Não foi possível obter stream de câmera');
 
-    // attach stream
     if ('srcObject' in videoEl) {
       videoEl.srcObject = stream;
     } else {
       videoEl.src = window.URL.createObjectURL(stream);
     }
 
-    // ensure play after metadata
     await new Promise((resolve) => {
       videoEl.onloadedmetadata = () => {
         videoEl.play().catch(()=>{/*ignore*/});
         resolve();
       };
-      // if already have metadata / playing, resolve quickly
       if (videoEl.readyState >= 2) resolve();
     });
 
-    // start processing if not already
     if (!processing) {
       processing = true;
       requestAnimationFrame(processFrame);
@@ -90,44 +81,57 @@ export async function openRearCamera() {
   }
 }
 
-/**
- * Ajusta tolerância (em graus do Hue central ~30)
- */
+// Define tolerância (slider)
 export function setTolerance(v) {
   tolerance = Number(v);
 }
 
-/**
- * Retorna contagem mais recente (para UI)
- */
+// Limpa alvo (nenhuma cor selecionada)
+export function clearTarget() {
+  targetHSV = null;
+}
+
+// Define target a partir de RGB (0..255)
+export function setTargetHSVFromRgb(r, g, b) {
+  const hsv = rgbToHsv(r, g, b);
+  targetHSV = hsv;
+  // reset estabilidade para não saltar muito
+  stableX = null;
+  stableY = null;
+}
+
+// retorna o HSV alvo (ou null)
+export function getTargetHSV() {
+  return targetHSV;
+}
+
 export function getLatestCount() {
   return latestCount;
 }
 
-/**
- * Define se um pixel HSV é laranja (escala abrangente)
- */
-function isOrangeHSV(h, s, v) {
-  // Central em ~30 graus (laranja)
-  // Accepta variação definida por 'tolerance', e também considera saturação/valor amplos
-  const lower = 30 - tolerance;
-  const upper = 30 + tolerance;
-
-  const hueOk = (h >= lower && h <= upper);
-  const satOk = s >= 0.15 || v <= 0.45; // permite tons menos saturados
-  const valOk = v >= 0.12;
-
-  return hueOk && satOk && valOk;
+// calcula distância circular de hue (em graus)
+function hueDistance(a, b) {
+  let d = Math.abs(a - b) % 360;
+  if (d > 180) d = 360 - d;
+  return d;
 }
 
-/**
- * Loop de processamento: captura frame, converte para HSV, calcula centroide, desenha origem
- */
+// verifica se pixel HSV corresponde ao target
+function isMatchTarget(h, s, v) {
+  if (!targetHSV) return false;
+  const dh = hueDistance(h, targetHSV.h);
+  if (dh > tolerance) return false;
+
+  // permitimos variação ampla em saturação/valor, mas podemos exigir mínimos leves
+  if (s < 0.08 && v > 0.95) return false; // ignora branco quase puro
+  // aceitar em geral
+  return true;
+}
+
 function processFrame() {
   if (!processing) return;
 
   if (videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
-    // câmera ainda não pronta
     requestAnimationFrame(processFrame);
     return;
   }
@@ -135,7 +139,7 @@ function processFrame() {
   canvas.width = videoEl.videoWidth;
   canvas.height = videoEl.videoHeight;
 
-  // desenha frame no canvas (usado para readPixel)
+  // desenha frame (usado também para leitura de pixel)
   ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
 
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -145,22 +149,22 @@ function processFrame() {
   let sumX = 0;
   let sumY = 0;
 
-  // percorre pixels
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i+1], b = data[i+2];
-    const { h, s, v } = rgbToHsv(r, g, b);
-
-    if (isOrangeHSV(h, s, v)) {
-      const p = i / 4;
-      const x = p % canvas.width;
-      const y = Math.floor(p / canvas.width);
-      sumX += x;
-      sumY += y;
-      count++;
+  if (targetHSV) {
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i+1], b = data[i+2];
+      const { h, s, v } = rgbToHsv(r, g, b);
+      if (isMatchTarget(h, s, v)) {
+        const p = i / 4;
+        const x = p % canvas.width;
+        const y = Math.floor(p / canvas.width);
+        sumX += x;
+        sumY += y;
+        count++;
+      }
     }
   }
 
-  // limpa overlay (não acumular)
+  // Limpa overlay (após leitura)
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (count > 0) {
@@ -175,14 +179,11 @@ function processFrame() {
       stableY += (cy - stableY) * stabilizationFactor;
     }
 
-    // desenha ponto laranja estabilizado
+    // desenha ponto no centro estabilizado
     ctx.beginPath();
     ctx.arc(stableX, stableY, 6, 0, Math.PI * 2);
-    ctx.fillStyle = 'orange';
+    ctx.fillStyle = targetHSV ? `rgba(255,128,0,1)` : 'orange';
     ctx.fill();
-  } else {
-    // sem pixels - decai a origem suavemente para null ao longo do tempo?
-    // (mantemos a origem até nova detecção, para estabilidade)
   }
 
   latestCount = count;
