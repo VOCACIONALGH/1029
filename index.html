@@ -14,21 +14,24 @@
 
     <div id="redCount">Pixels vermelhos: 0</div>
 
-    <label id="calibrationLabel">
-        Sensibilidade do vermelho
-        <input type="range" id="redThreshold" min="50" max="255" value="150">
-    </label>
+    <div id="calibrators">
+        <label class="calLabel">
+            Sensibilidade do vermelho
+            <input type="range" id="redThreshold" min="50" max="255" value="150">
+        </label>
 
-    <label id="calibrationLabel">
-        Sensibilidade do azul
-        <input type="range" id="blueThreshold" min="50" max="255" value="150">
-    </label>
+        <label class="calLabel">
+            Sensibilidade do azul
+            <input type="range" id="blueThreshold" min="50" max="255" value="150">
+        </label>
 
-    <label id="calibrationLabel">
-        Sensibilidade do verde
-        <input type="range" id="greenThreshold" min="50" max="255" value="150">
-    </label>
+        <label class="calLabel">
+            Sensibilidade do verde
+            <input type="range" id="greenThreshold" min="50" max="255" value="150">
+        </label>
+    </div>
 
+    <!-- vídeo é a fonte oculta; canvas mostra o resultado (com pixels transformados) -->
     <video id="camera" autoplay playsinline hidden></video>
     <canvas id="canvas"></canvas>
 
@@ -40,6 +43,5 @@
             navigator.serviceWorker.register('service-worker.js');
         }
     </script>
-
 </body>
 </html>
