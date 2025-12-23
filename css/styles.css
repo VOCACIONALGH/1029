@@ -1,3 +1,5 @@
+/* styles.css */
+
 body {
     margin: 0;
     font-family: Arial, sans-serif;
@@ -5,7 +7,7 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
-    height: 100vh;
+    min-height: 100vh;
     background-color: #000;
 }
 
@@ -16,23 +18,36 @@ button {
     cursor: pointer;
 }
 
+/* Inicialmente oculto; quando a classe .active é adicionada, ocupa a tela inteira e vira flex-col */
 #scannerContainer {
     display: none;
     width: 100%;
-    height: calc(100% - 50px);
-    display: flex;
+    height: 100vh; /* garante ocupar toda a viewport ao ser ativado */
     flex-direction: column;
+    overflow: hidden;
 }
 
-#cameraFeed {
-    height: 50%;
+/* Mostra o container e mantém layout em coluna */
+#scannerContainer.active {
+    display: flex;
+}
+
+/* As duas partes devem ter exatamente a mesma proporção: flex:1 e min-height:0 evita overflow em iOS */
+#cameraFeed,
+#blackScreen {
+    flex: 1;
+    min-height: 0;
     width: 100%;
+    display: block;
+}
+
+/* vídeo ajustado para cobrir a área sem distorcer */
+#cameraFeed {
     background-color: #333;
     object-fit: cover;
 }
 
+/* tela inferior preta */
 #blackScreen {
-    height: 50%;
-    width: 100%;
     background-color: #000;
 }
