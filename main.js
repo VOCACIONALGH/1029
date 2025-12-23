@@ -1,6 +1,6 @@
 /* main.js
-   Atualizado: durante a calibragem, cada pixel preto define um "raio 3D" usando aproximação pinhole.
-   O número de pixels pretos com direção definida é contado e exibido em tempo real.
+   Atualizado: durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
+   O número de raios é contado por frame e exibido na tela em tempo real.
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -29,16 +29,19 @@ const ARROW_LENGTH_MM = 100;
 
 // calibration / locking state
 let baseZmm = 0;
-let lockedScale = 0;
-let basePixelDistance = 0;
-let baseOriginScreen = null;
+let lockedScale = 0;           // px per mm locked at calibration
+let basePixelDistance = 0;     // calibrated arrow length in px (ARROW_LENGTH_MM * lockedScale)
+let baseOriginScreen = null;   // {x,y} of origin in screen coords at calibration
 let isCalibrated = false;
-let isCalibrating = false;
-let calibrationFrames = [];
-let lastRcentroid = null;
-let currentScale = 0;
 
-/* UTIL: converte RGB -> HSV */
+// calibragem ativa (coleta de frames)
+let isCalibrating = false;
+let calibrationFrames = []; // array of frame objects saved during calibragem
+
+let lastRcentroid = null;     // {x,y} of last detected red centroid
+let currentScale = 0;         // px/mm live estimate (before locking)
+
+/* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
     const max = Math.max(rN, gN, bN);
@@ -81,7 +84,7 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     const y2 = cy + uy * lengthPx;
 
     const headLen = 12;
-    const angle = Math.atan2(y2 - cx, x2 - cy);
+    const angle = Math.atan2(y2 - cy, x2 - cx);
 
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -106,7 +109,7 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     ctx.fill();
 }
 
-/* compute arrow tip */
+/* Helper to compute arrow tip without drawing */
 function computeArrowTip(cx, cy, dx, dy, lengthPx) {
     const mag = Math.hypot(dx, dy);
     if (!mag) return null;
@@ -119,6 +122,7 @@ function computeArrowTip(cx, cy, dx, dy, lengthPx) {
 function drawPlanePolygon(origin, tipX, tipY) {
     if (!origin || !tipX || !tipY) return;
     const corner = { x: tipX.x + (tipY.x - origin.x), y: tipX.y + (tipY.y - origin.y) };
+
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(origin.x, origin.y);
@@ -126,7 +130,7 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.lineTo(corner.x, corner.y);
     ctx.lineTo(tipY.x, tipY.y);
     ctx.closePath();
-    ctx.fillStyle = "rgba(173,216,230,0.4)";
+    ctx.fillStyle = "rgba(173,216,230,0.4)"; // lightblue
     ctx.fill();
     ctx.restore();
 }
@@ -139,9 +143,9 @@ scanBtn.addEventListener("click", async () => {
     }
 
     window.addEventListener("deviceorientation", (e) => {
-        pitchEl.textContent = (e.beta ?? 0).toFixed(1);
-        yawEl.textContent = (e.alpha ?? 0).toFixed(1);
-        rollEl.textContent = (e.gamma ?? 0).toFixed(1);
+        document.getElementById("pitch").textContent = (e.beta ?? 0).toFixed(1);
+        document.getElementById("yaw").textContent = (e.alpha ?? 0).toFixed(1);
+        document.getElementById("roll").textContent = (e.gamma ?? 0).toFixed(1);
     });
 
     try {
@@ -149,7 +153,9 @@ scanBtn.addEventListener("click", async () => {
             video: { facingMode: { exact: "environment" } },
             audio: false
         });
+
         video.srcObject = stream;
+
         video.addEventListener("loadedmetadata", () => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -160,40 +166,83 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
+/*
+ Calibrar button behavior:
+ - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
+ - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+*/
 calibrateBtn.addEventListener("click", () => {
-    if (!lastRcentroid) {
-        alert("Origem (ponto vermelho) não detectada.");
-        return;
-    }
-
     if (!isCalibrating) {
-        const input = prompt("Informe o valor atual de +Z (mm):");
-        if (!input) return;
-        baseZmm = parseFloat(input);
-        lockedScale = currentScale;
+        if (!lastRcentroid) {
+            alert("Origem (ponto vermelho) não detectada. Posicione a câmera sobre a origem antes de calibrar.");
+            return;
+        }
+        if (!currentScale || currentScale === 0 || !isFinite(currentScale)) {
+            alert("Escala atual inválida. Aguarde detecção e tente novamente.");
+            return;
+        }
+
+        const input = prompt("Informe o valor atual de +Z (em mm):");
+        if (input === null) return;
+
+        const z = parseFloat(input);
+        if (isNaN(z)) {
+            alert("Valor inválido. Calibração cancelada.");
+            return;
+        }
+
+        // lock calibration parameters
+        baseZmm = z;
+        lockedScale = currentScale; // px per mm locked now
         basePixelDistance = ARROW_LENGTH_MM * lockedScale;
-        baseOriginScreen = { ...lastRcentroid };
+        baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
         isCalibrated = true;
+
+        // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
+
+        // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
-        alert("Calibragem iniciada. Clique em Calibrar novamente para finalizar.");
+        xEl.textContent = "0.00";
+        yEl.textContent = "0.00";
+        raysEl.textContent = "0";
+
+        alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
     }
 
+    // finalize calibration if currently calibrating
     if (isCalibrating) {
         isCalibrating = false;
-        const payload = { createdAt: new Date().toISOString(), baseZmm, lockedScale, baseOriginScreen, frames: calibrationFrames };
+
+        if (calibrationFrames.length === 0) {
+            alert("Nenhum frame coletado durante a calibragem.");
+            return;
+        }
+
+        const payload = {
+            createdAt: new Date().toISOString(),
+            baseZmm,
+            lockedScale,
+            baseOriginScreen,
+            frames: calibrationFrames
+        };
+
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
+        a.href = url;
         a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();
-        alert("Calibragem finalizada. Arquivo baixado.");
+        URL.revokeObjectURL(url);
+
+        alert(`Calibragem finalizada. Arquivo "${filename}" baixado.`);
+        return;
     }
 });
 
@@ -215,39 +264,164 @@ function processFrame() {
     let bC = 0, bX = 0, bY = 0;
     let gC = 0, gX = 0, gY = 0;
 
-    let blackRaysCount = 0;
+    // NEW: count black pixels for ray estimation in this frame
+    let blackPixelCount = 0;
     const BLACK_THR = 30;
 
+    // per-pixel detection + coloring
     for (let i = 0; i < d.length; i += 4) {
-        const r = d[i], g = d[i+1], b = d[i+2];
-        const { h, s, v } = rgbToHsv(r,g,b);
+        const r = d[i], g = d[i + 1], b = d[i + 2];
 
-        if (s < 0.35 || v < 0.12) { } 
-        else {
-            const p = i/4, x = p % canvas.width, y = (p/canvas.width)|0;
-            if (hueDistance(h,0)<=rTol){ rC++; rX+=x; rY+=y; d[i]=255; d[i+1]=165; d[i+2]=0;}
-            else if (hueDistance(h,230)<=bTol){ bC++; bX+=x; bY+=y; d[i]=255; d[i+1]=255; d[i+2]=255;}
-            else if (hueDistance(h,120)<=gTol){ gC++; gX+=x; gY+=y; d[i]=160; d[i+1]=32; d[i+2]=240;}
+        const { h, s, v } = rgbToHsv(r, g, b);
+        if (s < 0.35 || v < 0.12) {
+            // skip detection, still check for black recolor below
+        } else {
+            const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
+
+            if (hueDistance(h, 0) <= rTol) {
+                rC++; rX += x; rY += y;
+                d[i] = 255; d[i + 1] = 165; d[i + 2] = 0;
+            } else if (hueDistance(h, 230) <= bTol) {
+                bC++; bX += x; bY += y;
+                d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
+            } else if (hueDistance(h, 120) <= gTol) {
+                gC++; gX += x; gY += y;
+                d[i] = 160; d[i + 1] = 32; d[i + 2] = 240;
+            }
         }
 
-        // BLACK pixel: compute pinhole ray direction
-        if (isCalibrating && r<BLACK_THR && g<BLACK_THR && b<BLACK_THR){
-            d[i]=255; d[i+1]=0; d[i+2]=0; 
-            blackRaysCount++;
+        // ---- ADDED: during calibragem, recolor visually pixels pretos para vermelho AND count them as rays ----
+        if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
+            // paint visually red
+            d[i] = 255;
+            d[i + 1] = 0;
+            d[i + 2] = 0;
+
+            // increment black pixel count (each defines a ray)
+            blackPixelCount++;
+        }
+        // -------------------------------------------------------------------------------
+    }
+
+    // update visible image
+    ctx.putImageData(img, 0, 0);
+
+    let r = null, b = null, g = null;
+
+    if (rC) {
+        r = { x: rX / rC, y: rY / rC };
+        lastRcentroid = r;
+    } else {
+        lastRcentroid = null;
+    }
+
+    if (bC) {
+        b = { x: bX / bC, y: bY / bC };
+    }
+
+    if (gC) {
+        g = { x: gX / gC, y: gY / gC };
+    }
+
+    // compute live scale (px/mm) from red->blue if available
+    let currentPixelDistance = 0;
+    if (r && b) {
+        currentPixelDistance = Math.hypot(b.x - r.x, b.y - r.y);
+        currentScale = currentPixelDistance / ARROW_LENGTH_MM; // px/mm
+        if (!isCalibrated) {
+            scaleEl.textContent = currentScale.toFixed(3);
+        } else {
+            scaleEl.textContent = lockedScale.toFixed(3);
         }
     }
 
-    ctx.putImageData(img,0,0);
+    // Plane drawing during calibragem
+    if (isCalibrating && r && b && g) {
+        const scaleUsed = isCalibrated ? lockedScale : currentScale;
+        const lengthPx = ARROW_LENGTH_MM * scaleUsed;
 
-    let r = null, b = null, g = null;
-    if(rC){ r={x:rX/rC, y:rY/rC}; lastRcentroid=r;} else lastRcentroid=null;
-    if(bC) b={x:bX/bC, y:bY/bC};
-    if(gC) g={x:gX/gC, y:gY/gC};
+        const tipX = computeArrowTip(r.x, r.y, b.x - r.x, b.y - r.y, lengthPx);
+        const tipY = computeArrowTip(r.x, r.y, g.x - r.x, g.y - r.y, lengthPx);
 
-    if(rC && bC) currentScale=Math.hypot(b.x-r.x, b.y-r.y)/ARROW_LENGTH_MM;
+        if (tipX && tipY) {
+            drawPlanePolygon(r, tipX, tipY);
+        }
+    }
 
-    redCountDisplay.textContent=`Pixels vermelhos: ${rC}`;
-    raysEl.textContent=blackRaysCount; // Atualização do contador de pixels pretos com direção definida
+    // draw points and arrows
+    if (r) {
+        ctx.fillStyle = "red";
+        ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    if (b) {
+        ctx.fillStyle = "blue";
+        ctx.beginPath(); ctx.arc(b.x, b.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    if (g) {
+        ctx.fillStyle = "green";
+        ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
 
+    const scaleForArrows = isCalibrated ? lockedScale : currentScale;
+    if (r && b && scaleForArrows) {
+        drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "blue");
+    }
+    if (r && g && scaleForArrows) {
+        drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
+    }
+
+    // +Z calculation (uses lockedScale if calibrated)
+    let computedZ = null;
+    if (isCalibrated && currentPixelDistance) {
+        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale; // smaller arrow px => larger +Z
+        computedZ = baseZmm + dzMm;
+        zEl.textContent = computedZ.toFixed(2);
+    } else {
+        if (!isCalibrated) zEl.textContent = "0.00";
+        else zEl.textContent = baseZmm.toFixed(2);
+    }
+
+    // +X and +Y calculations (camera translation), only after calibration and if origin detected
+    let txMm = null, tyMm = null;
+    if (isCalibrated && lastRcentroid && baseOriginScreen) {
+        const dxPixels = lastRcentroid.x - baseOriginScreen.x;
+        const dyPixels = lastRcentroid.y - baseOriginScreen.y;
+
+        const tx = -(dxPixels) / lockedScale;        // X: negative of origin movement
+        const ty = (dyPixels) / lockedScale;         // Y: positive when origin moves down
+        txMm = tx; tyMm = ty;
+
+        xEl.textContent = txMm.toFixed(2);
+        yEl.textContent = tyMm.toFixed(2);
+    } else {
+        if (!isCalibrated) { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
+        else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
+    }
+
+    // If calibragem ativa, save a frame record
+    if (isCalibrating) {
+        const pitch = parseFloat(pitchEl.textContent) || 0;
+        const yaw = parseFloat(yawEl.textContent) || 0;
+        const roll = parseFloat(rollEl.textContent) || 0;
+
+        const record = {
+            timestamp: new Date().toISOString(),
+            x_mm: txMm !== null ? Number(txMm.toFixed(4)) : null,
+            y_mm: tyMm !== null ? Number(tyMm.toFixed(4)) : null,
+            z_mm: computedZ !== null ? Number(computedZ.toFixed(4)) : null,
+            pitch_deg: Number(pitch.toFixed(3)),
+            yaw_deg: Number(yaw.toFixed(3)),
+            roll_deg: Number(roll.toFixed(3))
+        };
+        calibrationFrames.push(record);
+
+        // update rays display (number of black pixels => number of rays)
+        raysEl.textContent = String(blackPixelCount);
+    } else {
+        // when not calibrating, ensure rays counter shows 0
+        raysEl.textContent = "0";
+    }
+
+    redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
 }
