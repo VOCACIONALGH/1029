@@ -1,3 +1,4 @@
+/* layout.css */
 body {
     margin: 0;
     height: 100vh;
@@ -31,16 +32,28 @@ button {
     font-family: monospace;
 }
 
-#calibrationLabel {
-    font-size: 14px;
-    margin-bottom: 10px;
+/* container de sliders */
+#calibrators {
     display: flex;
+    gap: 12px;
     flex-direction: column;
     align-items: center;
+    margin-bottom: 12px;
+    width: 100%;
+    max-width: 480px;
 }
 
-#calibrationLabel input {
-    width: 220px;
+.calLabel {
+    color: #fff;
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+}
+
+.calLabel input[type="range"] {
+    width: 100%;
     margin-top: 6px;
 }
 
@@ -49,4 +62,6 @@ canvas {
     max-width: 480px;
     height: auto;
     background-color: #000;
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
 }
