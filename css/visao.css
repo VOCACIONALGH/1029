@@ -1,13 +1,22 @@
-video {
+/* VISÃO */
+#cameraArea {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: black;
+}
+
+/* video e canvas sobrepostos */
+#camera, #visionCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-/* Canvas de visão sobreposto à câmera */
-canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
+/* overlay não intercepta eventos */
+#visionCanvas {
   pointer-events: none;
 }
