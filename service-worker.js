@@ -1,36 +1,20 @@
-const CACHE_NAME = "scanner-pwa-v1";
-const FILES_TO_CACHE = [
-    "./",
-    "./index.html",
-    "./styles.css",
-    "./js/main.js",
-    "./js/ui.js",
-    "./js/scanner.js",
-    "./manifest.json"
-];
+// service-worker.js - cache básico para GitHub Pages PWA
+const CACHE_NAME = "scanner-cache-v1";
+const FILES = [ "/", "/index.html", "/styles.css", "/js/main.js", "/js/ui.js", "/js/camera.js", "/manifest.json" ];
 
 self.addEventListener("install", (evt) => {
-    evt.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => cache.addAll(FILES_TO_CACHE))
-    );
-    self.skipWaiting();
+  evt.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(FILES))
+  );
+  self.skipWaiting();
 });
 
 self.addEventListener("activate", (evt) => {
-    evt.waitUntil(
-        caches.keys().then((keyList) =>
-            Promise.all(
-                keyList.map((key) => {
-                    if (key !== CACHE_NAME) return caches.delete(key);
-                })
-            )
-        )
-    );
-    self.clients.claim();
+  evt.waitUntil(clients.claim());
 });
 
 self.addEventListener("fetch", (evt) => {
-    evt.respondWith(
-        caches.match(evt.request).then((response) => response || fetch(evt.request))
-    );
+  evt.respondWith(
+    caches.match(evt.request).then((cached) => cached || fetch(evt.request))
+  );
 });
