@@ -8,23 +8,30 @@
 #cameraArea {
   flex: 1;
   background: black;
-  position: relative;
 }
 
 #uiArea {
-  height: 100px;
+  height: 140px;
   background: #000;
   color: #fff;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 button {
   padding: 14px 28px;
   font-size: 18px;
+}
+
+input[type="range"] {
+  width: 80%;
+}
+
+label {
+  font-size: 12px;
 }
 
 #redPixelCounter {
