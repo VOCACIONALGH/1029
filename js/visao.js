@@ -1,70 +1,190 @@
+// VISÃO: detecção laranja, estabilização e desenho no canvas
 import { rgbToHsv } from './matematica.js';
 
-const videoElement = document.getElementById('camera');
+const videoEl = document.getElementById('camera');
 const canvas = document.getElementById('visionCanvas');
 const ctx = canvas.getContext('2d');
 
-let orangeTolerance = 40;
+let tolerance = 40; // graus no hue
+let processing = false;
 
 let stableX = null;
 let stableY = null;
 const stabilizationFactor = 0.15;
 
-export function setOrangeTolerance(v) {
-  orangeTolerance = v;
+let latestCount = 0;
+
+/**
+ * Abre a câmera traseira de forma robusta.
+ * - tenta facingMode exact
+ * - se falhar, tenta ideal
+ * - se falhar, tenta video:true
+ * - suporta legacy callbacks como último recurso
+ */
+export async function openRearCamera() {
+  // if already streaming, return
+  try {
+    // prefer exact environment, fallback sequence
+    const constraintsList = [
+      { video: { facingMode: { exact: 'environment' } }, audio: false },
+      { video: { facingMode: { ideal: 'environment' } }, audio: false },
+      { video: true, audio: false }
+    ];
+
+    let stream = null;
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      for (const constraints of constraintsList) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (e) {
+          // try next
+        }
+      }
+    }
+
+    // legacy fallback
+    if (!stream) {
+      const legacyGet = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+      if (legacyGet) {
+        stream = await new Promise((resolve, reject) => {
+          legacyGet.call(navigator,
+            { video: true, audio: false },
+            s => resolve(s),
+            err => reject(err)
+          );
+        });
+      }
+    }
+
+    if (!stream) throw new Error('Não foi possível obter stream de câmera');
+
+    // attach stream
+    if ('srcObject' in videoEl) {
+      videoEl.srcObject = stream;
+    } else {
+      videoEl.src = window.URL.createObjectURL(stream);
+    }
+
+    // ensure play after metadata
+    await new Promise((resolve) => {
+      videoEl.onloadedmetadata = () => {
+        videoEl.play().catch(()=>{/*ignore*/});
+        resolve();
+      };
+      // if already have metadata / playing, resolve quickly
+      if (videoEl.readyState >= 2) resolve();
+    });
+
+    // start processing if not already
+    if (!processing) {
+      processing = true;
+      requestAnimationFrame(processFrame);
+    }
+
+    return true;
+  } catch (err) {
+    console.error('openRearCamera erro:', err);
+    return false;
+  }
 }
 
+/**
+ * Ajusta tolerância (em graus do Hue central ~30)
+ */
+export function setTolerance(v) {
+  tolerance = Number(v);
+}
+
+/**
+ * Retorna contagem mais recente (para UI)
+ */
+export function getLatestCount() {
+  return latestCount;
+}
+
+/**
+ * Define se um pixel HSV é laranja (escala abrangente)
+ */
 function isOrangeHSV(h, s, v) {
-  return (
-    h >= 30 - orangeTolerance &&
-    h <= 30 + orangeTolerance &&
-    s >= 0.2 &&
-    v >= 0.15
-  );
+  // Central em ~30 graus (laranja)
+  // Accepta variação definida por 'tolerance', e também considera saturação/valor amplos
+  const lower = 30 - tolerance;
+  const upper = 30 + tolerance;
+
+  const hueOk = (h >= lower && h <= upper);
+  const satOk = s >= 0.15 || v <= 0.45; // permite tons menos saturados
+  const valOk = v >= 0.12;
+
+  return hueOk && satOk && valOk;
 }
 
-function process() {
-  if (videoElement.videoWidth === 0) return requestAnimationFrame(process);
+/**
+ * Loop de processamento: captura frame, converte para HSV, calcula centroide, desenha origem
+ */
+function processFrame() {
+  if (!processing) return;
 
-  canvas.width = videoElement.videoWidth;
-  canvas.height = videoElement.videoHeight;
+  if (videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+    // câmera ainda não pronta
+    requestAnimationFrame(processFrame);
+    return;
+  }
 
-  ctx.drawImage(videoElement, 0, 0);
+  canvas.width = videoEl.videoWidth;
+  canvas.height = videoEl.videoHeight;
+
+  // desenha frame no canvas (usado para readPixel)
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d = frame.data;
+  const data = frame.data;
 
-  let count = 0, sx = 0, sy = 0;
+  let count = 0;
+  let sumX = 0;
+  let sumY = 0;
 
-  for (let i = 0; i < d.length; i += 4) {
-    const { h, s, v } = rgbToHsv(d[i], d[i+1], d[i+2]);
+  // percorre pixels
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i+1], b = data[i+2];
+    const { h, s, v } = rgbToHsv(r, g, b);
+
     if (isOrangeHSV(h, s, v)) {
       const p = i / 4;
-      sx += p % canvas.width;
-      sy += Math.floor(p / canvas.width);
+      const x = p % canvas.width;
+      const y = Math.floor(p / canvas.width);
+      sumX += x;
+      sumY += y;
       count++;
     }
   }
 
+  // limpa overlay (não acumular)
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (count > 0) {
-    const cx = sx / count;
-    const cy = sy / count;
+    const cx = sumX / count;
+    const cy = sumY / count;
 
-    stableX ??= cx;
-    stableY ??= cy;
+    if (stableX === null || stableY === null) {
+      stableX = cx;
+      stableY = cy;
+    } else {
+      stableX += (cx - stableX) * stabilizationFactor;
+      stableY += (cy - stableY) * stabilizationFactor;
+    }
 
-    stableX += (cx - stableX) * stabilizationFactor;
-    stableY += (cy - stableY) * stabilizationFactor;
-
-    ctx.fillStyle = 'orange';
+    // desenha ponto laranja estabilizado
     ctx.beginPath();
     ctx.arc(stableX, stableY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = 'orange';
     ctx.fill();
+  } else {
+    // sem pixels - decai a origem suavemente para null ao longo do tempo?
+    // (mantemos a origem até nova detecção, para estabilidade)
   }
 
-  window.orangePixelCount = count;
-  requestAnimationFrame(process);
+  latestCount = count;
+  requestAnimationFrame(processFrame);
 }
-
-videoElement.addEventListener('play', process);
