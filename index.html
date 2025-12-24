@@ -56,8 +56,15 @@
         </label>
     </div>
 
+    <!-- vídeo e canvas principais -->
     <video id="camera" autoplay playsinline hidden></video>
     <canvas id="canvas"></canvas>
+
+    <!-- mini visualização da nuvem (apenas visual) -->
+    <div id="miniCloudWrapper">
+        <div class="miniTitle">Visualização rápida da nuvem</div>
+        <canvas id="miniCloud" width="240" height="160"></canvas>
+    </div>
 
     <script src="main.js"></script>
     <script src="export.js"></script>
