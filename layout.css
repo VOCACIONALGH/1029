@@ -12,12 +12,18 @@ body {
     box-sizing: border-box;
 }
 
+#controlsRow {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
 button {
-    padding: 14px 28px;
-    font-size: 18px;
+    padding: 14px 20px;
+    font-size: 16px;
     font-weight: bold;
     cursor: pointer;
-    margin-bottom: 8px;
     border-radius: 8px;
     border: none;
     background: #111;
@@ -28,41 +34,43 @@ button {
     background: linear-gradient(90deg,#0a6 0%, #06a 100%);
     color: #000;
     font-weight: 700;
-    margin-left: 8px;
+}
+
+#countsRow {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 6px;
 }
 
 #redCount {
     color: #ff4444;
-    font-size: 18px;
-    margin-bottom: 4px;
+    font-size: 16px;
     font-family: monospace;
 }
 
 #blackRegisteredCount {
     color: #ff88ff;
-    font-size: 16px;
-    margin-bottom: 6px;
+    font-size: 14px;
     font-family: monospace;
 }
 
 #rayCount {
     color: #88ccff;
-    font-size: 16px;
-    margin-bottom: 6px;
+    font-size: 14px;
     font-family: monospace;
 }
 
 #dirCount {
     color: #aadd88;
-    font-size: 16px;
-    margin-bottom: 6px;
+    font-size: 14px;
     font-family: monospace;
 }
 
 #triangulatedCount {
     color: #66ffcc;
-    font-size: 16px;
-    margin-bottom: 8px;
+    font-size: 14px;
     font-family: monospace;
 }
 
@@ -117,9 +125,47 @@ button {
     margin-top: 6px;
 }
 
-canvas {
+#viewerRow {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+canvas#canvas {
     width: 100%;
     max-width: 480px;
     height: auto;
     background-color: #000;
+    border: 1px solid #222;
+    display: block;
+}
+
+/* mini cloud */
+#miniCloudContainer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    background: #071018;
+    border-radius: 8px;
+    border: 1px solid #123;
+}
+
+#miniCloud {
+    width: 200px;
+    height: 200px;
+    background: #000;
+    border: 1px solid #222;
+    image-rendering: pixelated;
+}
+
+.miniTitle {
+    font-size: 12px;
+    color: #cff;
+}
+
+.miniLegend {
+    font-size: 11px;
+    color: #889;
 }
