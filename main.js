@@ -1,12 +1,12 @@
 /* main.js
-   Atualização: durante a calibragem, o programa triangula posições 3D reais de pixels pretos registrados
-   usando múltiplos raios (de diferentes poses). A contagem cumulativa de pixels com posição 3D determinada
-   é atualizada na tela e os pontos triangulados são incluídos no arquivo .json final.
-   Nenhuma outra funcionalidade foi alterada.
+   Atualização: durante a calibragem, as posições 3D trianguladas são registradas numa nuvem de pontos (.json).
+   Botão "Download Nuvem" aparece durante a calibragem para baixar a nuvem a qualquer momento.
+   Nenhuma outra função foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
+const downloadCloudBtn = document.getElementById("downloadCloudBtn");
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
@@ -40,7 +40,7 @@ let isCalibrated = false;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved during calibragem
+let calibrationFrames = []; // array of frame objects saved durante calibragem
 
 // last centroids
 let lastRcentroid = null;     // {x,y} of last detected red centroid
@@ -66,11 +66,12 @@ let cumulativeRaysCount = 0;
 let cumulativeDirCount = 0;
 
 // triangulation structures:
-// map from spatial bin key -> array of rays { origin:{x,y,z}, dir:{x,y,z}, timestamp }
-// when >=2 rays available for a key, try triangulation and store in triangulatedPointsByKey
 const raysByKey = new Map();
 const triangulatedPointsByKey = new Map(); // key -> { x,y,z, num_rays, timestamp }
 let cumulativeTriangulatedCount = 0;
+
+// triangulated point cloud array (exportable). Each: { x_mm, y_mm, z_mm, num_rays, timestamp }
+let triangulatedCloud = [];
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -146,6 +147,7 @@ calibrateBtn.addEventListener("click", () => {
         // reset rays/triangulation structures
         raysByKey.clear();
         triangulatedPointsByKey.clear();
+        triangulatedCloud = [];
         cumulativeTriangulatedCount = 0;
         cumulativeRaysCount = 0;
         cumulativeDirCount = 0;
@@ -153,6 +155,10 @@ calibrateBtn.addEventListener("click", () => {
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
+
+        // show download button during calibration
+        downloadCloudBtn.hidden = false;
+        downloadCloudBtn.style.display = 'inline-block';
 
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
@@ -177,18 +183,14 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
-        // build triangulated_points array from triangulatedPointsByKey
-        const triangulated_points = [];
-        triangulatedPointsByKey.forEach((v, key) => {
-            triangulated_points.push({
-                key,
-                x_mm: Number(v.x.toFixed(6)),
-                y_mm: Number(v.y.toFixed(6)),
-                z_mm: Number(v.z.toFixed(6)),
-                num_rays: v.num_rays,
-                timestamp: v.timestamp
-            });
-        });
+        // build triangulated_points array from triangulatedCloud
+        const triangulated_points = triangulatedCloud.map(p => ({
+            x_mm: Number(p.x_mm.toFixed(6)),
+            y_mm: Number(p.y_mm.toFixed(6)),
+            z_mm: Number(p.z_mm.toFixed(6)),
+            num_rays: p.num_rays,
+            timestamp: p.timestamp
+        }));
 
         const payload = {
             createdAt: new Date().toISOString(),
@@ -211,9 +213,28 @@ calibrateBtn.addEventListener("click", () => {
         a.remove();
         URL.revokeObjectURL(url);
 
+        // hide download button
+        downloadCloudBtn.hidden = true;
+        downloadCloudBtn.style.display = 'none';
+
         alert(`Calibragem finalizada. Arquivo "${filename}" baixado.`);
         return;
     }
+});
+
+// download cloud button behaviour: download current triangulatedCloud as JSON
+downloadCloudBtn.addEventListener('click', () => {
+    const now = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `nuvem_triangulada_${now}.json`;
+    const blob = new Blob([JSON.stringify(triangulatedCloud, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
 });
 
 function rgbToHsv(r, g, b) {
@@ -330,20 +351,14 @@ function computePinholeDirectionForPixel(pixelX, pixelY) {
     return dir;
 }
 
-/* triangulate from multiple rays using linear least squares:
-   Solve for X minimizing sum ||(I - u u^T) (X - p)||^2
-   Which yields: (sum (I - u u^T)) X = sum (I - u u^T) p
-*/
+/* triangulate from multiple rays using linear least squares (same helper as before) */
 function triangulateRaysLeastSquares(rays) {
-    // rays: [{origin:{x,y,z}, dir:{x,y,z}}]
-    // build A (3x3) and b (3)
     let A = [[0,0,0],[0,0,0],[0,0,0]];
     let b = [0,0,0];
 
     for (let i = 0; i < rays.length; i++) {
         const p = rays[i].origin;
         const u = rays[i].dir;
-        // compute I - u u^T
         const uuT = [
             [u.x * u.x, u.x * u.y, u.x * u.z],
             [u.y * u.x, u.y * u.y, u.y * u.z],
@@ -354,19 +369,16 @@ function triangulateRaysLeastSquares(rays) {
             [-uuT[1][0], 1 - uuT[1][1], -uuT[1][2]],
             [-uuT[2][0], -uuT[2][1], 1 - uuT[2][2]]
         ];
-        // accumulate A += M
         for (let r = 0; r < 3; r++) {
             for (let c = 0; c < 3; c++) {
                 A[r][c] += M[r][c];
             }
         }
-        // accumulate b += M * p
         b[0] += M[0][0]*p.x + M[0][1]*p.y + M[0][2]*p.z;
         b[1] += M[1][0]*p.x + M[1][1]*p.y + M[1][2]*p.z;
         b[2] += M[2][0]*p.x + M[2][1]*p.y + M[2][2]*p.z;
     }
 
-    // solve A x = b (3x3)
     const detA = determinant3(A);
     if (Math.abs(detA) < 1e-12) return null;
     const invA = invert3(A);
@@ -409,9 +421,8 @@ function invert3(m) {
     return inv;
 }
 
-// generate binning key for near-equal XY to group same physical pixel across frames
 function keyFromXY(x_mm, y_mm) {
-    const binSize = 0.5; // mm bins (adjustable). Groups points within 0.5 mm
+    const binSize = 0.5; // mm bins (adjustable)
     const kx = Math.round(x_mm / binSize);
     const ky = Math.round(y_mm / binSize);
     return `${kx}_${ky}`;
@@ -435,10 +446,8 @@ function processFrame() {
     let bC = 0, bX = 0, bY = 0;
     let gC = 0, gX = 0, gY = 0;
 
-    // collect black pixels coords during this frame (so we can map them after centroids/vectors are known)
     const blackPixels = [];
 
-    // per-pixel detection + coloring
     for (let i = 0; i < d.length; i += 4) {
         const r = d[i], g = d[i + 1], b = d[i + 2];
 
@@ -460,7 +469,6 @@ function processFrame() {
             }
         }
 
-        // recolor visually pixels pretos para vermelho durante calibragem
         const BLACK_THR = 30;
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
             d[i] = 255;
@@ -493,7 +501,6 @@ function processFrame() {
         lastGcentroid = g;
     }
 
-    // compute live scale (px/mm) from red->blue if available
     let currentPixelDistance = 0;
     if (r && b) {
         currentPixelDistance = Math.hypot(b.x - r.x, b.y - r.y);
@@ -505,7 +512,6 @@ function processFrame() {
         }
     }
 
-    // If calibragem ativa, try to set base vectors (only once) using the detected blue/green directions
     if (isCalibrating && !baseVecSet && isCalibrated && lastRcentroid && lastBcentroid && lastGcentroid && lockedScale) {
         const dxB = lastBcentroid.x - lastRcentroid.x;
         const dyB = lastBcentroid.y - lastRcentroid.y;
@@ -525,7 +531,6 @@ function processFrame() {
         }
     }
 
-    // Plane drawing durante calibragem
     if (isCalibrating && r && b && g) {
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
         const lengthPx = ARROW_LENGTH_MM * scaleUsed;
@@ -538,7 +543,6 @@ function processFrame() {
         }
     }
 
-    // draw points and arrows
     if (r) {
         ctx.fillStyle = "red";
         ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
@@ -560,7 +564,6 @@ function processFrame() {
         drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
     }
 
-    // +Z calculation (uses lockedScale if calibrated)
     let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
         const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale; // smaller arrow px => larger +Z
@@ -571,7 +574,6 @@ function processFrame() {
         else zEl.textContent = baseZmm.toFixed(2);
     }
 
-    // +X and +Y calculations (camera translation), only after calibration and if origin detected
     let txMm = null, tyMm = null;
     if (isCalibrated && lastRcentroid && baseOriginScreen) {
         const dxPixels = lastRcentroid.x - baseOriginScreen.x;
@@ -588,7 +590,6 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
-    // If calibragem ativa, save a frame record
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
         const yaw = parseFloat(yawEl.textContent) || 0;
@@ -606,7 +607,7 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // ---- NEW: process blackPixels -> map to XY, register subset (1-in-10), compute pinhole direction, store ray and try triangulation ----
+    // mapping + registration + triangulation (same logic, now additionally pushing triangulated points into triangulatedCloud)
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
@@ -618,7 +619,6 @@ function processFrame() {
             const inv10 = -c / det;
             const inv11 = a / det;
 
-            // current camera pose for attachment
             const poseXmm = (function() {
                 if (isCalibrated && lastRcentroid && baseOriginScreen) {
                     const dxPixels = lastRcentroid.x - baseOriginScreen.x;
@@ -648,10 +648,8 @@ function processFrame() {
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
                     blackDetectCounter++;
                     if ((blackDetectCounter % 10) === 0) {
-                        // compute pinhole direction for the screen pixel
                         const dir = computePinholeDirectionForPixel(p.x, p.y);
 
-                        // register cumulative black point with direction_cam included
                         cumulativeBlackPoints.push({
                             x_mm: Number(x_mm.toFixed(4)),
                             y_mm: Number(y_mm.toFixed(4)),
@@ -674,21 +672,14 @@ function processFrame() {
                         cumulativeRaysCount++;
                         cumulativeDirCount++;
 
-                        // form ray in world coordinates:
-                        // origin = camera pose (x_mm, y_mm, z_mm)
                         const origin = { x: poseXmm.x_mm, y: poseXmm.y_mm, z: poseZmm };
-                        const dirCam = dir; // in camera coords (approx). We assume camera axes aligned with world for this app.
-                        // NOTE: using camera coords as world coords because we only have approximate pose translations; this matches previous approximations in the program.
+                        const ray = { origin, dir, timestamp: timestampNow };
 
-                        const ray = { origin, dir: dirCam, timestamp: timestampNow };
-
-                        // decide key to group same physical point across frames using XY binning
                         const key = keyFromXY(x_mm, y_mm);
 
                         if (!raysByKey.has(key)) raysByKey.set(key, []);
                         raysByKey.get(key).push(ray);
 
-                        // attempt triangulation if we have at least 2 rays and not yet triangulated for this key
                         const raysForKey = raysByKey.get(key);
                         if (raysForKey.length >= 2 && !triangulatedPointsByKey.has(key)) {
                             const X = triangulateRaysLeastSquares(raysForKey);
@@ -697,6 +688,14 @@ function processFrame() {
                                     x: X.x,
                                     y: X.y,
                                     z: X.z,
+                                    num_rays: raysForKey.length,
+                                    timestamp: new Date().toISOString()
+                                });
+                                // add to triangulatedCloud array immediately for live download
+                                triangulatedCloud.push({
+                                    x_mm: X.x,
+                                    y_mm: X.y,
+                                    z_mm: X.z,
                                     num_rays: raysForKey.length,
                                     timestamp: new Date().toISOString()
                                 });
@@ -709,12 +708,11 @@ function processFrame() {
         }
     }
 
-    // update cumulative counts on screen
+    // update displays
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
     rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
     dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
     triangulatedCountDisplay.textContent = `Pixels pretos com posição 3D: ${cumulativeTriangulatedCount}`;
-    // ---- end mapping & registration & triangulation logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
