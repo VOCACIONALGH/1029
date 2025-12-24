@@ -1,12 +1,12 @@
 /* main.js
-   Atualização: durante a calibragem, as posições 3D trianguladas são registradas numa nuvem de pontos (.json).
-   Botão "Download Nuvem" aparece durante a calibragem para baixar a nuvem a qualquer momento.
-   Mudança solicitada agora: ao computar a direção do raio a partir do pixel, rotacionar esse vetor usando
-   a pose da câmera (pitch, yaw, roll) para expressá-lo no referencial do mundo (referencial dos pixels pretos triangulados).
-   Os raios continuam tendo origem na câmera; apenas a direção é convertida para o referencial do mundo.
-   Nenhuma outra função do programa foi alterada.
+   Atualização solicitada:
+   - Durante a calibragem, os vetores de direção (directions) dos raios são rotacionados
+     pela pose da câmera (pitch, yaw, roll) para serem expressos no referencial do mundo
+     (referencial fixo dos pixels pretos triangulados). Os raios continuam com origem na câmera.
+   - Nenhuma outra função foi alterada.
 */
 
+/* ---------- elementos DOM ---------- */
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
 const downloadCloudBtn = document.getElementById("downloadCloudBtn");
@@ -38,47 +38,38 @@ const greenThresholdSlider = document.getElementById("greenThreshold");
 
 const ARROW_LENGTH_MM = 100;
 
-// calibration / locking state
+/* ---------- estado da calibração ---------- */
 let baseZmm = 0;
-let lockedScale = 0;           // px per mm locked at calibration
-let basePixelDistance = 0;     // calibrated arrow length in px (ARROW_LENGTH_MM * lockedScale)
-let baseOriginScreen = null;   // {x,y} of origin in screen coords at calibration
+let lockedScale = 0;
+let basePixelDistance = 0;
+let baseOriginScreen = null;
 let isCalibrated = false;
 
-// calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved durante calibragem
+let calibrationFrames = [];
 
-// last centroids
-let lastRcentroid = null;     // {x,y} of last detected red centroid
+let lastRcentroid = null;
 let lastBcentroid = null;
 let lastGcentroid = null;
 
-let currentScale = 0;         // px/mm live estimate (before locking)
+let currentScale = 0;
 
-// base vectors (px per mm) used to map pixels -> XY mm durante calibragem
-let baseVecX_px = null; // {x,y} px per mm along X-axis
-let baseVecY_px = null; // {x,y} px per mm along Y-axis
+let baseVecX_px = null;
+let baseVecY_px = null;
 let baseVecSet = false;
 
-// cumulative registered black points across the whole calibration session
-// Each entry: { x_mm, y_mm, timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz} }
 let cumulativeBlackPoints = [];
-
-// COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
 let blackDetectCounter = 0;
 
-// cumulative rays/directions counts
 let cumulativeRaysCount = 0;
 let cumulativeDirCount = 0;
 
-// triangulation structures:
 const raysByKey = new Map();
-const triangulatedPointsByKey = new Map(); // key -> { x,y,z, num_rays, timestamp }
+const triangulatedPointsByKey = new Map();
 let cumulativeTriangulatedCount = 0;
-// triangulated point cloud array (exportable). Each: { x_mm, y_mm, z_mm, num_rays, timestamp, screen_x, screen_y(optional) }
 let triangulatedCloud = [];
 
+/* ---------- Inicialização da câmera ---------- */
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
@@ -103,9 +94,7 @@ scanBtn.addEventListener("click", async () => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
 
-            // configure mini canvas pixel size (already has width/height attr in HTML)
             if (miniCanvas) {
-                // nothing required here, but ensure it is cleared
                 miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
             }
 
@@ -116,11 +105,7 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
-/*
- Calibrar button behavior:
- - If not atualmente calibrating: valida origem & escala, solicita +Z, trava escala, registra origem e inicia coleta (isCalibrating = true).
- - Se estiver calibrando: finaliza, gera JSON com frames + black_points + triangulated_points e faz download.
-*/
+/* ---------- comportamento do botão Calibrar (mantido) ---------- */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
         if (!lastRcentroid) {
@@ -141,23 +126,19 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
-        // lock calibration parameters
         baseZmm = z;
-        lockedScale = currentScale; // px per mm locked now
+        lockedScale = currentScale;
         basePixelDistance = ARROW_LENGTH_MM * lockedScale;
         baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
         isCalibrated = true;
 
-        // reset base vectors and cumulative black points for a fresh calibration session
         baseVecX_px = null;
         baseVecY_px = null;
         baseVecSet = false;
         cumulativeBlackPoints = [];
 
-        // reset black detection counter so sampling starts fresh
         blackDetectCounter = 0;
 
-        // reset rays/triangulation structures
         raysByKey.clear();
         triangulatedPointsByKey.clear();
         triangulatedCloud = [];
@@ -165,15 +146,12 @@ calibrateBtn.addEventListener("click", () => {
         cumulativeRaysCount = 0;
         cumulativeDirCount = 0;
 
-        // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
 
-        // show download button during calibration
         downloadCloudBtn.hidden = false;
         downloadCloudBtn.style.display = 'inline-block';
 
-        // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
         xEl.textContent = "0.00";
@@ -187,7 +165,6 @@ calibrateBtn.addEventListener("click", () => {
         return;
     }
 
-    // finalize calibration if currently calibrating
     if (isCalibrating) {
         isCalibrating = false;
 
@@ -196,7 +173,6 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
-        // build triangulated_points array from triangulatedCloud
         const triangulated_points = triangulatedCloud.map(p => ({
             x_mm: Number(p.x_mm.toFixed(6)),
             y_mm: Number(p.y_mm.toFixed(6)),
@@ -226,7 +202,6 @@ calibrateBtn.addEventListener("click", () => {
         a.remove();
         URL.revokeObjectURL(url);
 
-        // hide download button
         downloadCloudBtn.hidden = true;
         downloadCloudBtn.style.display = 'none';
 
@@ -235,7 +210,7 @@ calibrateBtn.addEventListener("click", () => {
     }
 });
 
-// download cloud button behaviour: download current triangulatedCloud as JSON
+/* ---------- download live ---------- */
 downloadCloudBtn.addEventListener('click', () => {
     const now = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `nuvem_triangulada_${now}.json`;
@@ -250,6 +225,7 @@ downloadCloudBtn.addEventListener('click', () => {
     URL.revokeObjectURL(url);
 });
 
+/* ---------- utilitários de cor e detecção (mantidos) ---------- */
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
     const max = Math.max(rN, gN, bN);
@@ -280,6 +256,7 @@ function hueDistance(a, b) {
     return d > 180 ? 360 - d : d;
 }
 
+/* ---------- desenho de setas/planos (mantido) ---------- */
 function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     const mag = Math.hypot(dx, dy);
     if (!mag) return;
@@ -291,7 +268,7 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     const y2 = cy + uy * lengthPx;
 
     const headLen = 12;
-    const angle = Math.atan2(y2 - cx, x2 - cx);
+    const angle = Math.atan2(y2 - cy, x2 - cx);
 
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -307,7 +284,8 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     ctx.lineTo(
         x2 - headLen * Math.cos(angle - Math.PI / 6),
         y2 - headLen * Math.sin(angle - Math.PI / 6)
-    );    ctx.lineTo(
+    );
+    ctx.lineTo(
         x2 - headLen * Math.cos(angle + Math.PI / 6),
         y2 - headLen * Math.sin(angle + Math.PI / 6)
     );
@@ -315,7 +293,6 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     ctx.fill();
 }
 
-/* Helper to compute arrow tip without drawing */
 function computeArrowTip(cx, cy, dx, dy, lengthPx) {
     const mag = Math.hypot(dx, dy);
     if (!mag) return null;
@@ -324,7 +301,6 @@ function computeArrowTip(cx, cy, dx, dy, lengthPx) {
     return { x: cx + ux * lengthPx, y: cy + uy * lengthPx, ux, uy };
 }
 
-/* draw plane polygon */
 function drawPlanePolygon(origin, tipX, tipY) {
     if (!origin || !tipX || !tipY) return;
     const corner = { x: tipX.x + (tipY.x - origin.x), y: tipX.y + (tipY.y - origin.y) };
@@ -336,93 +312,23 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.lineTo(corner.x, corner.y);
     ctx.lineTo(tipY.x, tipY.y);
     ctx.closePath();
-    ctx.fillStyle = "rgba(173,216,230,0.4)"; // lightblue
+    ctx.fillStyle = "rgba(173,216,230,0.4)";
     ctx.fill();
     ctx.restore();
 }
 
+/* ---------- normalização ---------- */
 function normalizeVec(v) {
     const mag = Math.hypot(v.x, v.y, v.z);
     if (mag === 0) return { x: 0, y: 0, z: 0 };
     return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
 }
 
-/* --- NOVA FUNÇÃO: rotaciona vetor de direção da câmera para o referencial do mundo usando pitch/yaw/roll ---
-   Observações:
-   - Os valores usados são os que aparecem na UI: pitch = pitchEl.textContent (e.beta), yaw = yawEl.textContent (e.alpha), roll = rollEl.textContent (e.gamma).
-   - Interpretação aplicada aqui:
-       pitch => rotação em torno do eixo X (graus)
-       roll  => rotação em torno do eixo Y (graus)
-       yaw   => rotação em torno do eixo Z (graus)
-   - A matriz de rotação usada (para transformar vetor_camera -> vetor_mundo) é:
-       R = Rz(yaw) * Ry(roll) * Rx(pitch)
-     onde Rx, Ry, Rz são matrizes de rotação elementares.
-   - A função retorna um vetor normalizado.
-*/
-function rotateDirByPose(dir, pitchDeg, yawDeg, rollDeg) {
-    // fallback se dir inválido
-    if (!dir) return dir;
-    const toRad = Math.PI / 180;
-    const px = (pitchDeg || 0) * toRad;
-    const yy = (yawDeg || 0) * toRad;
-    const rz = (rollDeg || 0) * toRad;
-
-    // Rx (pitch around X)
-    const cx = Math.cos(px), sx = Math.sin(px);
-    const Rx = [
-        [1, 0, 0],
-        [0, cx, -sx],
-        [0, sx, cx]
-    ];
-
-    // Ry (roll around Y)
-    const cy = Math.cos(rz), sy = Math.sin(rz);
-    const Ry = [
-        [cy, 0, sy],
-        [0, 1, 0],
-        [-sy, 0, cy]
-    ];
-
-    // Rz (yaw around Z)
-    const cz = Math.cos(yy), sz = Math.sin(yy);
-    const Rz = [
-        [cz, -sz, 0],
-        [sz, cz, 0],
-        [0, 0, 1]
-    ];
-
-    // R = Rz * Ry * Rx  (matrix multiply)
-    // temp = Ry * Rx
-    function matMul(A, B) {
-        const res = [];
-        for (let i = 0; i < 3; i++) {
-            res[i] = [];
-            for (let j = 0; j < 3; j++) {
-                res[i][j] = A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j];
-            }
-        }
-        return res;
-    }
-    const temp = matMul(Ry, Rx);
-    const R = matMul(Rz, temp);
-
-    // multiply R * dir
-    const vx = R[0][0]*dir.x + R[0][1]*dir.y + R[0][2]*dir.z;
-    const vy = R[1][0]*dir.x + R[1][1]*dir.y + R[1][2]*dir.z;
-    const vz = R[2][0]*dir.x + R[2][1]*dir.y + R[2][2]*dir.z;
-
-    return normalizeVec({ x: vx, y: vy, z: vz });
-}
-
-/* pinhole direction approximation:
-   - principal point assumed at image center (cx,cy)
-   - focal length (px) approximated as 0.8 * max(image width, height)
-   - camera coordinate convention: z forward, x right, y down
-*/
+/* ---------- pinhole approximation (mantido) ---------- */
 function computePinholeDirectionForPixel(pixelX, pixelY) {
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const f_px = Math.max(canvas.width, canvas.height) * 0.8; // approximation
+    const f_px = Math.max(canvas.width, canvas.height) * 0.8; // aproximação
     const x_cam = (pixelX - cx) / f_px;
     const y_cam = (pixelY - cy) / f_px;
     const z_cam = 1;
@@ -430,7 +336,7 @@ function computePinholeDirectionForPixel(pixelX, pixelY) {
     return dir;
 }
 
-/* triangulate from multiple rays using linear least squares (same helper as before) */
+/* ---------- triangulação (mantido) ---------- */
 function triangulateRaysLeastSquares(rays) {
     let A = [[0,0,0],[0,0,0],[0,0,0]];
     let b = [0,0,0];
@@ -500,20 +406,20 @@ function invert3(m) {
     return inv;
 }
 
+/* ---------- bins de chave ---------- */
 function keyFromXY(x_mm, y_mm) {
-    const binSize = 0.5; // mm bins (adjustable)
+    const binSize = 0.5;
     const kx = Math.round(x_mm / binSize);
     const ky = Math.round(y_mm / binSize);
     return `${kx}_${ky}`;
 }
 
-/* draw mini cloud (density) into mini canvas */
+/* ---------- mini-cloud (mantido) ---------- */
 function drawMiniCloud() {
     if (!miniCtx) return;
     miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
 
     if (triangulatedCloud.length === 0) {
-        // optional: draw faint grid if empty
         miniCtx.fillStyle = "rgba(255,255,255,0.03)";
         for (let i = 0; i < 5; i++) {
             miniCtx.fillRect(i * (miniCanvas.width / 5), miniCanvas.height / 2, 1, 1);
@@ -521,7 +427,6 @@ function drawMiniCloud() {
         return;
     }
 
-    // compute bounding box in mm (x_mm, y_mm)
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (let i = 0; i < triangulatedCloud.length; i++) {
         const p = triangulatedCloud[i];
@@ -533,7 +438,6 @@ function drawMiniCloud() {
     }
     if (minX === Infinity) return;
 
-    // add small padding
     const padX = (maxX - minX) * 0.08 || 1;
     const padY = (maxY - minY) * 0.08 || 1;
     minX -= padX; maxX += padX; minY -= padY; maxY += padY;
@@ -543,32 +447,111 @@ function drawMiniCloud() {
     const w = miniCanvas.width;
     const h = miniCanvas.height;
 
-    // draw each point
     for (let i = 0; i < triangulatedCloud.length; i++) {
         const p = triangulatedCloud[i];
         if (!isFinite(p.x_mm) || !isFinite(p.y_mm)) continue;
         const nx = (p.x_mm - minX) / rangeX;
         const ny = (p.y_mm - minY) / rangeY;
-        // map to canvas (invert Y so smaller y_mm at top visually)
         const px = Math.round(nx * (w - 4) + 2);
         const py = Math.round((1 - ny) * (h - 4) + 2);
 
-        miniCtx.fillStyle = "rgba(255,182,193,0.95)"; // light pink
+        miniCtx.fillStyle = "rgba(255,182,193,0.95)";
         miniCtx.fillRect(px, py, 2, 2);
     }
 }
 
-/* used to draw a pink marker on the main canvas for a triangulated point */
+/* ---------- desenho dos pontos triangulados no canvas principal (mantido) ---------- */
 function drawTriangulatedOnMain(screenX, screenY) {
     if (!screenX || !screenY) return;
     ctx.save();
-    ctx.fillStyle = "rgba(255,182,193,0.95)"; // light pink
+    ctx.fillStyle = "rgba(255,182,193,0.95)";
     ctx.beginPath();
     ctx.arc(screenX, screenY, 4, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 }
 
+/* ---------- NOVO: rotação do vetor de direção pela pose da câmera ---------- */
+/*
+  Convenções usadas:
+  - Vetor de entrada 'dir' está no referencial da câmera (x: direita, y: down, z: forward).
+  - Os ângulos recebidos (pitch, yaw, roll) vêm dos elementos de UI (deviceorientation),
+    já em graus. São convertidos para radianos aqui.
+  - Ordem de rotação escolhida (multiplicação de matrizes): R = Rz(yaw) * Rx(pitch) * Ry(roll)
+    (ou seja: aplica-se roll em Y, depois pitch em X, depois yaw em Z — ao vetor do sistema da câmera).
+    Essa ordem foi escolhida por coerência com os eixos expostos (alpha= yaw ~Z, beta= pitch ~X, gamma= roll ~Y).
+    Se for necessário um comportamento diferente, é fácil trocar a ordem.
+  - Depois de rotacionado, normalizamos o vetor e retornamos.
+*/
+function deg2rad(deg) {
+    return deg * Math.PI / 180;
+}
+
+function matMulVec3(m, v) {
+    return {
+        x: m[0][0]*v.x + m[0][1]*v.y + m[0][2]*v.z,
+        y: m[1][0]*v.x + m[1][1]*v.y + m[1][2]*v.z,
+        z: m[2][0]*v.x + m[2][1]*v.y + m[2][2]*v.z
+    };
+}
+
+function rotationMatrixFromEuler(pitch_deg, yaw_deg, roll_deg) {
+    const px = deg2rad(pitch_deg || 0);
+    const py = deg2rad(yaw_deg || 0);
+    const pr = deg2rad(roll_deg || 0);
+
+    // Rx (pitch about X)
+    const Rx = [
+        [1, 0, 0],
+        [0, Math.cos(px), -Math.sin(px)],
+        [0, Math.sin(px),  Math.cos(px)]
+    ];
+
+    // Ry (roll about Y)
+    const Ry = [
+        [ Math.cos(pr), 0, Math.sin(pr)],
+        [ 0,            1, 0],
+        [-Math.sin(pr), 0, Math.cos(pr)]
+    ];
+
+    // Rz (yaw about Z)
+    const Rz = [
+        [Math.cos(py), -Math.sin(py), 0],
+        [Math.sin(py),  Math.cos(py), 0],
+        [0, 0, 1]
+    ];
+
+    // Combined R = Rz * Rx * Ry
+    // first compute A = Rx * Ry
+    const A = multiplyMatrix3(Rx, Ry);
+    const R = multiplyMatrix3(Rz, A);
+    return R;
+}
+
+function multiplyMatrix3(A, B) {
+    const C = [[0,0,0],[0,0,0],[0,0,0]];
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            let s = 0;
+            for (let k = 0; k < 3; k++) s += A[i][k] * B[k][j];
+            C[i][j] = s;
+        }
+    }
+    return C;
+}
+
+function rotateVecByCameraPose(dir_cam, pitch_deg, yaw_deg, roll_deg) {
+    // handle nulls gracefully
+    const pitch = Number(pitch_deg) || 0;
+    const yaw = Number(yaw_deg) || 0;
+    const roll = Number(roll_deg) || 0;
+
+    const R = rotationMatrixFromEuler(pitch, yaw, roll);
+    const vWorld = matMulVec3(R, dir_cam);
+    return normalizeVec(vWorld);
+}
+
+/* ---------- loop principal de processamento de frames (mantido, com o ponto de rotação adicionado) ---------- */
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -707,7 +690,7 @@ function processFrame() {
 
     let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
-        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale; // smaller arrow px => larger +Z
+        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale;
         computedZ = baseZmm + dzMm;
         zEl.textContent = computedZ.toFixed(2);
     } else {
@@ -720,8 +703,8 @@ function processFrame() {
         const dxPixels = lastRcentroid.x - baseOriginScreen.x;
         const dyPixels = lastRcentroid.y - baseOriginScreen.y;
 
-        const tx = -(dxPixels) / lockedScale;        // X: negative of origin movement
-        const ty = (dyPixels) / lockedScale;         // Y: positive when origin moves down
+        const tx = -(dxPixels) / lockedScale;
+        const ty = (dyPixels) / lockedScale;
         txMm = tx; tyMm = ty;
 
         xEl.textContent = txMm.toFixed(2);
@@ -748,7 +731,7 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // mapping + registration + triangulation (same logic, now additionally pushing triangulated points into triangulatedCloud)
+    // MAPPING + REGISTRO + TRIANGULAÇÃO (adicionada rotação dos vetores de direção)
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
@@ -772,6 +755,8 @@ function processFrame() {
             })();
 
             const poseZmm = (isCalibrated && currentPixelDistance) ? Number((computedZ !== null ? computedZ : baseZmm).toFixed(4)) : (isCalibrated ? Number(baseZmm.toFixed(4)) : null);
+
+            // read pose angles for rotation of direction vectors
             const pitch = parseFloat(pitchEl.textContent) || 0;
             const yaw = parseFloat(yawEl.textContent) || 0;
             const roll = parseFloat(rollEl.textContent) || 0;
@@ -789,11 +774,11 @@ function processFrame() {
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
                     blackDetectCounter++;
                     if ((blackDetectCounter % 10) === 0) {
-                        // compute ray direction in camera coords
-                        const camDir = computePinholeDirectionForPixel(p.x, p.y);
+                        // direção no referencial da câmera (pinhole)
+                        const dir_cam = computePinholeDirectionForPixel(p.x, p.y);
 
-                        // rotate camera direction into world (peça) frame using camera pose (pitch,yaw,roll)
-                        const worldDir = rotateDirByPose(camDir, pitch, yaw, roll);
+                        // ROTACIONA direção da câmera para o referencial do mundo usando a pose atual
+                        const dir_world = rotateVecByCameraPose(dir_cam, pitch, yaw, roll);
 
                         cumulativeBlackPoints.push({
                             x_mm: Number(x_mm.toFixed(4)),
@@ -807,21 +792,22 @@ function processFrame() {
                                 yaw_deg: Number(yaw.toFixed(3)),
                                 roll_deg: Number(roll.toFixed(3))
                             },
-                            // direction now expressed in referencial do mundo (rotacionada)
+                            // armazenamos a direção já transformada para o referencial do mundo
                             direction_cam: {
-                                dx: Number(worldDir.x.toFixed(6)),
-                                dy: Number(worldDir.y.toFixed(6)),
-                                dz: Number(worldDir.z.toFixed(6))
+                                dx: Number(dir_world.x.toFixed(6)),
+                                dy: Number(dir_world.y.toFixed(6)),
+                                dz: Number(dir_world.z.toFixed(6))
                             }
                         });
 
                         cumulativeRaysCount++;
                         cumulativeDirCount++;
 
-                        // include pixel screen coords in the ray so we can mark triangulated point visually
+                        // origem do raio continua sendo a pose da câmera (em mm)
                         const origin = { x: poseXmm.x_mm, y: poseXmm.y_mm, z: poseZmm };
-                        // ray.dir now contains the direction in world frame (as required)
-                        const ray = { origin, dir: worldDir, timestamp: timestampNow, pixel: { x: p.x, y: p.y } };
+
+                        // o raio usa agora a direção rotacionada (referencial do mundo)
+                        const ray = { origin, dir: dir_world, timestamp: timestampNow, pixel: { x: p.x, y: p.y } };
 
                         const key = keyFromXY(x_mm, y_mm);
 
@@ -840,7 +826,6 @@ function processFrame() {
                                     timestamp: new Date().toISOString()
                                 });
 
-                                // compute representative screen coordinate (average of ray pixel positions if available)
                                 let sumSX = 0, sumSY = 0, cntS = 0;
                                 for (let ri = 0; ri < raysForKey.length; ri++) {
                                     if (raysForKey[ri].pixel) {
@@ -855,7 +840,6 @@ function processFrame() {
                                     repScreenY = sumSY / cntS;
                                 }
 
-                                // add to triangulatedCloud array immediately for live download and visualization
                                 triangulatedCloud.push({
                                     x_mm: X.x,
                                     y_mm: X.y,
@@ -866,7 +850,6 @@ function processFrame() {
                                     screen_y: repScreenY
                                 });
 
-                                // draw a light-pink marker on the main canvas (visual feedback)
                                 if (repScreenX !== null && repScreenY !== null) {
                                     drawTriangulatedOnMain(repScreenX, repScreenY);
                                 }
@@ -880,12 +863,11 @@ function processFrame() {
         }
     }
 
-    // update mini visualization for triangulated cloud (density)
     if (isCalibrating) {
         drawMiniCloud();
     }
 
-    // update displays
+    // atualizações visuais
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
     rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
     dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
