@@ -1,7 +1,8 @@
 /* main.js
-   Atualizado: durante a calibragem, cada ponto triangulado (>=2 raios) fica "fixo no espaço".
-   A nuvem cresce acumulativamente frame a frame (pointCandidates é acumulada e não refina
-   a posição dos pontos já fixados). Nenhuma outra funcionalidade foi alterada.
+   Atualização: durante a calibragem, quando um ponto triangulado atinge >=2 raios,
+   ele é marcado como "fixed" (fixo no espaço) e sua posição não é mais alterada.
+   A nuvem cresce de forma acumulativa frame a frame (pontos persistem entre frames).
+   Nenhuma outra funcionalidade foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -46,9 +47,9 @@ let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
 
 /* point cloud candidates built during calibragem
-   cada entry: { pos: {x,y,z}, raysCount: n, lastUpdated: timestamp, locked: boolean }
-   - quando raysCount >= 2 => locked = true (posição fixa)
-   - pointCandidates acumula ao longo dos frames (nuvem global)
+   cada entry: { pos: {x,y,z}, raysCount: n, lastUpdated: timestamp, fixed: boolean }
+   - quando raysCount >= 2 o ponto é marcado fixed = true e sua posição NÃO será mais alterada.
+   - pointCandidates persiste entre frames (nuvem acumulativa).
 */
 const pointCandidates = [];
 const MAX_POINT_CANDIDATES = 50000; // limite de segurança
@@ -175,25 +176,28 @@ function computePinholeDirection(px, py) {
 function projectPointToScreen(pos, camOrigin, R) {
     if (!canvas || !canvas.width || !canvas.height) return null;
 
+    // compute R_transpose (inverse rotation)
     const Rt = [
         [R[0][0], R[1][0], R[2][0]],
         [R[0][1], R[1][1], R[2][1]],
         [R[0][2], R[1][2], R[2][2]]
     ];
 
+    // vector from camera origin to point in world coords
     const vx = pos.x - camOrigin.x;
     const vy = pos.y - camOrigin.y;
     const vz = pos.z - camOrigin.z;
 
+    // express in camera frame: v_cam = R^T * v_world_rel
     const Xc = Rt[0][0] * vx + Rt[0][1] * vy + Rt[0][2] * vz;
     const Yc = Rt[1][0] * vx + Rt[1][1] * vy + Rt[1][2] * vz;
     const Zc = Rt[2][0] * vx + Rt[2][1] * vy + Rt[2][2] * vz;
 
-    if (!isFinite(Zc) || Zc <= 0) return null;
+    if (!isFinite(Zc) || Zc <= 0) return null; // behind camera or invalid
 
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const f = Math.max(canvas.width, canvas.height) * 0.9; // same f
+    const f = Math.max(canvas.width, canvas.height) * 0.9; // same f used in pinhole
 
     const px = (Xc / Zc) * f + cx;
     const py = (Yc / Zc) * f + cy;
@@ -213,6 +217,7 @@ function eulerToRotationMatrix(alphaDeg, betaDeg, gammaDeg) {
     const cb = Math.cos(b), sb = Math.sin(b);
     const cg = Math.cos(g), sg = Math.sin(g);
 
+    // First A = Rz * Rx
     const A00 = ca * 1 + (-sa) * 0 + 0 * 0;
     const A01 = ca * 0 + (-sa) * cb + 0 * sb;
     const A02 = ca * 0 + (-sa) * (-sb) + 0 * cb;
@@ -225,6 +230,7 @@ function eulerToRotationMatrix(alphaDeg, betaDeg, gammaDeg) {
     const A21 = 0 * 0 + 0 * cb + 1 * sb;
     const A22 = 0 * 0 + 0 * (-sb) + 1 * cb;
 
+    // R = A * Ry
     const R00 = A00 * cg + A01 * 0 + A02 * (-sg);
     const R01 = A00 * 0 + A01 * 1 + A02 * 0;
     const R02 = A00 * sg + A01 * 0 + A02 * cg;
@@ -283,11 +289,10 @@ function closestPointOnRayToPoint(point, rayOrigin, rayDir) {
     };
 }
 
-/* addRayToCandidates:
-   - procura ponto candidato existente próximo à reta do novo raio
-   - se encontrado e o ponto NÃO estiver locked (não fixo), refina posição por média ponderada
-   - se encontrado e o ponto estiver locked (fixo), NÃO altera a posição (mantém fixa) e apenas incrementa raysCount
-   - se não encontrado, cria novo candidato (nuvem cresce)
+/* addRayToCandidates agora respeita "fixed":
+   - se associar a candidato não-fixed: atualiza posição incrementalmente; quando raysCount chega a 2 marca fixed=true (congelando posição).
+   - se associar a candidato fixed: apenas incrementa raysCount (não altera pos).
+   - se não associar, cria novo candidato (fixed = false).
 */
 function addRayToCandidates(rayOrigin, rayDir) {
     let bestIdx = -1;
@@ -304,32 +309,30 @@ function addRayToCandidates(rayOrigin, rayDir) {
 
     if (bestIdx !== -1 && bestDist <= ASSOCIATION_DIST_MM) {
         const existing = pointCandidates[bestIdx];
-
-        if (existing.locked) {
-            // ponto já triangulado e fixado: não alteramos posição, apenas incrementamos contador
+        // se já fixed, apenas conte o raio — não altere a posição
+        if (existing.fixed) {
             existing.raysCount += 1;
             existing.lastUpdated = Date.now();
-            return;
-        } else {
-            // refina posição com a projeção mais próxima do ponto atual sobre o novo raio
-            const closest = closestPointOnRayToPoint(existing.pos, rayOrigin, rayDir);
-
-            const n = existing.raysCount;
-            existing.pos.x = (existing.pos.x * n + closest.x) / (n + 1);
-            existing.pos.y = (existing.pos.y * n + closest.y) / (n + 1);
-            existing.pos.z = (existing.pos.z * n + closest.z) / (n + 1);
-            existing.raysCount += 1;
-            existing.lastUpdated = Date.now();
-
-            // se atingiu triangulação, fixar posição (não será mais refinada)
-            if (existing.raysCount >= 2) {
-                existing.locked = true;
-            }
             return;
         }
+
+        // não-fixed: calcule ponto mais próximo no raio e refine posição incrementalmente
+        const closest = closestPointOnRayToPoint(existing.pos, rayOrigin, rayDir);
+        const n = existing.raysCount;
+        existing.pos.x = (existing.pos.x * n + closest.x) / (n + 1);
+        existing.pos.y = (existing.pos.y * n + closest.y) / (n + 1);
+        existing.pos.z = (existing.pos.z * n + closest.z) / (n + 1);
+        existing.raysCount += 1;
+        existing.lastUpdated = Date.now();
+
+        // se atingiu 2 ou mais raios, fixe a posição (não será alterada depois)
+        if (existing.raysCount >= 2) {
+            existing.fixed = true;
+        }
+        return;
     }
 
-    // se não achou candidato próximo, cria novo (nuvem cresce)
+    // se não achou candidato próximo, cria novo (fixed = false)
     if (pointCandidates.length < MAX_POINT_CANDIDATES) {
         const initDist = (baseZmm && isFinite(baseZmm)) ? Math.abs(baseZmm) : 100;
         const pos = {
@@ -337,8 +340,7 @@ function addRayToCandidates(rayOrigin, rayDir) {
             y: rayOrigin.y + rayDir.y * initDist,
             z: rayOrigin.z + rayDir.z * initDist
         };
-        // novo candidato inicialmente não locked (precisa >=2 raios para fixar)
-        pointCandidates.push({ pos, raysCount: 1, lastUpdated: Date.now(), locked: false });
+        pointCandidates.push({ pos, raysCount: 1, lastUpdated: Date.now(), fixed: false });
     }
 }
 
@@ -406,8 +408,8 @@ downloadBtn.addEventListener('click', downloadPointCloud);
 
 /*
  Calibrar button behavior:
- - If not atualmente calibrando: valida origem & escala, pede +Z, trava escala, grava base origin e inicia coleta (isCalibrating = true).
- - If currently calibrating: finaliza coleta, gera JSON com frames, baixa automaticamente, pára coleta (isCalibrating = false).
+ - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
+ - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -440,7 +442,7 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrating = true;
         calibrationFrames = [];
 
-        // reset pointCandidates para nova triangulação (start fresh cloud)
+        // reset pointCandidates for uma nova triangulação (nuvem acumulativa começa limpa)
         pointCandidates.length = 0;
 
         // show download button (disponível durante calibragem)
@@ -700,12 +702,12 @@ function processFrame() {
         const R = eulerToRotationMatrix(yaw, pitch, roll);
 
         ctx.save();
-        ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
+        ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink-ish
         const drawLimit = 10000;
         let drawn = 0;
         for (let i = 0; i < pointCandidates.length && drawn < drawLimit; i++) {
             const p = pointCandidates[i];
-            if (p.raysCount < 2) continue; // só desenha pontos triangulados
+            if (p.raysCount < 2) continue; // somente pontos triangulados (fixos)
             const proj = projectPointToScreen(p.pos, camOrigin, R);
             if (!proj) continue;
             ctx.beginPath();
@@ -740,10 +742,10 @@ function processFrame() {
         miniCtx.fillStyle = "#060606";
         miniCtx.fillRect(0, 0, miniCanvas.width, miniCanvas.height);
 
-        miniCtx.fillStyle = "rgba(255,182,193,0.95)"; // light pink
+        miniCtx.fillStyle = "rgba(255,182,193,0.95)";
         const maxToDraw = 20000;
         const step = Math.max(1, Math.ceil(pts.length / maxToDraw));
-        for (let i = 0, drawn = 0; i < pts.length; i += step, drawn++) {
+        for (let i = 0; i < pts.length; i += step) {
             const q = pts[i].pos;
             const nx = (q.x - minX) / (maxX - minX);
             const ny = (q.y - minY) / (maxY - minY);
