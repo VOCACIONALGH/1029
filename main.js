@@ -660,7 +660,7 @@ function processFrame() {
         // atualizar contador: pontos triangulados (>=2 raios)
         let triangulatedCount = 0;
         for (let i = 0; i < pointCandidates.length; i++) {
-            if (pointCandidates[i].raysCount >= 5) triangulatedCount++;
+            if (pointCandidates[i].raysCount >= 20) triangulatedCount++;
         }
         raysEl.textContent = String(triangulatedCount);
     } else {
@@ -705,7 +705,7 @@ function processFrame() {
     // --- Atualizar mini canvas (visualização rápida da nuvem) ---
     // Mapeamos as coordenadas X/Y (mm) dos pontos triangulados para o mini canvas.
     function updateMiniCloud() {
-        const pts = pointCandidates.filter(p => p.raysCount >= 5);
+        const pts = pointCandidates.filter(p => p.raysCount >= 20);
         // limpar
         miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
         if (pts.length === 0) return;
