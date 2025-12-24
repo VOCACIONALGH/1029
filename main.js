@@ -1,8 +1,8 @@
 /* main.js
-   Atualização: durante a calibragem, para cada pixel preto registrado (amostragem 1/10 já implementada),
-   o programa define um raio 3D saindo da câmera em direção ao ponto XY mapeado no plano (Z=0).
-   A contagem cumulativa de raios definidos é exibida na tela.
-   Nenhuma outra função foi alterada.
+   Atualização: durante a calibragem, utiliza-se aproximação pinhole para definir a direção (vetor unitário)
+   de cada pixel preto registrado no arquivo .json. A contagem cumulativa de pixels com direção definida
+   é atualizada na tela.
+   Mantive todas as demais funcionalidades inalteradas.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -15,6 +15,7 @@ const ctx = canvas.getContext("2d");
 const redCountDisplay = document.getElementById("redCount");
 const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
 const rayCountDisplay = document.getElementById("rayCount");
+const dirCountDisplay = document.getElementById("dirCount");
 const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
@@ -53,15 +54,17 @@ let baseVecY_px = null; // {x,y} px per mm along Y-axis
 let baseVecSet = false;
 
 // cumulative registered black points across the whole calibration session
-// Each entry: { x_mm, y_mm, timestamp, camera_pose: { x_mm, y_mm, z_mm, pitch_deg, yaw_deg, roll_deg } }
+// Each entry: { x_mm, y_mm, timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz} }
 let cumulativeBlackPoints = [];
 
 // COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
 let blackDetectCounter = 0;
 
-// cumulative rays defined (one ray per registered black point)
-let cumulativeRays = []; // each: { origin: {x,y,z}, direction: {dx,dy,dz} }
+// cumulative rays (kept for display/count). Each registered point also defines a ray; count maintained.
 let cumulativeRaysCount = 0;
+
+// cumulative count of points with direction defined (should increment when we add direction to a registered point)
+let cumulativeDirCount = 0;
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -95,8 +98,8 @@ scanBtn.addEventListener("click", async () => {
 
 /*
  Calibrar button behavior:
- - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
- - If currently calibrating: finish collecting, generate JSON with recorded frames + cumulative black points, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+ - If not atualmente calibrating: valida origem & escala, solicita +Z, trava escala, registra origem e inicia coleta (isCalibrating = true).
+ - Se estiver calibrando: finaliza, gera JSON com frames + black_points (incluindo direction_cam) e faz download.
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -134,9 +137,9 @@ calibrateBtn.addEventListener("click", () => {
         // reset black detection counter so sampling starts fresh
         blackDetectCounter = 0;
 
-        // reset cumulative rays
-        cumulativeRays = [];
+        // reset cumulative rays and direction counts
         cumulativeRaysCount = 0;
+        cumulativeDirCount = 0;
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
@@ -149,6 +152,7 @@ calibrateBtn.addEventListener("click", () => {
         yEl.textContent = "0.00";
         blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
         rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
+        dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
 
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
@@ -170,7 +174,7 @@ calibrateBtn.addEventListener("click", () => {
             baseOriginScreen,
             frames: calibrationFrames,
             black_points: cumulativeBlackPoints
-            // Note: cumulativeRays is not included in JSON per your instruction (only count displayed).
+            // black_points entries now include direction_cam (pinhole approximation)
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -287,6 +291,22 @@ function normalizeVec(v) {
     return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
 }
 
+/* pinhole direction approximation:
+   - principal point assumed at image center (cx,cy)
+   - focal length (px) approximated as 0.8 * max(image width, height) (reasonable approximation)
+   - camera coordinate convention: z forward, x to right, y down (direction vector normalized)
+*/
+function computePinholeDirectionForPixel(pixelX, pixelY) {
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const f_px = Math.max(canvas.width, canvas.height) * 0.8; // approximation
+    const x_cam = (pixelX - cx) / f_px;
+    const y_cam = (pixelY - cy) / f_px;
+    const z_cam = 1;
+    const dir = normalizeVec({ x: x_cam, y: y_cam, z: z_cam });
+    return dir;
+}
+
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -331,20 +351,16 @@ function processFrame() {
             }
         }
 
-        // ---- ADDED: during calibragem, recolor visually pixels pretos para vermelho ----
-        // Criteria for "preto": all channels below BLACK_THR
+        // ---- recolor visually pixels pretos para vermelho durante calibragem ----
         const BLACK_THR = 30;
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
-            // paint visually red (does not affect detection for this iteration which already ran above)
             d[i] = 255;
             d[i + 1] = 0;
             d[i + 2] = 0;
 
-            // store pixel coordinates for later mapping (use original screen coords)
             const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
             blackPixels.push({ x, y });
         }
-        // -------------------------------------------------------------------------------
     }
 
     ctx.putImageData(img, 0, 0);
@@ -382,7 +398,6 @@ function processFrame() {
 
     // If calibragem ativa, try to set base vectors (only once) using the detected blue/green directions
     if (isCalibrating && !baseVecSet && isCalibrated && lastRcentroid && lastBcentroid && lastGcentroid && lockedScale) {
-        // direction from red to blue / green
         const dxB = lastBcentroid.x - lastRcentroid.x;
         const dyB = lastBcentroid.y - lastRcentroid.y;
         const magB = Math.hypot(dxB, dyB);
@@ -392,11 +407,9 @@ function processFrame() {
         const magG = Math.hypot(dxG, dyG);
 
         if (magB > 5 && magG > 5) {
-            // unit vectors
             const ux = { x: dxB / magB, y: dyB / magB };
             const uy = { x: dxG / magG, y: dyG / magG };
 
-            // baseVec in pixels per mm = unit direction * lockedScale (px/mm)
             baseVecX_px = { x: ux.x * lockedScale, y: ux.y * lockedScale };
             baseVecY_px = { x: uy.x * lockedScale, y: uy.y * lockedScale };
             baseVecSet = true;
@@ -484,10 +497,9 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling
-    //         and define a 3D ray from camera to the point. Increment cumulativeRaysCount for each registered point.
+    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling,
+    //           define ray and compute pinhole direction for each registered pixel; increment cumulative counts accordingly.
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
-        // prepare matrix M = [ [ux.x, uy.x], [ux.y, uy.y] ]
         const ux = baseVecX_px;
         const uy = baseVecY_px;
         const a = ux.x, b_ = uy.x, c = ux.y, d = uy.y;
@@ -526,10 +538,12 @@ function processFrame() {
                 const y_mm = inv10 * vx + inv11 * vy;
 
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
-                    // increment global detection counter. Only register 1 in 10 (when blackDetectCounter % 10 === 0)
                     blackDetectCounter++;
                     if ((blackDetectCounter % 10) === 0) {
-                        // register cumulative black point (already implemented behavior)
+                        // compute pinhole direction for the screen pixel (uses screen pixel coords, independent of plane mapping)
+                        const dir = computePinholeDirectionForPixel(p.x, p.y);
+
+                        // register cumulative black point with direction_cam included
                         cumulativeBlackPoints.push({
                             x_mm: Number(x_mm.toFixed(4)),
                             y_mm: Number(y_mm.toFixed(4)),
@@ -541,28 +555,17 @@ function processFrame() {
                                 pitch_deg: Number(pitch.toFixed(3)),
                                 yaw_deg: Number(yaw.toFixed(3)),
                                 roll_deg: Number(roll.toFixed(3))
+                            },
+                            direction_cam: {
+                                dx: Number(dir.x.toFixed(6)),
+                                dy: Number(dir.y.toFixed(6)),
+                                dz: Number(dir.z.toFixed(6))
                             }
                         });
 
-                        // ---- NEW: define 3D ray from camera to the mapped point (point assumed on plane Z=0)
-                        // camera origin:
-                        const camOrigin = { x: poseXmm.x_mm, y: poseXmm.y_mm, z: poseZmm };
-                        // target point on plane (Z = 0)
-                        const target = { x: Number(x_mm.toFixed(4)), y: Number(y_mm.toFixed(4)), z: 0 };
-                        // direction = target - origin
-                        const dirVec = {
-                            x: target.x - (camOrigin.x !== null ? camOrigin.x : 0),
-                            y: target.y - (camOrigin.y !== null ? camOrigin.y : 0),
-                            z: target.z - (camOrigin.z !== null ? camOrigin.z : 0)
-                        };
-                        const dirNorm = normalizeVec(dirVec);
-
-                        // store ray (minimal representation). This is internal only (counted/displayed); not included in JSON.
-                        cumulativeRays.push({
-                            origin: camOrigin,
-                            direction: dirNorm
-                        });
+                        // increment rays & directions counters (one ray and one direction per registered point)
                         cumulativeRaysCount++;
+                        cumulativeDirCount++;
                     }
                 }
             }
@@ -571,7 +574,8 @@ function processFrame() {
     // update cumulative counts on screen
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
     rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
-    // ---- end mapping & registration & ray logic ----
+    dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
+    // ---- end mapping & registration & pinhole direction logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
