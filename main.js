@@ -1,18 +1,12 @@
 /* main.js
    Atualização: durante a calibragem, utiliza-se aproximação pinhole para definir a direção (vetor unitário)
-   de cada pixel preto registrado no arquivo .json. A contagem cumulativa de pixels com direção definida
-   é atualizada na tela.
+   de cada pixel preto registrado no arquivo .json. A direção agora é rotacionada para o referencial dos pixels
+   pretos usando yaw, pitch e roll (graus → radianos, matriz 3×3). O vetor permanece normalizado.
    Mantive todas as demais funcionalidades inalteradas.
-
-   Adições específicas:
-   - rotaciona o vetor de direção do modelo pinhole pelo yaw/pitch/roll (graus -> radianos, aplicação de matriz 3x3) e mantém o vetor normalizado.
-   - registra a posição 3D (x_mm, y_mm, z_mm) de cada ponto triangulado em uma nuvem de pontos (pointCloud).
-   - botão "Download Nuvem" aparece durante a calibração e permite baixar a nuvem de pontos atual em .json.
 */
 
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
-const downloadBtn = document.getElementById("downloadBtn");
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
@@ -62,9 +56,6 @@ let baseVecSet = false;
 // cumulative registered black points across the whole calibration session
 // Each entry: { x_mm, y_mm, timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz} }
 let cumulativeBlackPoints = [];
-
-// point cloud (apenas posições 3D) — solicitado: armazenar posição 3D de cada ponto triangulado
-let pointCloud = [];
 
 // COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
 let blackDetectCounter = 0;
@@ -120,6 +111,7 @@ calibrateBtn.addEventListener("click", () => {
             alert("Escala atual inválida. Aguarde detecção e tente novamente.");
             return;
         }
+
         const input = prompt("Informe o valor atual de +Z (em mm):");
         if (input === null) return;
 
@@ -142,9 +134,6 @@ calibrateBtn.addEventListener("click", () => {
         baseVecSet = false;
         cumulativeBlackPoints = [];
 
-        // reset point cloud
-        pointCloud = [];
-
         // reset black detection counter so sampling starts fresh
         blackDetectCounter = 0;
 
@@ -165,9 +154,6 @@ calibrateBtn.addEventListener("click", () => {
         rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
         dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
 
-        // mostrar botão de download durante a calibração
-        if (downloadBtn) downloadBtn.hidden = false;
-
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
     }
@@ -175,9 +161,6 @@ calibrateBtn.addEventListener("click", () => {
     // finalize calibration if currently calibrating
     if (isCalibrating) {
         isCalibrating = false;
-
-        // esconder botão de download ao finalizar
-        if (downloadBtn) downloadBtn.hidden = true;
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
@@ -191,7 +174,7 @@ calibrateBtn.addEventListener("click", () => {
             baseOriginScreen,
             frames: calibrationFrames,
             black_points: cumulativeBlackPoints
-            // black_points entries now include direction_cam (pinhole approximation + rotation)
+            // black_points entries now include direction_cam (pinhole approximation rotated pelo yaw/pitch/roll)
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -283,7 +266,9 @@ function computeArrowTip(cx, cy, dx, dy, lengthPx) {
     const ux = dx / mag;
     const uy = dy / mag;
     return { x: cx + ux * lengthPx, y: cy + uy * lengthPx, ux, uy };
-}/* draw plane polygon */
+}
+
+/* draw plane polygon */
 function drawPlanePolygon(origin, tipX, tipY) {
     if (!origin || !tipX || !tipY) return;
     const corner = { x: tipX.x + (tipY.x - origin.x), y: tipX.y + (tipY.y - origin.y) };
@@ -306,6 +291,47 @@ function normalizeVec(v) {
     return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
 }
 
+/* deg -> rad */
+function deg2rad(d) {
+    return d * Math.PI / 180;
+}
+
+/* rotate vector by yaw (Z), pitch (X), roll (Y)
+   - yaw: rotation around Z (degrees) -> yawEl (alpha)
+   - pitch: rotation around X (degrees) -> pitchEl (beta)
+   - roll: rotation around Y (degrees) -> rollEl (gamma)
+   Rotation applied as R = Rz(yaw) * Rx(pitch) * Ry(roll)
+   Returns a vector in the rotated (world/pixels) reference frame.
+*/
+function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
+    const y = deg2rad(yawDeg);
+    const p = deg2rad(pitchDeg);
+    const r = deg2rad(rollDeg);
+
+    const cy = Math.cos(y), sy = Math.sin(y);
+    const cp = Math.cos(p), sp = Math.sin(p);
+    const cr = Math.cos(r), sr = Math.sin(r);
+
+    // Combined rotation matrix R = Rz * Rx * Ry
+    const R00 = cy * cr - sy * sp * sr;
+    const R01 = -sy * cp;
+    const R02 = cy * sr + sy * sp * cr;
+
+    const R10 = sy * cr + cy * sp * sr;
+    const R11 = cy * cp;
+    const R12 = sy * sr - cy * sp * cr;
+
+    const R20 = -cp * sr;
+    const R21 = sp;
+    const R22 = cp * cr;
+
+    const x = R00 * v.x + R01 * v.y + R02 * v.z;
+    const yv = R10 * v.x + R11 * v.y + R12 * v.z;
+    const zv = R20 * v.x + R21 * v.y + R22 * v.z;
+
+    return { x, y: yv, z: zv };
+}
+
 /* pinhole direction approximation:
    - principal point assumed at image center (cx,cy)
    - focal length (px) approximated as 0.8 * max(image width, height) (reasonable approximation)
@@ -320,82 +346,6 @@ function computePinholeDirectionForPixel(pixelX, pixelY) {
     const z_cam = 1;
     const dir = normalizeVec({ x: x_cam, y: y_cam, z: z_cam });
     return dir;
-}
-
-/* Rotate a vector by yaw (Z), pitch (X), roll (Y).
-   Conventions:
-     - yaw: rotation around Z axis (degrees)
-     - pitch: rotation around X axis (degrees)
-     - roll: rotation around Y axis (degrees)
-   Rotation matrix R = Rz(yaw) * Rx(pitch) * Ry(roll)
-   Input angles in degrees; conversion to radians inside.
-*/
-function rotateVectorByYawPitchRoll(vec, yawDeg, pitchDeg, rollDeg) {
-    const toRad = Math.PI / 180;
-    const yaw = (yawDeg || 0) * toRad;
-    const pitch = (pitchDeg || 0) * toRad;
-    const roll = (rollDeg || 0) * toRad;
-
-    const cy = Math.cos(yaw), sy = Math.sin(yaw);
-    const cp = Math.cos(pitch), sp = Math.sin(pitch);
-    const cr = Math.cos(roll), sr = Math.sin(roll);
-
-    // Rz(yaw)
-    const Rz = [
-        [cy, -sy, 0],
-        [sy,  cy, 0],
-        [0,   0,  1]
-    ];
-    // Rx(pitch)
-    const Rx = [
-        [1,  0,   0],
-        [0, cp, -sp],
-        [0, sp,  cp]
-    ];
-    // Ry(roll)
-    const Ry = [
-        [ cr, 0, sr],
-        [  0, 1,  0],
-        [-sr, 0, cr]
-    ];
-
-    // multiply R = Rz * Rx * Ry (3x3 multiplications)
-    function mul3(A, B) {
-        const C = [[0,0,0],[0,0,0],[0,0,0]];
-        for (let i=0;i<3;i++){
-            for (let j=0;j<3;j++){
-                let s=0;
-                for (let k=0;k<3;k++) s += A[i][k]*B[k][j];
-                C[i][j]=s;
-            }
-        }
-        return C;
-    }
-    const RzRx = mul3(Rz, Rx);
-    const R = mul3(RzRx, Ry);
-
-    // apply R to vector [x,y,z]
-    const x = R[0][0]*vec.x + R[0][1]*vec.y + R[0][2]*vec.z;
-    const y = R[1][0]*vec.x + R[1][1]*vec.y + R[1][2]*vec.z;
-    const z = R[2][0]*vec.x + R[2][1]*vec.y + R[2][2]*vec.z;
-
-    return normalizeVec({ x, y, z });
-}
-
-// evento do botão Download Nuvem — gera e baixa o arquivo .json com a nuvem atual
-if (downloadBtn) {
-    downloadBtn.addEventListener('click', () => {
-        const filename = `nuvem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-        const blob = new Blob([JSON.stringify(pointCloud, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-    });
 }
 
 function processFrame() {
@@ -492,6 +442,7 @@ function processFrame() {
         const dxB = lastBcentroid.x - lastRcentroid.x;
         const dyB = lastBcentroid.y - lastRcentroid.y;
         const magB = Math.hypot(dxB, dyB);
+
         const dxG = lastGcentroid.x - lastRcentroid.x;
         const dyG = lastGcentroid.y - lastRcentroid.y;
         const magG = Math.hypot(dxG, dyG);
@@ -588,9 +539,8 @@ function processFrame() {
     }
 
     // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling,
-    //           define ray and compute pinhole direction for each registered pixel; rotate the direction by yaw/pitch/roll
-    //           into the referencial fixo dos pixels pretos triangulados; increment cumulative counts accordingly.
-    //           Additionally: register 3D position (x_mm, y_mm, z_mm) into pointCloud (nuvem de pontos).
+    //           define ray and compute pinhole direction for each registered pixel; rotate direction by yaw/pitch/roll
+    //           into the referencial dos pixels pretos; increment cumulative counts accordingly.
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
@@ -632,14 +582,14 @@ function processFrame() {
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
                     blackDetectCounter++;
                     if ((blackDetectCounter % 10) === 0) {
-                        // compute pinhole direction for the screen pixel (uses screen pixel coords, independent of plane mapping)
-                        const dir = computePinholeDirectionForPixel(p.x, p.y);
+                        // compute pinhole direction for the screen pixel (camera reference)
+                        const dirCam = computePinholeDirectionForPixel(p.x, p.y);
 
-                        // rotate the direction from camera referential into the fixed referential of the triangulated black pixels
-                        // using current yaw/pitch/roll (degrees->radians inside function). Result is normalized.
-                        const rotatedDir = rotateVectorByYawPitchRoll(dir, yaw, pitch, roll);
+                        // rotate this camera-frame direction into the pixels/world reference using yaw/pitch/roll
+                        const dirRotated = rotateVectorByYawPitchRoll(dirCam, yaw, pitch, roll);
+                        const dirFinal = normalizeVec(dirRotated);
 
-                        // register cumulative black point with rotated direction_cam included
+                        // register cumulative black point with direction_cam included (directions are now in the pixels/world ref)
                         cumulativeBlackPoints.push({
                             x_mm: Number(x_mm.toFixed(4)),
                             y_mm: Number(y_mm.toFixed(4)),
@@ -653,17 +603,10 @@ function processFrame() {
                                 roll_deg: Number(roll.toFixed(3))
                             },
                             direction_cam: {
-                                dx: Number(rotatedDir.x.toFixed(6)),
-                                dy: Number(rotatedDir.y.toFixed(6)),
-                                dz: Number(rotatedDir.z.toFixed(6))
+                                dx: Number(dirFinal.x.toFixed(6)),
+                                dy: Number(dirFinal.y.toFixed(6)),
+                                dz: Number(dirFinal.z.toFixed(6))
                             }
-                        });
-
-                        // Registrar posição 3D na nuvem de pontos (x_mm, y_mm, z_mm)
-                        pointCloud.push({
-                            x_mm: Number(x_mm.toFixed(4)),
-                            y_mm: Number(y_mm.toFixed(4)),
-                            z_mm: poseZmm !== null ? Number(poseZmm.toFixed(4)) : null
                         });
 
                         // increment rays & directions counters (one ray and one direction per registered point)
@@ -678,7 +621,7 @@ function processFrame() {
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
     rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
     dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
-    // ---- end mapping & registration & pinhole direction + rotation logic ----
+    // ---- end mapping & registration & pinhole direction rotation logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
