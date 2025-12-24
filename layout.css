@@ -24,6 +24,13 @@ button {
     color: #fff;
 }
 
+#downloadBtn {
+    background: linear-gradient(90deg,#0a6 0%, #06a 100%);
+    color: #000;
+    font-weight: 700;
+    margin-left: 8px;
+}
+
 #redCount {
     color: #ff4444;
     font-size: 18px;
