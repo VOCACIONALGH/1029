@@ -1,9 +1,11 @@
 /* main.js
-   Versão atualizada:
-   - Durante a calibragem, pixels pretos mapeáveis têm suas posições (+X, +Y em mm) registradas cumulativamente.
-   - A quantidade cumulativa aparece na tela e é atualizada em tempo real.
-   - Ao finalizar a calibragem, o arquivo .json baixado contém o array `black_positions` com os valores salvos.
-   Nenhuma outra função foi alterada.
+   Atualizações:
+   - Durante a calibragem, pixels pretos (RGB baixos) continuam sendo pintados de vermelho visualmente.
+   - Durante a calibragem, quando os vetores base são conhecidos, cada pixel preto mapeado tem sua posição XY (mm) calculada e **registrada cumulativamente**.
+   - A tela exibe a contagem cumulativa de pixels pretos registrados.
+   - Ao finalizar a calibragem (botão "Calibrar"), o arquivo .json agora inclui um array `black_points` com cada ponto registrado contendo:
+       { x_mm, y_mm, timestamp, camera_pose: { x_mm, y_mm, z_mm, pitch_deg, yaw_deg, roll_deg } }
+   - Nenhuma outra função foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -14,7 +16,7 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 const redCountDisplay = document.getElementById("redCount");
-const blackXYCountDisplay = document.getElementById("blackXYCount");
+const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
 const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
@@ -52,8 +54,9 @@ let baseVecX_px = null; // {x,y} px per mm along X-axis
 let baseVecY_px = null; // {x,y} px per mm along Y-axis
 let baseVecSet = false;
 
-// Cumulative storage of black pixel positions (in mm) during the active calibragem session
-let blackPositions = []; // each: { x_mm, y_mm, timestamp }
+// cumulative registered black points across the whole calibration session
+// Each entry: { x_mm, y_mm, timestamp, camera_pose: { x_mm, y_mm, z_mm, pitch_deg, yaw_deg, roll_deg } }
+let cumulativeBlackPoints = [];
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -88,7 +91,7 @@ scanBtn.addEventListener("click", async () => {
 /*
  Calibrar button behavior:
  - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
- - If currently calibrating: finish collecting, generate JSON with recorded frames AND black pixel positions, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+ - If currently calibrating: finish collecting, generate JSON with recorded frames + cumulative black points, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -117,23 +120,22 @@ calibrateBtn.addEventListener("click", () => {
         baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
         isCalibrated = true;
 
-        // reset any previous base vector (we will compute once bright markers appear)
+        // reset base vectors and cumulative black points for a fresh calibration session
         baseVecX_px = null;
         baseVecY_px = null;
         baseVecSet = false;
+        cumulativeBlackPoints = [];
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
-
-        // reset cumulative black positions for this calibragem session
-        blackPositions = [];
 
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
         xEl.textContent = "0.00";
         yEl.textContent = "0.00";
+        blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
 
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
@@ -154,7 +156,7 @@ calibrateBtn.addEventListener("click", () => {
             lockedScale,
             baseOriginScreen,
             frames: calibrationFrames,
-            black_positions: blackPositions // array acumulativa com { x_mm, y_mm, timestamp }
+            black_points: cumulativeBlackPoints
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -318,7 +320,7 @@ function processFrame() {
             d[i + 1] = 0;
             d[i + 2] = 0;
 
-            // store pixel coordinates for later mapping (use original r,g,b values captured above)
+            // store pixel coordinates for later mapping (use original screen coords)
             const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
             blackPixels.push({ x, y });
         }
@@ -464,6 +466,7 @@ function processFrame() {
 
     // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively ----
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
+        // prepare matrix M = [ [ux.x, uy.x], [ux.y, uy.y] ]
         const ux = baseVecX_px;
         const uy = baseVecY_px;
         const a = ux.x, b_ = uy.x, c = ux.y, d = uy.y;
@@ -474,7 +477,25 @@ function processFrame() {
             const inv10 = -c / det;
             const inv11 = a / det;
 
-            const ts = new Date().toISOString();
+            // current camera pose to attach to each registered point
+            const poseXmm = (function() {
+                if (isCalibrated && lastRcentroid && baseOriginScreen) {
+                    const dxPixels = lastRcentroid.x - baseOriginScreen.x;
+                    const dyPixels = lastRcentroid.y - baseOriginScreen.y;
+                    const tx = -(dxPixels) / lockedScale;
+                    const ty = (dyPixels) / lockedScale;
+                    return { x_mm: Number(tx.toFixed(4)), y_mm: Number(ty.toFixed(4)) };
+                }
+                return { x_mm: null, y_mm: null };
+            })();
+
+            const poseZmm = (isCalibrated && currentPixelDistance) ? Number((computedZ !== null ? computedZ : baseZmm).toFixed(4)) : (isCalibrated ? Number(baseZmm.toFixed(4)) : null);
+            const pitch = parseFloat(pitchEl.textContent) || 0;
+            const yaw = parseFloat(yawEl.textContent) || 0;
+            const roll = parseFloat(rollEl.textContent) || 0;
+
+            const timestampNow = new Date().toISOString();
+
             for (let k = 0; k < blackPixels.length; k++) {
                 const p = blackPixels[k];
                 const vx = p.x - baseOriginScreen.x;
@@ -484,20 +505,27 @@ function processFrame() {
                 const y_mm = inv10 * vx + inv11 * vy;
 
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
-                    // push cumulative record (rounded to 4 decimais)
-                    blackPositions.push({
+                    // register cumulatively
+                    cumulativeBlackPoints.push({
                         x_mm: Number(x_mm.toFixed(4)),
                         y_mm: Number(y_mm.toFixed(4)),
-                        timestamp: ts
+                        timestamp: timestampNow,
+                        camera_pose: {
+                            x_mm: poseXmm.x_mm,
+                            y_mm: poseXmm.y_mm,
+                            z_mm: poseZmm,
+                            pitch_deg: Number(pitch.toFixed(3)),
+                            yaw_deg: Number(yaw.toFixed(3)),
+                            roll_deg: Number(roll.toFixed(3))
+                        }
                     });
                 }
             }
         }
     }
-
-    // update cumulative display
-    blackXYCountDisplay.textContent = `Pixels pretos registrados: ${blackPositions.length}`;
-    // ---- end mapping & registration ----
+    // update cumulative count on screen
+    blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
+    // ---- end mapping & registration logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
