@@ -1,13 +1,14 @@
 /* main.js
-   Atualização: durante a calibragem, além da rotação do vetor pinhole já implementada,
-   o programa agora tenta determinar a posição 3D real de pixels pretos registrados
-   (triangulação a partir de múltiplos raios em diferentes poses). A contagem de pixels
-   com posição 3D determinada é atualizada na tela.
+   Atualização: durante a calibração, além das funções já existentes, o programa:
+   - mantém em memória uma nuvem de pontos 3D (pontos triangulados com real_pos_mm)
+   - exibe o botão "Download Nuvem (.json)" enquanto a calibração estiver ativa
+   - ao clicar em Download, baixa um arquivo .json contendo a nuvem de pontos
    Mantive todas as demais funcionalidades inalteradas.
 */
 
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
+const downloadBtn = document.getElementById("downloadBtn");
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
@@ -71,6 +72,9 @@ let cumulativeDirCount = 0;
 // triangulation bookkeeping
 // real_pos_mm will be written into cumulativeBlackPoints entries when triangulated
 let cumulativeTriangulatedCount = 0;
+
+// point cloud in memory (unique triangulated points) to be downloaded
+let pointCloud = [];
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -147,10 +151,14 @@ calibrateBtn.addEventListener("click", () => {
         cumulativeRaysCount = 0;
         cumulativeDirCount = 0;
         cumulativeTriangulatedCount = 0;
+        pointCloud = [];
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
+
+        // show download button while calibrating
+        downloadBtn.style.display = 'inline-block';
 
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
@@ -169,6 +177,9 @@ calibrateBtn.addEventListener("click", () => {
     // finalize calibration if currently calibrating
     if (isCalibrating) {
         isCalibrating = false;
+
+        // hide download button when calibration ends
+        downloadBtn.style.display = 'none';
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
@@ -200,6 +211,28 @@ calibrateBtn.addEventListener("click", () => {
         return;
     }
 });
+
+downloadBtn.addEventListener('click', () => {
+    // build point cloud payload (unique triangulated points)
+    const payload = {
+        createdAt: new Date().toISOString(),
+        point_count: pointCloud.length,
+        points: pointCloud // array of { x_mm, y_mm, z_mm, timestamp }
+    };
+
+    const filename = `nuvem_pontos_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+});
+
+/* ... (rest of functions remain identical in behavior) ... */
 
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
@@ -398,6 +431,7 @@ function solve3x3(A, b) {
    - groups cumulativeBlackPoints into spatial clusters on the plane (quantized by CLUSTER_TOL_MM)
    - for each cluster with >=2 rays from distinct camera poses, solve for best-fit 3D point
    - writes real_pos_mm into member entries when successful
+   - also rebuilds the in-memory pointCloud (unique points) used by the Download button
 */
 const CLUSTER_TOL_MM = 0.5; // tolerance to group mapped plane points (adjustable)
 
@@ -405,6 +439,7 @@ function updateTriangulation() {
     if (cumulativeBlackPoints.length === 0) {
         cumulativeTriangulatedCount = 0;
         triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
+        pointCloud = [];
         return;
     }
 
@@ -483,6 +518,25 @@ function updateTriangulation() {
             entry.real_pos_mm = { x: Number(P.x.toFixed(4)), y: Number(P.y.toFixed(4)), z: Number(P.z.toFixed(4)) };
         }
     }
+
+    // rebuild in-memory unique point cloud (timestamp kept from first occurrence)
+    const seen = new Set();
+    const pc = [];
+    for (const p of cumulativeBlackPoints) {
+        if (p.real_pos_mm) {
+            const key = `${p.real_pos_mm.x}_${p.real_pos_mm.y}_${p.real_pos_mm.z}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                pc.push({
+                    x_mm: p.real_pos_mm.x,
+                    y_mm: p.real_pos_mm.y,
+                    z_mm: p.real_pos_mm.z,
+                    timestamp: p.timestamp || null
+                });
+            }
+        }
+    }
+    pointCloud = pc;
 
     // update cumulativeTriangulatedCount: number of cumulativeBlackPoints with real_pos_mm set
     let c = 0;
