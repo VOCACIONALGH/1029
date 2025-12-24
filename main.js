@@ -3,6 +3,8 @@
    - triangulated 3D points são mantidos por clusters (implementação incremental leve).
    - a posição 3D de cada ponto triangulado (pixel preto) é registrada num arquivo .json (pontos em mm).
    - o botão "Download (.json)" aparece durante a calibração para baixar a nuvem de pontos.
+   - NOVO: durante a calibração, cada ponto triangulado é pintado de rosa claro no canvas principal.
+   - NOVO: adicionada visualização rápida da nuvem em mini-canvas para ver densidade.
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -13,6 +15,10 @@ const downloadPointsBtn = document.getElementById("downloadPointsBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+
+const miniCanvas = document.getElementById("miniCloud");
+const miniCtx = miniCanvas ? miniCanvas.getContext("2d") : null;
+const miniContainer = document.getElementById("miniCloudContainer");
 
 const redCountDisplay = document.getElementById("redCount");
 const pitchEl = document.getElementById("pitch");
@@ -98,8 +104,7 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     ctx.fillStyle = color;
     ctx.lineWidth = 3;
 
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
+    ctx.beginPath(); ctx.moveTo(cx, cy);
     ctx.lineTo(x2, y2);
     ctx.stroke();
 
@@ -212,6 +217,49 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     return { x: rx / norm, y: ry / norm, z: rz / norm };
 }
 
+/* rotation without normalization (useful to rotate position vectors) */
+function applyYawPitchRollNoNorm(v, yawDeg, pitchDeg, rollDeg) {
+    if (!v) return null;
+
+    const yaw = degToRad(yawDeg || 0);
+    const pitch = degToRad(pitchDeg || 0);
+    const roll = degToRad(rollDeg || 0);
+
+    const cz = Math.cos(yaw), sz = Math.sin(yaw);
+    const cx = Math.cos(pitch), sx = Math.sin(pitch);
+    const cy = Math.cos(roll), sy = Math.sin(roll);
+
+    const r00 = cy;
+    const r01 = 0;
+    const r02 = sy;
+
+    const r10 = sx * sy;
+    const r11 = cx;
+    const r12 = -sx * cy;
+
+    const r20 = -cx * sy;
+    const r21 = sx;
+    const r22 = cx * cy;
+
+    const R00 = cz * r00 + (-sz) * r10 + 0 * r20;
+    const R01 = cz * r01 + (-sz) * r11 + 0 * r21;
+    const R02 = cz * r02 + (-sz) * r12 + 0 * r22;
+
+    const R10 = sz * r00 + cz * r10 + 0 * r20;
+    const R11 = sz * r01 + cz * r11 + 0 * r21;
+    const R12 = sz * r02 + cz * r12 + 0 * r22;
+
+    const R20 = r20;
+    const R21 = r21;
+    const R22 = r22;
+
+    const rx = R00 * v.x + R01 * v.y + R02 * v.z;
+    const ry = R10 * v.x + R11 * v.y + R12 * v.z;
+    const rz = R20 * v.x + R21 * v.y + R22 * v.z;
+
+    return { x: rx, y: ry, z: rz };
+}
+
 /* --- GEOMETRY: closest points between two (infinite) lines --- */
 function closestPointsBetweenLines(p1, u1, p2, u2) {
     const w0 = { x: p1.x - p2.x, y: p1.y - p2.y, z: p1.z - p2.z };
@@ -220,7 +268,6 @@ function closestPointsBetweenLines(p1, u1, p2, u2) {
     const c = 1.0;
     const d = u1.x * w0.x + u1.y * w0.y + u1.z * w0.z;
     const e = u2.x * w0.x + u2.y * w0.y + u2.z * w0.z;
-
     const denom = a * c - b * b;
     let sc, tc;
 
@@ -348,7 +395,6 @@ scanBtn.addEventListener("click", async () => {
         typeof DeviceOrientationEvent.requestPermission === "function") {
         try { await DeviceOrientationEvent.requestPermission(); } catch {}
     }
-
     window.addEventListener("deviceorientation", (e) => {
         document.getElementById("pitch").textContent = (e.beta ?? 0).toFixed(1);
         document.getElementById("yaw").textContent = (e.alpha ?? 0).toFixed(1);
@@ -366,6 +412,15 @@ scanBtn.addEventListener("click", async () => {
         video.addEventListener("loadedmetadata", () => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
+
+            // ensure mini canvas pixel size matches its internal size attributes
+            if (miniCanvas) {
+                // keep internal canvas actual pixel size unchanged; CSS controls display size
+                // but set its drawing buffer to declared width/height
+                miniCanvas.width = miniCanvas.getAttribute('width') || 240;
+                miniCanvas.height = miniCanvas.getAttribute('height') || 160;
+            }
+
             requestAnimationFrame(processFrame);
         }, { once: true });
     } catch (err) {
@@ -413,6 +468,7 @@ calibrateBtn.addEventListener("click", () => {
 
         // show download button for point cloud
         downloadPointsBtn.style.display = 'inline-block';
+        if (miniContainer) miniContainer.style.display = 'flex';
 
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
@@ -432,6 +488,7 @@ calibrateBtn.addEventListener("click", () => {
 
         // hide download button when calibration stops
         downloadPointsBtn.style.display = 'none';
+        if (miniContainer) miniContainer.style.display = 'none';
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
@@ -496,6 +553,115 @@ downloadPointsBtn.addEventListener('click', () => {
     URL.revokeObjectURL(url);
 });
 
+/* função auxiliar: projeta um ponto 3D world -> screen usando pose atual (origem e yaw/pitch/roll) */
+function projectWorldPointToScreen(pointWorld, camOrigin, yawDeg, pitchDeg, rollDeg) {
+    if (!pointWorld || !camOrigin) return null;
+    // vector from camera to point
+    const v = { x: pointWorld.x - camOrigin.x, y: pointWorld.y - camOrigin.y, z: pointWorld.z - camOrigin.z };
+    // rotate by inverse camera rotation (i.e. apply -yaw,-pitch,-roll)
+    const vCam = applyYawPitchRollNoNorm(v, -yawDeg, -pitchDeg, -rollDeg);
+    if (!vCam) return null;
+
+    // pinhole projection
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const f = Math.max(canvas.width, canvas.height) * 0.9;
+
+    if (vCam.z <= 1e-6) return null; // behind camera or too close
+
+    const px = cx + (vCam.x / vCam.z) * f;
+    const py = cy + (vCam.y / vCam.z) * f;
+
+    return { x: px, y: py, zcam: vCam.z };
+}
+
+function drawClustersOnMainCanvas(originCamera, yawDeg, pitchDeg, rollDeg) {
+    if (!isCalibrating || !calibrationClusters || calibrationClusters.length === 0) return;
+
+    // draw each determined cluster in light pink on the main canvas
+    ctx.save();
+    for (const cl of calibrationClusters) {
+        // consider "determined" clusters (same rule as elsewhere)
+        const determined = ((cl.raysCount || 0) >= 2 || (cl.midpointsCounted || 0) >= 1);
+        if (!determined) continue;
+
+        const proj = projectWorldPointToScreen(cl.point, originCamera, yawDeg, pitchDeg, rollDeg);
+        if (proj) {
+            ctx.beginPath();
+            ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
+            ctx.strokeStyle = "rgba(255,182,193,0.7)";
+            ctx.lineWidth = 1;
+            ctx.arc(proj.x, proj.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            // optional subtle outline
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+}
+
+/* desenha mini visualização da nuvem (top-down XY view em mm) */
+function drawMiniCloud() {
+    if (!miniCtx || !isCalibrating) return;
+
+    miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+
+    // build bounding box in world XY from clusters
+    if (!calibrationClusters || calibrationClusters.length === 0) return;
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let anyDetermined = false;
+    for (const cl of calibrationClusters) {
+        if (!cl.point) continue;
+        if ((cl.raysCount || 0) >= 1 || (cl.midpointsCounted || 0) >= 0) {
+            anyDetermined = true;
+            minX = Math.min(minX, cl.point.x);
+            maxX = Math.max(maxX, cl.point.x);
+            minY = Math.min(minY, cl.point.y);
+            maxY = Math.max(maxY, cl.point.y);
+        }
+    }
+    if (!anyDetermined) return;
+
+    // add small padding if bbox degenerate
+    if (minX === maxX) { minX -= 1; maxX += 1; }
+    if (minY === maxY) { minY -= 1; maxY += 1; }
+
+    const pad = 8; // px padding inside mini canvas
+    const w = miniCanvas.width - pad * 2;
+    const h = miniCanvas.height - pad * 2;
+
+    const spanX = maxX - minX;
+    const spanY = maxY - minY;
+
+    // draw background grid optionally (subtle)
+    miniCtx.save();
+    miniCtx.fillStyle = "#030303";
+    miniCtx.fillRect(0, 0, miniCanvas.width, miniCanvas.height);
+    miniCtx.restore();
+
+    // draw each cluster as a small dot; size proportional to raysCount (capped)
+    for (const cl of calibrationClusters) {
+        if (!cl.point) continue;
+        const px = pad + ((cl.point.x - minX) / spanX) * w;
+        const py = pad + ((cl.point.y - minY) / spanY) * h;
+
+        const count = cl.raysCount || 1;
+        const size = Math.min(6, 2 + Math.log2(Math.max(1, count))); // small visual scaling
+
+        miniCtx.beginPath();
+        miniCtx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
+        miniCtx.arc(px, py, size, 0, Math.PI * 2);
+        miniCtx.fill();
+    }
+
+    // draw bbox border
+    miniCtx.strokeStyle = "rgba(255,255,255,0.06)";
+    miniCtx.lineWidth = 1;
+    miniCtx.strokeRect(pad, pad, w, h);
+}
+
+/* processFrame mantém-se quase igual, incluindo novo desenho dos clusters/painel mini */
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -560,8 +726,7 @@ function processFrame() {
         } else {
             scaleEl.textContent = lockedScale.toFixed(3);
         }
-    }
-
+    } 
     // +Z calculation (uses lockedScale if calibrated)
     let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
@@ -689,6 +854,13 @@ function processFrame() {
         drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
     }
 
+    // Prepare camera origin for projecting clusters
+    const originCamera = {
+        x: txMm !== null ? Number(txMm.toFixed(4)) : (isCalibrated ? 0 : null),
+        y: tyMm !== null ? Number(tyMm.toFixed(4)) : (isCalibrated ? 0 : null),
+        z: computedZ !== null ? Number(computedZ.toFixed(4)) : (isCalibrated ? Number(baseZmm.toFixed(4)) : null)
+    };
+
     // If calibragem ativa, save a frame record (summary) and update rays display
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
@@ -712,8 +884,17 @@ function processFrame() {
         // update cumulative determined 3D points count
         const determinedCount = countDetermined3DPoints();
         points3DEl.textContent = String(determinedCount);
+
+        // Draw clusters on main canvas (pink) using current pose
+        if (originCamera.x !== null && originCamera.y !== null && originCamera.z !== null) {
+            drawClustersOnMainCanvas(originCamera, yawDegLive, pitchDegLive, rollDegLive);
+        }
+
+        // Update mini cloud visualization
+        drawMiniCloud();
     } else {
         raysEl.textContent = "0";
+        // hide mini view if any (it toggles on calibrate start/stop)
     }
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
