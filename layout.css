@@ -24,6 +24,18 @@ button {
     color: #fff;
 }
 
+/* estilo do botão de download adicionado; mantém visual semelhante aos demais */
+#downloadBtn {
+    padding: 12px 22px;
+    font-size: 16px;
+    background: #1a4a1a;
+    color: #fff;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    margin-left: 8px;
+}
+
 #redCount {
     color: #ff4444;
     font-size: 18px;
