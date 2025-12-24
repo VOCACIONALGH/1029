@@ -7,25 +7,18 @@
 
     <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="layout.css">
-
-    <!-- model-viewer (para visualização 3D rápida) -->
-    <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 </head>
 <body>
 
-    <div id="controlsRow">
-        <button id="scanBtn">ESCÂNER</button>
-        <button id="calibrateBtn">Calibrar</button>
-        <button id="downloadBtn" style="display:none;">Download Nuvem (.json)</button>
-    </div>
+    <button id="scanBtn">ESCÂNER</button>
+    <button id="calibrateBtn">Calibrar</button>
+    <button id="downloadBtn" style="display:none;">Download Nuvem (.json)</button>
 
-    <div id="countsRow">
-        <div id="redCount">Pixels vermelhos: 0</div>
-        <div id="blackRegisteredCount">Pixels pretos registrados (cumulativo): 0</div>
-        <div id="rayCount">Raios definidos (cumulativo): 0</div>
-        <div id="dirCount">Pixels pretos com direção definida: 0</div>
-        <div id="triangulatedCount">Pixels pretos 3D determinados: 0</div>
-    </div>
+    <div id="redCount">Pixels vermelhos: 0</div>
+    <div id="blackRegisteredCount">Pixels pretos registrados (cumulativo): 0</div>
+    <div id="rayCount">Raios definidos (cumulativo): 0</div>
+    <div id="dirCount">Pixels pretos com direção definida: 0</div>
+    <div id="triangulatedCount">Pixels pretos 3D determinados: 0</div>
 
     <div id="orientation">
         <div>Pitch: <span id="pitch">0</span>°</div>
@@ -62,30 +55,8 @@
         </label>
     </div>
 
-    <div id="viewerRow">
-        <!-- camera and main canvas -->
-        <div id="mainArea">
-            <video id="camera" autoplay playsinline hidden></video>
-            <canvas id="canvas"></canvas>
-        </div>
-
-        <!-- mini visualizadores: mini-canvas e model-viewer -->
-        <div id="miniArea">
-            <div class="miniTitle">Visualização rápida (2D)</div>
-            <canvas id="miniCanvas" width="240" height="180"></canvas>
-
-            <div class="miniTitle">Visualização rápida (3D)</div>
-            <!-- model-viewer usado como viewport 3D leve; poster atualizado a partir do miniCanvas -->
-            <model-viewer id="viewer"
-                          alt="Nuvem 3D (preview)"
-                          camera-controls
-                          auto-rotate
-                          style="width:240px;height:180px;"
-                          src=""
-                          > <!-- src vazio por padrão, usamos poster/preview do miniCanvas -->
-            </model-viewer>
-        </div>
-    </div>
+    <video id="camera" autoplay playsinline hidden></video>
+    <canvas id="canvas"></canvas>
 
     <script src="main.js"></script>
     <script src="export.js"></script>
