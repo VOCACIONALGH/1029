@@ -1,7 +1,8 @@
 /* main.js
-   Atualização: durante a calibragem, utiliza-se aproximação pinhole para definir a direção (vetor unitário)
-   de cada pixel preto registrado no arquivo .json. A direção agora é rotacionada para o referencial dos pixels
-   pretos usando yaw, pitch e roll (graus → radianos, matriz 3×3). O vetor permanece normalizado.
+   Atualização: durante a calibragem, além da rotação do vetor pinhole já implementada,
+   o programa agora tenta determinar a posição 3D real de pixels pretos registrados
+   (triangulação a partir de múltiplos raios em diferentes poses). A contagem de pixels
+   com posição 3D determinada é atualizada na tela.
    Mantive todas as demais funcionalidades inalteradas.
 */
 
@@ -16,6 +17,7 @@ const redCountDisplay = document.getElementById("redCount");
 const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
 const rayCountDisplay = document.getElementById("rayCount");
 const dirCountDisplay = document.getElementById("dirCount");
+const triangulatedCountDisplay = document.getElementById("triangulatedCount");
 const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
@@ -54,7 +56,7 @@ let baseVecY_px = null; // {x,y} px per mm along Y-axis
 let baseVecSet = false;
 
 // cumulative registered black points across the whole calibration session
-// Each entry: { x_mm, y_mm, timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz} }
+// Each entry: { x_mm, y_mm, timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz}, screen_x_px, screen_y_px, real_pos_mm? }
 let cumulativeBlackPoints = [];
 
 // COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
@@ -65,6 +67,10 @@ let cumulativeRaysCount = 0;
 
 // cumulative count of points with direction defined (should increment when we add direction to a registered point)
 let cumulativeDirCount = 0;
+
+// triangulation bookkeeping
+// real_pos_mm will be written into cumulativeBlackPoints entries when triangulated
+let cumulativeTriangulatedCount = 0;
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -99,7 +105,7 @@ scanBtn.addEventListener("click", async () => {
 /*
  Calibrar button behavior:
  - If not atualmente calibrating: valida origem & escala, solicita +Z, trava escala, registra origem e inicia coleta (isCalibrating = true).
- - Se estiver calibrando: finaliza, gera JSON com frames + black_points (incluindo direction_cam) e faz download.
+ - Se estiver calibrando: finaliza, gera JSON com frames + black_points (incluindo direction_cam e possivelmente real_pos_mm) e faz download.
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -140,6 +146,7 @@ calibrateBtn.addEventListener("click", () => {
         // reset cumulative rays and direction counts
         cumulativeRaysCount = 0;
         cumulativeDirCount = 0;
+        cumulativeTriangulatedCount = 0;
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
@@ -153,6 +160,7 @@ calibrateBtn.addEventListener("click", () => {
         blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
         rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
         dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
+        triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
 
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
@@ -174,7 +182,7 @@ calibrateBtn.addEventListener("click", () => {
             baseOriginScreen,
             frames: calibrationFrames,
             black_points: cumulativeBlackPoints
-            // black_points entries now include direction_cam (pinhole approximation rotated pelo yaw/pitch/roll)
+            // black_points entries include direction_cam and, when available, real_pos_mm
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -297,11 +305,7 @@ function deg2rad(d) {
 }
 
 /* rotate vector by yaw (Z), pitch (X), roll (Y)
-   - yaw: rotation around Z (degrees) -> yawEl (alpha)
-   - pitch: rotation around X (degrees) -> pitchEl (beta)
-   - roll: rotation around Y (degrees) -> rollEl (gamma)
    Rotation applied as R = Rz(yaw) * Rx(pitch) * Ry(roll)
-   Returns a vector in the rotated (world/pixels) reference frame.
 */
 function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     const y = deg2rad(yawDeg);
@@ -346,6 +350,147 @@ function computePinholeDirectionForPixel(pixelX, pixelY) {
     const z_cam = 1;
     const dir = normalizeVec({ x: x_cam, y: y_cam, z: z_cam });
     return dir;
+}
+
+/* Solve 3x3 linear system A * x = b using analytic inverse (returns null if singular) */
+function solve3x3(A, b) {
+    // A is [[a00,a01,a02],[a10,a11,a12],[a20,a21,a22]]
+    const a00 = A[0][0], a01 = A[0][1], a02 = A[0][2];
+    const a10 = A[1][0], a11 = A[1][1], a12 = A[1][2];
+    const a20 = A[2][0], a21 = A[2][1], a22 = A[2][2];
+
+    const det =
+        a00 * (a11 * a22 - a12 * a21) -
+        a01 * (a10 * a22 - a12 * a20) +
+        a02 * (a10 * a21 - a11 * a20);
+
+    if (Math.abs(det) < 1e-9) return null;
+
+    const invDet = 1 / det;
+
+    const inv = [
+        [
+            (a11 * a22 - a12 * a21) * invDet,
+            (a02 * a21 - a01 * a22) * invDet,
+            (a01 * a12 - a02 * a11) * invDet
+        ],
+        [
+            (a12 * a20 - a10 * a22) * invDet,
+            (a00 * a22 - a02 * a20) * invDet,
+            (a02 * a10 - a00 * a12) * invDet
+        ],
+        [
+            (a10 * a21 - a11 * a20) * invDet,
+            (a01 * a20 - a00 * a21) * invDet,
+            (a00 * a11 - a01 * a10) * invDet
+        ]
+    ];
+
+    // multiply inv * b
+    return {
+        x: inv[0][0] * b.x + inv[0][1] * b.y + inv[0][2] * b.z,
+        y: inv[1][0] * b.x + inv[1][1] * b.y + inv[1][2] * b.z,
+        z: inv[2][0] * b.x + inv[2][1] * b.y + inv[2][2] * b.z
+    };
+}
+
+/* Triangulation:
+   - groups cumulativeBlackPoints into spatial clusters on the plane (quantized by CLUSTER_TOL_MM)
+   - for each cluster with >=2 rays from distinct camera poses, solve for best-fit 3D point
+   - writes real_pos_mm into member entries when successful
+*/
+const CLUSTER_TOL_MM = 0.5; // tolerance to group mapped plane points (adjustable)
+
+function updateTriangulation() {
+    if (cumulativeBlackPoints.length === 0) {
+        cumulativeTriangulatedCount = 0;
+        triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
+        return;
+    }
+
+    // build clusters
+    const clusters = {}; // key -> array of indices
+    for (let i = 0; i < cumulativeBlackPoints.length; i++) {
+        const p = cumulativeBlackPoints[i];
+        if (typeof p.x_mm !== 'number' || typeof p.y_mm !== 'number') continue;
+        const kx = Math.round(p.x_mm / CLUSTER_TOL_MM);
+        const ky = Math.round(p.y_mm / CLUSTER_TOL_MM);
+        const key = `${kx}_${ky}`;
+        if (!clusters[key]) clusters[key] = [];
+        clusters[key].push(i);
+    }
+
+    // attempt triangulation for each cluster
+    for (const key in clusters) {
+        const membersIdx = clusters[key];
+        if (membersIdx.length < 2) continue;
+
+        // collect valid rays for this cluster
+        const rays = [];
+        for (let idx of membersIdx) {
+            const entry = cumulativeBlackPoints[idx];
+            if (!entry.direction_cam) continue;
+            if (!entry.camera_pose) continue;
+            const ox = entry.camera_pose.x_mm;
+            const oy = entry.camera_pose.y_mm;
+            const oz = entry.camera_pose.z_mm;
+            if (ox === null || oy === null || oz === null) continue;
+            const d = entry.direction_cam;
+            if (!isFinite(d.dx) || !isFinite(d.dy) || !isFinite(d.dz)) continue;
+            const dir = normalizeVec({ x: d.dx, y: d.dy, z: d.dz });
+            // ensure direction length is valid
+            if (Math.hypot(dir.x, dir.y, dir.z) < 1e-6) continue;
+            rays.push({ O: { x: ox, y: oy, z: oz }, u: dir, idx });
+        }
+
+        if (rays.length < 2) continue;
+
+        // build A and b: sum (I - u u^T) and sum (I - u u^T) * O
+        let A = [
+            [0,0,0],
+            [0,0,0],
+            [0,0,0]
+        ];
+        let b = { x: 0, y: 0, z: 0 };
+
+        for (const r of rays) {
+            const ux = r.u.x, uy = r.u.y, uz = r.u.z;
+            const outer00 = 1 - ux * ux;
+            const outer01 = -ux * uy;
+            const outer02 = -ux * uz;
+            const outer10 = -ux * uy;
+            const outer11 = 1 - uy * uy;
+            const outer12 = -uy * uz;
+            const outer20 = -ux * uz;
+            const outer21 = -uy * uz;
+            const outer22 = 1 - uz * uz;
+
+            A[0][0] += outer00; A[0][1] += outer01; A[0][2] += outer02;
+            A[1][0] += outer10; A[1][1] += outer11; A[1][2] += outer12;
+            A[2][0] += outer20; A[2][1] += outer21; A[2][2] += outer22;
+
+            b.x += outer00 * r.O.x + outer01 * r.O.y + outer02 * r.O.z;
+            b.y += outer10 * r.O.x + outer11 * r.O.y + outer12 * r.O.z;
+            b.z += outer20 * r.O.x + outer21 * r.O.y + outer22 * r.O.z;
+        }
+
+        const P = solve3x3(A, b);
+        if (!P) continue; // could not solve (singular)
+
+        // mark all member entries with real_pos_mm (only if not already set)
+        for (const r of rays) {
+            const entry = cumulativeBlackPoints[r.idx];
+            entry.real_pos_mm = { x: Number(P.x.toFixed(4)), y: Number(P.y.toFixed(4)), z: Number(P.z.toFixed(4)) };
+        }
+    }
+
+    // update cumulativeTriangulatedCount: number of cumulativeBlackPoints with real_pos_mm set
+    let c = 0;
+    for (const p of cumulativeBlackPoints) {
+        if (p.real_pos_mm) c++;
+    }
+    cumulativeTriangulatedCount = c;
+    triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
 }
 
 function processFrame() {
@@ -540,7 +685,7 @@ function processFrame() {
 
     // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling,
     //           define ray and compute pinhole direction for each registered pixel; rotate direction by yaw/pitch/roll
-    //           into the referencial dos pixels pretos; increment cumulative counts accordingly.
+    //           into the referencial dos pixels pretos; then attempt triangulation entre múltiplos raios (clusters).
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
@@ -589,7 +734,7 @@ function processFrame() {
                         const dirRotated = rotateVectorByYawPitchRoll(dirCam, yaw, pitch, roll);
                         const dirFinal = normalizeVec(dirRotated);
 
-                        // register cumulative black point with direction_cam included (directions are now in the pixels/world ref)
+                        // register cumulative black point with direction_cam included (also keep screen coords for triangulation)
                         cumulativeBlackPoints.push({
                             x_mm: Number(x_mm.toFixed(4)),
                             y_mm: Number(y_mm.toFixed(4)),
@@ -606,7 +751,10 @@ function processFrame() {
                                 dx: Number(dirFinal.x.toFixed(6)),
                                 dy: Number(dirFinal.y.toFixed(6)),
                                 dz: Number(dirFinal.z.toFixed(6))
-                            }
+                            },
+                            screen_x_px: p.x,
+                            screen_y_px: p.y
+                            // real_pos_mm will be added by triangulation when possible
                         });
 
                         // increment rays & directions counters (one ray and one direction per registered point)
@@ -615,13 +763,17 @@ function processFrame() {
                     }
                 }
             }
+
+            // after adding new points, attempt triangulation on the whole set
+            updateTriangulation();
         }
     }
     // update cumulative counts on screen
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
     rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
     dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
-    // ---- end mapping & registration & pinhole direction rotation logic ----
+    triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
+    // ---- end mapping & registration & pinhole direction rotation & triangulation logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
