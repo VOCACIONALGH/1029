@@ -1,9 +1,9 @@
-/* main.js
-   Adições:
-   - destaque temporário (rosa claro) dos pontos triangulados no canvas principal
-   - mini-canvas que desenha os pontos triangulados (visualização 2D de densidade)
-   - inclusão de <model-viewer> cujo poster é atualizado a partir do mini-canvas (preview 3D leve)
-   Todo o restante do programa mantido conforme antes.
+/* main.js — versão corrigida
+   - Remove a projeção forçada do pixel para (x_mm,y_mm) no plano.
+   - Registra apenas raios (origem da câmera em mm + direção 3D normalizada em referencial world/pixels).
+   - Triangulação: calcula pontos candidatos a partir de pares de raios (ponto médio da menor conexão entre duas retas),
+     filtra por distância de fechamento entre as retas, agrupa por proximidade (clustering) e produz a nuvem 3D.
+   - Mantém contadores e botão Download durante calibragem.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -13,11 +13,6 @@ const downloadBtn = document.getElementById("downloadBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-
-// mini visualização
-const miniCanvas = document.getElementById("miniCanvas");
-const miniCtx = miniCanvas.getContext("2d");
-const viewer = document.getElementById("viewer");
 
 const redCountDisplay = document.getElementById("redCount");
 const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
@@ -56,13 +51,13 @@ let lastGcentroid = null;
 
 let currentScale = 0;         // px/mm live estimate (before locking)
 
-// base vectors (px per mm) used to map pixels -> XY mm durante calibragem
+// base vectors (px per mm) used to map pixels -> XY mm durante calibragem (still used for plane drawing)
 let baseVecX_px = null; // {x,y} px per mm along X-axis
 let baseVecY_px = null; // {x,y} px per mm along Y-axis
 let baseVecSet = false;
 
 // cumulative registered black points across the whole calibration session
-// Each entry: { x_mm, y_mm, timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz}, screen_x_px, screen_y_px, real_pos_mm? }
+// Each entry: { timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz}, screen_x_px, screen_y_px, real_pos_mm? }
 let cumulativeBlackPoints = [];
 
 // COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
@@ -75,15 +70,22 @@ let cumulativeRaysCount = 0;
 let cumulativeDirCount = 0;
 
 // triangulation bookkeeping
-// real_pos_mm will be written into cumulativeBlackPoints entries when triangulated
 let cumulativeTriangulatedCount = 0;
 
-// point cloud in memory (unique triangulated points) to be downloaded / previewed
+// in-memory unique point cloud (for download)
 let pointCloud = [];
 
-// highlighted points for temporary pink overlay on the main canvas
-// each: { x_px, y_px, expires }
-let highlightedPoints = [];
+/* PARAMETERS for triangulation */
+const PAIR_MAX_DISTANCE_MM = 8.0; // maximum allowed shortest distance between two rays to accept their intersection candidate
+const CLUSTER_TOL_MM = 1.0;       // clustering tolerance for candidate 3D points
+const MIN_POINTS_PER_CLUSTER = 2; // minimum number of candidate points to accept a cluster
+
+/* Utility math helpers */
+function dot(a, b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+function add(a, b) { return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }; }
+function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
+function mulScalar(a, s) { return { x: a.x * s, y: a.y * s, z: a.z * s }; }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z); }
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -115,11 +117,6 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
-/*
- Calibrar button behavior:
- - If not atualmente calibrating: valida origem & escala, solicita +Z, trava escala, registra origem e inicia coleta (isCalibrating = true).
- - Se estiver calibrating: finaliza, gera JSON com frames + black_points (incluindo direction_cam e possivelmente real_pos_mm) e faz download.
-*/
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
         if (!lastRcentroid) {
@@ -161,7 +158,6 @@ calibrateBtn.addEventListener("click", () => {
         cumulativeDirCount = 0;
         cumulativeTriangulatedCount = 0;
         pointCloud = [];
-        highlightedPoints = [];
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
@@ -203,7 +199,7 @@ calibrateBtn.addEventListener("click", () => {
             baseOriginScreen,
             frames: calibrationFrames,
             black_points: cumulativeBlackPoints
-            // black_points entries include direction_cam and, when available, real_pos_mm
+            // black_points entries may include real_pos_mm when triangulated
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -242,8 +238,7 @@ downloadBtn.addEventListener('click', () => {
     URL.revokeObjectURL(url);
 });
 
-/* --- util functions (unchanged) --- */
-
+/* Color/HSV helpers (unchanged) */
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
     const max = Math.max(rN, gN, bN);
@@ -381,7 +376,7 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
 
 /* pinhole direction approximation:
    - principal point assumed at image center (cx,cy)
-   - focal length (px) approximated as 0.8 * max(image width, height) (reasonable approximation)
+   - focal length (px) approximated as 0.8 * max(image width, height)
    - camera coordinate convention: z forward, x to right, y down (direction vector normalized)
 */
 function computePinholeDirectionForPixel(pixelX, pixelY) {
@@ -395,219 +390,164 @@ function computePinholeDirectionForPixel(pixelX, pixelY) {
     return dir;
 }
 
-/* Solve 3x3 linear system A * x = b using analytic inverse (returns null if singular) */
-function solve3x3(A, b) {
-    const a00 = A[0][0], a01 = A[0][1], a02 = A[0][2];
-    const a10 = A[1][0], a11 = A[1][1], a12 = A[1][2];
-    const a20 = A[2][0], a21 = A[2][1], a22 = A[2][2];
+/* Given two rays (O1,u1) and (O2,u2) compute closest points P1,P2 and midpoint M.
+   Returns {M, dist, P1, P2, s, t} or null if parallel/singular.
+   Method: analytic solution solving for scalars s,t as in classical closest approach.
+*/
+function closestPointBetweenRays(O1, u1, O2, u2) {
+    const w0 = sub(O1, O2);
+    const a = dot(u1, u1);
+    const b = dot(u1, u2);
+    const c = dot(u2, u2);
+    const d = dot(u1, w0);
+    const e = dot(u2, w0);
 
-    const det =
-        a00 * (a11 * a22 - a12 * a21) -
-        a01 * (a10 * a22 - a12 * a20) +
-        a02 * (a10 * a21 - a11 * a20);
+    const den = a * c - b * b;
+    if (Math.abs(den) < 1e-9) return null; // nearly parallel
 
-    if (Math.abs(det) < 1e-9) return null;
+    const s = (b * e - c * d) / den;
+    const t = (a * e - b * d) / den;
 
-    const invDet = 1 / det;
-
-    const inv = [
-        [
-            (a11 * a22 - a12 * a21) * invDet,
-            (a02 * a21 - a01 * a22) * invDet,
-            (a01 * a12 - a02 * a11) * invDet
-        ],
-        [
-            (a12 * a20 - a10 * a22) * invDet,
-            (a00 * a22 - a02 * a20) * invDet,
-            (a02 * a10 - a00 * a12) * invDet
-        ],
-        [
-            (a10 * a21 - a11 * a20) * invDet,
-            (a01 * a20 - a00 * a21) * invDet,
-            (a00 * a11 - a01 * a10) * invDet
-        ]
-    ];
-
-    return {
-        x: inv[0][0] * b.x + inv[0][1] * b.y + inv[0][2] * b.z,
-        y: inv[1][0] * b.x + inv[1][1] * b.y + inv[1][2] * b.z,
-        z: inv[2][0] * b.x + inv[2][1] * b.y + inv[2][2] * b.z
-    };
+    const P1 = add(O1, mulScalar(u1, s));
+    const P2 = add(O2, mulScalar(u2, t));
+    const M = mulScalar(add(P1, P2), 0.5);
+    const distance = dist(P1, P2);
+    return { M, distance, P1, P2, s, t };
 }
 
-/* Triangulation (igual ao implementado anteriormente).
-   CLUSTER_TOL_MM agrupa pontos mapeados no plano. Quando triangulado, marcamos real_pos_mm.
+/* Triangulation pipeline:
+   1) From cumulativeBlackPoints (rays) compute pairwise candidates (midpoints) for pairs with small closest distance.
+   2) Cluster the candidate midpoints spatially (grid quantization) and average positions in each cluster.
+   3) For each resulting cluster center, associate rays whose closest approach to that center is small -> mark those entries' real_pos_mm.
+   4) Rebuild unique pointCloud for download.
 */
-const CLUSTER_TOL_MM = 0.5; // mm
+function updateTriangulationFromRays() {
+    // Require at least 2 valid rays with known camera_pose
+    const rays = [];
+    for (let i = 0; i < cumulativeBlackPoints.length; i++) {
+        const e = cumulativeBlackPoints[i];
+        if (!e.direction_cam || !e.camera_pose) continue;
+        const ox = e.camera_pose.x_mm, oy = e.camera_pose.y_mm, oz = e.camera_pose.z_mm;
+        if (ox === null || oy === null || oz === null) continue;
+        const d = e.direction_cam;
+        if (!isFinite(d.dx) || !isFinite(d.dy) || !isFinite(d.dz)) continue;
+        const dir = normalizeVec({ x: d.dx, y: d.dy, z: d.dz });
+        if (Math.hypot(dir.x, dir.y, dir.z) < 1e-6) continue;
+        rays.push({ O: { x: ox, y: oy, z: oz }, u: dir, idx: i });
+    }
 
-function updateTriangulation() {
-    if (cumulativeBlackPoints.length === 0) {
+    if (rays.length < 2) {
         cumulativeTriangulatedCount = 0;
         triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
         pointCloud = [];
-        updateMiniCanvasAndViewer();
         return;
     }
 
-    // build clusters
-    const clusters = {};
-    for (let i = 0; i < cumulativeBlackPoints.length; i++) {
-        const p = cumulativeBlackPoints[i];
-        if (typeof p.x_mm !== 'number' || typeof p.y_mm !== 'number') continue;
-        const kx = Math.round(p.x_mm / CLUSTER_TOL_MM);
-        const ky = Math.round(p.y_mm / CLUSTER_TOL_MM);
-        const key = `${kx}_${ky}`;
-        if (!clusters[key]) clusters[key] = [];
-        clusters[key].push(i);
-    }
-
-    for (const key in clusters) {
-        const membersIdx = clusters[key];
-        if (membersIdx.length < 2) continue;
-
-        const rays = [];
-        for (let idx of membersIdx) {
-            const entry = cumulativeBlackPoints[idx];
-            if (!entry.direction_cam) continue;
-            if (!entry.camera_pose) continue;
-            const ox = entry.camera_pose.x_mm;
-            const oy = entry.camera_pose.y_mm;
-            const oz = entry.camera_pose.z_mm;
-            if (ox === null || oy === null || oz === null) continue;
-            const d = entry.direction_cam;
-            if (!isFinite(d.dx) || !isFinite(d.dy) || !isFinite(d.dz)) continue;
-            const dir = normalizeVec({ x: d.dx, y: d.dy, z: d.dz });
-            if (Math.hypot(dir.x, dir.y, dir.z) < 1e-6) continue;
-            rays.push({ O: { x: ox, y: oy, z: oz }, u: dir, idx });
-        }
-
-        if (rays.length < 2) continue;
-
-        let A = [[0,0,0],[0,0,0],[0,0,0]];
-        let b = { x:0, y:0, z:0 };
-
-        for (const r of rays) {
-            const ux = r.u.x, uy = r.u.y, uz = r.u.z;
-            const outer00 = 1 - ux * ux;
-            const outer01 = -ux * uy;
-            const outer02 = -ux * uz;
-            const outer10 = -ux * uy;
-            const outer11 = 1 - uy * uy;
-            const outer12 = -uy * uz;
-            const outer20 = -ux * uz;
-            const outer21 = -uy * uz;
-            const outer22 = 1 - uz * uz;
-
-            A[0][0] += outer00; A[0][1] += outer01; A[0][2] += outer02;
-            A[1][0] += outer10; A[1][1] += outer11; A[1][2] += outer12;
-            A[2][0] += outer20; A[2][1] += outer21; A[2][2] += outer22;
-
-            b.x += outer00 * r.O.x + outer01 * r.O.y + outer02 * r.O.z;
-            b.y += outer10 * r.O.x + outer11 * r.O.y + outer12 * r.O.z;
-            b.z += outer20 * r.O.x + outer21 * r.O.y + outer22 * r.O.z;
-        }
-
-        const P = solve3x3(A, b);
-        if (!P) continue;
-
-        // mark members with real_pos_mm and add a temporary highlight at screen coords
-        for (const r of rays) {
-            const entry = cumulativeBlackPoints[r.idx];
-            // only add if not set before
-            if (!entry.real_pos_mm) {
-                entry.real_pos_mm = { x: Number(P.x.toFixed(4)), y: Number(P.y.toFixed(4)), z: Number(P.z.toFixed(4)) };
-                // add to highlights (use stored screen coords if present)
-                if (typeof entry.screen_x_px === 'number' && typeof entry.screen_y_px === 'number') {
-                    highlightedPoints.push({ x_px: entry.screen_x_px, y_px: entry.screen_y_px, expires: Date.now() + 1200 });
-                }
+    // pairwise candidate points
+    const candidates = [];
+    for (let i = 0; i < rays.length; i++) {
+        for (let j = i + 1; j < rays.length; j++) {
+            const r1 = rays[i], r2 = rays[j];
+            const cp = closestPointBetweenRays(r1.O, r1.u, r2.O, r2.u);
+            if (!cp) continue;
+            if (cp.distance <= PAIR_MAX_DISTANCE_MM) {
+                candidates.push({ point: cp.M, dist: cp.distance, idx1: r1.idx, idx2: r2.idx });
             }
         }
     }
 
-    // rebuild unique pointCloud and update counts / previews
+    if (candidates.length === 0) {
+        // nothing to triangulate yet
+        cumulativeTriangulatedCount = 0;
+        triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
+        pointCloud = [];
+        return;
+    }
+
+    // cluster candidates by spatial quantization
+    const clusters = {}; // key -> array of candidate indices
+    for (let i = 0; i < candidates.length; i++) {
+        const p = candidates[i].point;
+        const kx = Math.round(p.x / CLUSTER_TOL_MM);
+        const ky = Math.round(p.y / CLUSTER_TOL_MM);
+        const kz = Math.round(p.z / CLUSTER_TOL_MM);
+        const key = `${kx}_${ky}_${kz}`;
+        if (!clusters[key]) clusters[key] = [];
+        clusters[key].push(i);
+    }
+
+    // compute cluster centers and associate contributing rays
+    const clusterCenters = []; // {center:{x,y,z}, candidates:[...], contributingRayIdx:Set}
+    for (const key in clusters) {
+        const list = clusters[key];
+        if (list.length < MIN_POINTS_PER_CLUSTER) continue;
+        let sum = { x: 0, y: 0, z: 0 };
+        const contributingRays = new Set();
+        for (const ci of list) {
+            const cand = candidates[ci];
+            sum.x += cand.point.x; sum.y += cand.point.y; sum.z += cand.point.z;
+            contributingRays.add(cand.idx1);
+            contributingRays.add(cand.idx2);
+        }
+        const n = list.length;
+        const center = { x: sum.x / n, y: sum.y / n, z: sum.z / n };
+        clusterCenters.push({ center, candidates: list, contributingRays });
+    }
+
+    // For each cluster center, mark cumulativeBlackPoints entries (rays) that are close enough to the center
+    for (const cl of clusterCenters) {
+        const center = cl.center;
+        for (const ridx of cl.contributingRays) {
+            const entry = cumulativeBlackPoints[ridx];
+            if (!entry) continue;
+            // compute distance from ray to center: shortest distance between point and line
+            const O = entry.camera_pose ? { x: entry.camera_pose.x_mm, y: entry.camera_pose.y_mm, z: entry.camera_pose.z_mm } : null;
+            const d = entry.direction_cam ? normalizeVec({ x: entry.direction_cam.dx, y: entry.direction_cam.dy, z: entry.direction_cam.dz }) : null;
+            if (!O || !d) continue;
+            // vector from camera origin to center
+            const w = sub(center, O);
+            // cross product magnitude / |d| gives distance
+            const cross = {
+                x: w.y * d.z - w.z * d.y,
+                y: w.z * d.x - w.x * d.z,
+                z: w.x * d.y - w.y * d.x
+            };
+            const distToRay = Math.hypot(cross.x, cross.y, cross.z);
+            // accept if center is reasonably close to this ray
+            if (distToRay <= PAIR_MAX_DISTANCE_MM) {
+                // assign real_pos_mm
+                entry.real_pos_mm = { x: Number(center.x.toFixed(4)), y: Number(center.y.toFixed(4)), z: Number(center.z.toFixed(4)) };
+            }
+        }
+    }
+
+    // rebuild unique point cloud (unique centers from entries' real_pos_mm)
     const seen = new Set();
     const pc = [];
-    for (const p of cumulativeBlackPoints) {
-        if (p.real_pos_mm) {
-            const key = `${p.real_pos_mm.x}_${p.real_pos_mm.y}_${p.real_pos_mm.z}`;
+    for (const e of cumulativeBlackPoints) {
+        if (e.real_pos_mm) {
+            const key = `${e.real_pos_mm.x}_${e.real_pos_mm.y}_${e.real_pos_mm.z}`;
             if (!seen.has(key)) {
                 seen.add(key);
                 pc.push({
-                    x_mm: p.real_pos_mm.x,
-                    y_mm: p.real_pos_mm.y,
-                    z_mm: p.real_pos_mm.z,
-                    timestamp: p.timestamp || null
+                    x_mm: e.real_pos_mm.x,
+                    y_mm: e.real_pos_mm.y,
+                    z_mm: e.real_pos_mm.z,
+                    timestamp: e.timestamp || null
                 });
             }
         }
     }
     pointCloud = pc;
 
+    // update triangulated count
     let c = 0;
     for (const p of cumulativeBlackPoints) if (p.real_pos_mm) c++;
     cumulativeTriangulatedCount = c;
     triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
-
-    // refresh mini-canvas & viewer poster
-    updateMiniCanvasAndViewer();
 }
 
-/* Draw mini-canvas from pointCloud and update model-viewer poster (image).
-   - maps x_mm/y_mm to mini canvas extents (auto-fit with padding)
-*/
-function updateMiniCanvasAndViewer() {
-    // clear
-    miniCtx.clearRect(0,0, miniCanvas.width, miniCanvas.height);
-    miniCtx.fillStyle = "#07121a";
-    miniCtx.fillRect(0,0, miniCanvas.width, miniCanvas.height);
-
-    if (!pointCloud || pointCloud.length === 0) {
-        // update viewer poster to blank
-        try { viewer.poster = miniCanvas.toDataURL(); } catch (e) {}
-        return;
-    }
-
-    // find bounding box in x_mm/y_mm
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const p of pointCloud) {
-        if (p.x_mm < minX) minX = p.x_mm;
-        if (p.x_mm > maxX) maxX = p.x_mm;
-        if (p.y_mm < minY) minY = p.y_mm;
-        if (p.y_mm > maxY) maxY = p.y_mm;
-    }
-
-    // if degenerate, expand slightly
-    if (Math.abs(maxX - minX) < 1e-6) { maxX += 1; minX -= 1; }
-    if (Math.abs(maxY - minY) < 1e-6) { maxY += 1; minY -= 1; }
-
-    const pad = 0.05; // 5% padding
-    const dx = maxX - minX;
-    const dy = maxY - minY;
-    minX -= dx*pad; maxX += dx*pad;
-    minY -= dy*pad; maxY += dy*pad;
-
-    // map function
-    const w = miniCanvas.width, h = miniCanvas.height;
-    function mapX(x) { return Math.round(( (x - minX) / (maxX - minX) ) * (w - 2) + 1); }
-    function mapY(y) { return Math.round(( h - 1 ) - ( (y - minY) / (maxY - minY) ) * (h - 2)); } // invert Y so larger Y up
-
-    // draw points
-    miniCtx.fillStyle = "rgba(255,182,193,0.95)"; // light pink
-    for (const p of pointCloud) {
-        const mx = mapX(p.x_mm);
-        const my = mapY(p.y_mm);
-        miniCtx.fillRect(mx-1, my-1, 2, 2);
-    }
-
-    // set model-viewer poster to the mini-canvas image (lightweight preview)
-    try {
-        viewer.poster = miniCanvas.toDataURL();
-    } catch (e) {
-        // ignore if model-viewer not available
-    }
-}
-
-/* processFrame: principal loop - praticamente igual ao anterior, com overlay dos highlights rosas. */
+/* main frame processing */
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -626,14 +566,17 @@ function processFrame() {
     let bC = 0, bX = 0, bY = 0;
     let gC = 0, gX = 0, gY = 0;
 
+    // collect black pixels coords during this frame (so we can register rays)
     const blackPixels = [];
 
+    // per-pixel detection + coloring
     for (let i = 0; i < d.length; i += 4) {
         const r = d[i], g = d[i + 1], b = d[i + 2];
 
         const { h, s, v } = rgbToHsv(r, g, b);
         if (s < 0.35 || v < 0.12) {
-            // skip color detection
+            // keep scanning — we will still possibly recolor black pixels below if calibrating
+            // but skip color-based detections
         } else {
             const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
 
@@ -649,6 +592,7 @@ function processFrame() {
             }
         }
 
+        // recolor visually pixels pretos para vermelho durante calibragem
         const BLACK_THR = 30;
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
             d[i] = 255;
@@ -681,7 +625,7 @@ function processFrame() {
         lastGcentroid = g;
     }
 
-    // compute live scale
+    // compute live scale (px/mm) from red->blue if available
     let currentPixelDistance = 0;
     if (r && b) {
         currentPixelDistance = Math.hypot(b.x - r.x, b.y - r.y);
@@ -693,7 +637,7 @@ function processFrame() {
         }
     }
 
-    // base vectors setting (unchanged)
+    // If calibragem ativa, try to set base vectors (only once) using the detected blue/green directions (unchanged)
     if (isCalibrating && !baseVecSet && isCalibrated && lastRcentroid && lastBcentroid && lastGcentroid && lockedScale) {
         const dxB = lastBcentroid.x - lastRcentroid.x;
         const dyB = lastBcentroid.y - lastRcentroid.y;
@@ -713,7 +657,7 @@ function processFrame() {
         }
     }
 
-    // Plane drawing during calibration
+    // Plane drawing durante calibragem (unchanged)
     if (isCalibrating && r && b && g) {
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
         const lengthPx = ARROW_LENGTH_MM * scaleUsed;
@@ -726,7 +670,7 @@ function processFrame() {
         }
     }
 
-    // draw centroids / arrows (unchanged)
+    // draw points and arrows (unchanged)
     if (r) {
         ctx.fillStyle = "red";
         ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
@@ -748,10 +692,10 @@ function processFrame() {
         drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
     }
 
-    // +Z / +X +Y calculations (unchanged)
+    // +Z calculation (uses lockedScale if calibrated) — unchanged (HUD only)
     let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
-        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale;
+        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale; // smaller arrow px => larger +Z
         computedZ = baseZmm + dzMm;
         zEl.textContent = computedZ.toFixed(2);
     } else {
@@ -759,13 +703,16 @@ function processFrame() {
         else zEl.textContent = baseZmm.toFixed(2);
     }
 
+    // +X and +Y calculations (camera translation), only after calibration and if origin detected (unchanged)
     let txMm = null, tyMm = null;
     if (isCalibrated && lastRcentroid && baseOriginScreen) {
         const dxPixels = lastRcentroid.x - baseOriginScreen.x;
         const dyPixels = lastRcentroid.y - baseOriginScreen.y;
-        const tx = -(dxPixels) / lockedScale;
-        const ty = (dyPixels) / lockedScale;
+
+        const tx = -(dxPixels) / lockedScale;        // X: negative of origin movement
+        const ty = (dyPixels) / lockedScale;         // Y: positive when origin moves down
         txMm = tx; tyMm = ty;
+
         xEl.textContent = txMm.toFixed(2);
         yEl.textContent = tyMm.toFixed(2);
     } else {
@@ -773,7 +720,7 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
-    // If calibragem ativa, save a frame record
+    // If calibragem ativa, save a frame record (unchanged)
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
         const yaw = parseFloat(yawEl.textContent) || 0;
@@ -791,103 +738,82 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // mapping black pixels -> cumulative registration & pinhole direction & rotation & triangulation
-    if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
-        const ux = baseVecX_px;
-        const uy = baseVecY_px;
-        const a = ux.x, b_ = uy.x, c = ux.y, d = uy.y;
-        const det = a * d - b_ * c;
-        if (Math.abs(det) > 1e-9) {
-            const inv00 = d / det;
-            const inv01 = -b_ / det;
-            const inv10 = -c / det;
-            const inv11 = a / det;
+    // ---- NEW: register rays (do NOT map pixel to a fixed plane). Triangulate using rays from different poses.
+    if (isCalibrating && isCalibrated && baseOriginScreen && blackPixels.length > 0) {
+        const pitch = parseFloat(pitchEl.textContent) || 0;
+        const yaw = parseFloat(yawEl.textContent) || 0;
+        const roll = parseFloat(rollEl.textContent) || 0;
 
-            const poseXmm = (function() {
-                if (isCalibrated && lastRcentroid && baseOriginScreen) {
-                    const dxPixels = lastRcentroid.x - baseOriginScreen.x;
-                    const dyPixels = lastRcentroid.y - baseOriginScreen.y;
-                    const tx = -(dxPixels) / lockedScale;
-                    const ty = (dyPixels) / lockedScale;
-                    return { x_mm: Number(tx.toFixed(4)), y_mm: Number(ty.toFixed(4)) };
-                }
-                return { x_mm: null, y_mm: null };
-            })();
-
-            const poseZmm = (isCalibrated && currentPixelDistance) ? Number((computedZ !== null ? computedZ : baseZmm).toFixed(4)) : (isCalibrated ? Number(baseZmm.toFixed(4)) : null);
-            const pitch = parseFloat(pitchEl.textContent) || 0;
-            const yaw = parseFloat(yawEl.textContent) || 0;
-            const roll = parseFloat(rollEl.textContent) || 0;
-
-            const timestampNow = new Date().toISOString();
-
-            for (let k = 0; k < blackPixels.length; k++) {
-                const p = blackPixels[k];
-                const vx = p.x - baseOriginScreen.x;
-                const vy = p.y - baseOriginScreen.y;
-
-                const x_mm = inv00 * vx + inv01 * vy;
-                const y_mm = inv10 * vx + inv11 * vy;
-
-                if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
-                    blackDetectCounter++;
-                    if ((blackDetectCounter % 10) === 0) {
-                        const dirCam = computePinholeDirectionForPixel(p.x, p.y);
-                        const dirRotated = rotateVectorByYawPitchRoll(dirCam, yaw, pitch, roll);
-                        const dirFinal = normalizeVec(dirRotated);
-
-                        cumulativeBlackPoints.push({
-                            x_mm: Number(x_mm.toFixed(4)),
-                            y_mm: Number(y_mm.toFixed(4)),
-                            timestamp: timestampNow,
-                            camera_pose: {
-                                x_mm: poseXmm.x_mm,
-                                y_mm: poseXmm.y_mm,
-                                z_mm: poseZmm,
-                                pitch_deg: Number(pitch.toFixed(3)),
-                                yaw_deg: Number(yaw.toFixed(3)),
-                                roll_deg: Number(roll.toFixed(3))
-                            },
-                            direction_cam: {
-                                dx: Number(dirFinal.x.toFixed(6)),
-                                dy: Number(dirFinal.y.toFixed(6)),
-                                dz: Number(dirFinal.z.toFixed(6))
-                            },
-                            screen_x_px: p.x,
-                            screen_y_px: p.y
-                        });
-
-                        cumulativeRaysCount++;
-                        cumulativeDirCount++;
-                    }
-                }
+        // compute current camera origin in mm (camera pose)
+        const poseXmm = (function() {
+            if (lastRcentroid && baseOriginScreen) {
+                const dxPixels = lastRcentroid.x - baseOriginScreen.x;
+                const dyPixels = lastRcentroid.y - baseOriginScreen.y;
+                const tx = -(dxPixels) / lockedScale;
+                const ty = (dyPixels) / lockedScale;
+                return { x_mm: Number(tx.toFixed(4)), y_mm: Number(ty.toFixed(4)) };
             }
+            return { x_mm: null, y_mm: null };
+        })();
 
-            // after adding new points, attempt triangulation on the whole set
-            updateTriangulation();
+        const poseZmm = (isCalibrated && currentPixelDistance) ? Number((computedZ !== null ? computedZ : baseZmm).toFixed(4)) : (isCalibrated ? Number(baseZmm.toFixed(4)) : null);
+
+        const timestampNow = new Date().toISOString();
+
+        for (let k = 0; k < blackPixels.length; k++) {
+            const p = blackPixels[k];
+
+            blackDetectCounter++;
+            if ((blackDetectCounter % 10) !== 0) continue;
+
+            // compute pinhole direction (camera frame)
+            const dirCam = computePinholeDirectionForPixel(p.x, p.y);
+
+            // rotate to world/pixels reference using yaw/pitch/roll
+            const dirRot = rotateVectorByYawPitchRoll(dirCam, yaw, pitch, roll);
+            const dirFinal = normalizeVec(dirRot);
+
+            // camera origin in mm
+            const camOrigin = {
+                x: poseXmm.x_mm,
+                y: poseXmm.y_mm,
+                z: poseZmm
+            };
+
+            // Must have valid origin to be a usable ray
+            cumulativeBlackPoints.push({
+                timestamp: timestampNow,
+                camera_pose: {
+                    x_mm: camOrigin.x,
+                    y_mm: camOrigin.y,
+                    z_mm: camOrigin.z,
+                    pitch_deg: Number(pitch.toFixed(3)),
+                    yaw_deg: Number(yaw.toFixed(3)),
+                    roll_deg: Number(roll.toFixed(3))
+                },
+                direction_cam: {
+                    dx: Number(dirFinal.x.toFixed(6)),
+                    dy: Number(dirFinal.y.toFixed(6)),
+                    dz: Number(dirFinal.z.toFixed(6))
+                },
+                screen_x_px: p.x,
+                screen_y_px: p.y
+                // real_pos_mm will be assigned by triangulation
+            });
+
+            cumulativeRaysCount++;
+            cumulativeDirCount++;
         }
-    }
 
-    // draw temporary highlights (light pink) for recently-triangulated points
-    const now = Date.now();
-    // remove expired highlights and draw those still active
-    highlightedPoints = highlightedPoints.filter(h => h.expires > now);
-    if (highlightedPoints.length > 0) {
-        ctx.save();
-        ctx.fillStyle = "rgba(255,182,193,0.95)"; // light pink
-        for (const h of highlightedPoints) {
-            ctx.beginPath();
-            ctx.arc(h.x_px, h.y_px, 4, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        ctx.restore();
+        // After adding new rays, attempt triangulation using only rays (no plane)
+        updateTriangulationFromRays();
     }
-
     // update cumulative counts on screen
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
     rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
     dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
     triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
+    // ---- end mapping & registration & triangulation logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
