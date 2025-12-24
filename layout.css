@@ -41,6 +41,13 @@ button {
 #rayCount {
     color: #88ccff;
     font-size: 16px;
+    margin-bottom: 6px;
+    font-family: monospace;
+}
+
+#dirCount {
+    color: #aadd88;
+    font-size: 16px;
     margin-bottom: 8px;
     font-family: monospace;
 }
