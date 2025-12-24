@@ -3,7 +3,8 @@ body {
     height: 100vh;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    justify-content: center;
+    align-items: center;
     background-color: #000;
     color: #fff;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
@@ -11,104 +12,86 @@ body {
     box-sizing: border-box;
 }
 
-#controlsRow {
-    display:flex;
-    gap:8px;
-    align-items:center;
-}
-
 button {
-    padding: 10px 18px;
-    font-size: 16px;
+    padding: 14px 28px;
+    font-size: 18px;
     font-weight: bold;
     cursor: pointer;
+    margin-bottom: 8px;
     border-radius: 8px;
     border: none;
     background: #111;
     color: #fff;
 }
 
-#downloadBtn {
-    background: linear-gradient(90deg,#0a6 0%, #06a 100%);
-    color: #000;
-    font-weight: 700;
+#redCount {
+    color: #ff4444;
+    font-size: 18px;
+    margin-bottom: 4px;
+    font-family: monospace;
 }
-
-#countsRow {
-    display:flex;
-    gap:12px;
-    flex-wrap:wrap;
-    align-items:center;
-}
-
-#redCount { color: #ff4444; font-size: 14px; font-family: monospace; }
-#blackRegisteredCount { color: #ff88ff; font-size: 13px; font-family: monospace; }
-#rayCount { color: #88ccff; font-size: 13px; font-family: monospace; }
-#dirCount { color: #aadd88; font-size: 13px; font-family: monospace; }
-#triangulatedCount { color: #66ffcc; font-size: 13px; font-family: monospace; }
 
 #orientation {
     font-family: monospace;
-    font-size: 13px;
+    font-size: 14px;
+    margin-bottom: 6px;
     color: #00ffaa;
     display: flex;
     gap: 12px;
 }
 
-#scaleInfo { font-family: monospace; font-size: 13px; color: #ffaa00; }
-#zInfo { font-family: monospace; font-size: 13px; color: #00aaff; }
-#xyInfo { font-family: monospace; font-size: 13px; color: #aaff66; }
+#scaleInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 4px;
+    color: #ffaa00;
+}
+
+#zInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 4px;
+    color: #00aaff;
+}
+
+#xyInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: #aaff66;
+}
+
+#raysInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: #ff88ff;
+}
 
 #calibrators {
     display: flex;
     gap: 12px;
     flex-direction: column;
-    align-items: flex-start;
-    margin-bottom: 4px;
+    align-items: center;
+    margin-bottom: 12px;
     width: 100%;
     max-width: 480px;
 }
 
-.calLabel { font-size: 13px; display: flex; flex-direction: column; width: 100%; }
-.calLabel input { margin-top: 6px; }
+.calLabel {
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+}
 
-#viewerRow { display:flex; gap:12px; align-items:flex-start; }
+.calLabel input {
+    margin-top: 6px;
+}
 
-#mainArea { flex:1; }
-canvas#canvas {
-    width: 480px;
-    max-width: 100%;
+canvas {
+    width: 100%;
+    max-width: 480px;
     height: auto;
     background-color: #000;
-    border: 1px solid rgba(255,255,255,0.06);
-}
-
-#miniArea {
-    width: 260px;
-    display:flex;
-    flex-direction:column;
-    gap:8px;
-    align-items:center;
-}
-
-#miniCanvas {
-    width:240px;
-    height:180px;
-    background:#081018;
-    border:1px solid rgba(255,255,255,0.06);
-}
-
-/* model-viewer styling */
-model-viewer#viewer {
-    width:240px;
-    height:180px;
-    background: linear-gradient(180deg,#020308 0%, #07111a 100%);
-    border-radius:6px;
-    border:1px solid rgba(255,255,255,0.04);
-}
-
-.miniTitle {
-    font-size:12px;
-    color:#bfe;
-    font-family: monospace;
 }
