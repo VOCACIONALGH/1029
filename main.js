@@ -1,9 +1,9 @@
 /* main.js
-   Versão atualizada: durante a calibragem, pixels pretos (RGB baixos) são pintados de vermelho visualmente.
-   Além disso, durante a calibragem o programa calcula a posição no plano XY de cada pixel preto (em mm),
-   utilizando-se da origem calibrada e dos vetores (direção azul/vermelho e verde/vermelho).
-   O valor da quantidade de pixels pretos com posição no plano XY definida é atualizado na tela.
-   Apenas isso foi adicionado — todo o resto do programa permanece igual.
+   Versão atualizada:
+   - Durante a calibragem, pixels pretos mapeáveis têm suas posições (+X, +Y em mm) registradas cumulativamente.
+   - A quantidade cumulativa aparece na tela e é atualizada em tempo real.
+   - Ao finalizar a calibragem, o arquivo .json baixado contém o array `black_positions` com os valores salvos.
+   Nenhuma outra função foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -52,6 +52,9 @@ let baseVecX_px = null; // {x,y} px per mm along X-axis
 let baseVecY_px = null; // {x,y} px per mm along Y-axis
 let baseVecSet = false;
 
+// Cumulative storage of black pixel positions (in mm) during the active calibragem session
+let blackPositions = []; // each: { x_mm, y_mm, timestamp }
+
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
@@ -85,7 +88,7 @@ scanBtn.addEventListener("click", async () => {
 /*
  Calibrar button behavior:
  - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
- - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+ - If currently calibrating: finish collecting, generate JSON with recorded frames AND black pixel positions, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -123,6 +126,9 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrating = true;
         calibrationFrames = [];
 
+        // reset cumulative black positions for this calibragem session
+        blackPositions = [];
+
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
@@ -147,7 +153,8 @@ calibrateBtn.addEventListener("click", () => {
             baseZmm,
             lockedScale,
             baseOriginScreen,
-            frames: calibrationFrames
+            frames: calibrationFrames,
+            black_positions: blackPositions // array acumulativa com { x_mm, y_mm, timestamp }
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -455,10 +462,8 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, count how many mapped ----
-    let blackMappedCount = 0;
-    if (isCalibrating && baseVecSet && baseOriginScreen) {
-        // prepare matrix M = [ [ux.x, uy.x], [ux.y, uy.y] ]
+    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively ----
+    if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
         const a = ux.x, b_ = uy.x, c = ux.y, d = uy.y;
@@ -469,6 +474,7 @@ function processFrame() {
             const inv10 = -c / det;
             const inv11 = a / det;
 
+            const ts = new Date().toISOString();
             for (let k = 0; k < blackPixels.length; k++) {
                 const p = blackPixels[k];
                 const vx = p.x - baseOriginScreen.x;
@@ -478,19 +484,20 @@ function processFrame() {
                 const y_mm = inv10 * vx + inv11 * vy;
 
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
-                    blackMappedCount++;
-                    // NOTE: we only count — we do not store positions to avoid memory blow-up
+                    // push cumulative record (rounded to 4 decimais)
+                    blackPositions.push({
+                        x_mm: Number(x_mm.toFixed(4)),
+                        y_mm: Number(y_mm.toFixed(4)),
+                        timestamp: ts
+                    });
                 }
             }
-        } else {
-            // degenerate base vectors; no mapping possible
-            blackMappedCount = 0;
         }
-    } else {
-        blackMappedCount = 0;
     }
-    blackXYCountDisplay.textContent = `Pixels pretos (XY): ${blackMappedCount}`;
-    // ---- end mapping logic ----
+
+    // update cumulative display
+    blackXYCountDisplay.textContent = `Pixels pretos registrados: ${blackPositions.length}`;
+    // ---- end mapping & registration ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
