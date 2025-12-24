@@ -1,9 +1,10 @@
 /* main.js
-   Atualizado:
-   - durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
-   - o programa calcula a direção pelo modelo pinhole, rotaciona por yaw/pitch/roll e mantém normalizado.
-   - para cada pixel preto e para cada frame, registra um objeto { origin: {x,y,z}, direction: {dx,dy,dz} }
-     em calibrationRays. Esses registros são incluídos no JSON final.
+   Atualizado: durante a calibragem,
+   - cada pixel preto define um "raio 3D" (um por pixel) com direção rotacionada (yaw/pitch/roll).
+   - o programa registra esses raios em calibrationRays.
+   - foi adicionada triangulação incremental: os raios são agrupados em clusters por interseção próxima
+     e, quando um cluster tem suporte suficiente, sua posição 3D é considerada determinada.
+   - o número cumulativo de pontos 3D determinados é mostrado em points3DValue.
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -23,6 +24,7 @@ const zEl = document.getElementById("zValue");
 const xEl = document.getElementById("xValue");
 const yEl = document.getElementById("yValue");
 const raysEl = document.getElementById("raysValue");
+const points3DEl = document.getElementById("points3DValue");
 
 const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
@@ -41,6 +43,9 @@ let isCalibrated = false;
 let isCalibrating = false;
 let calibrationFrames = []; // array of frame summary objects saved durante calibragem
 let calibrationRays = [];   // array of ray records { origin:{x,y,z}, direction:{dx,dy,dz} }
+
+// clusters for triangulated 3D points
+let calibrationClusters = []; // each cluster: { point: {x,y,z}, raysCount, repRay: {origin, direction}, midpointsCounted }
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
@@ -140,23 +145,14 @@ function drawPlanePolygon(origin, tipX, tipY) {
 }
 
 /* --- PINHOLE MODEL --- */
-/* Retorna vetor unitário de direção do raio no sistema da câmera (x, y, z)
-   usando aproximação pinhole simples:
-   - principal point (cx,cy) assumido no centro do canvas
-   - focal length (f) estimado a partir do tamanho do canvas (em pixels)
-*/
 function computePinholeDirection(px, py) {
     if (!canvas || !canvas.width || !canvas.height) return null;
 
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
 
-    // Estimate focal length in pixels.
-    // Escolha razoável: use a maior dimensão e um fator para obter f em ordem de pixels.
-    // Isso é apenas uma aproximação (o real depende da câmera).
     const f = Math.max(canvas.width, canvas.height) * 0.9;
 
-    // coordinates in camera frame (z forward)
     const vx = (px - cx) / f;
     const vy = (py - cy) / f;
     const vz = 1.0;
@@ -168,15 +164,10 @@ function computePinholeDirection(px, py) {
 }
 
 /* --- ROTATION: yaw/pitch/roll --- */
-/* Converte graus para radianos */
 function degToRad(deg) {
     return deg * Math.PI / 180;
 }
 
-/* Rotaciona o vetor v ({x,y,z}) usando yaw (deg, z), pitch (deg, x) e roll (deg, y).
-   Aplica a matriz 3x3 R = Rz(yaw) * Rx(pitch) * Ry(roll)
-   Retorna vetor normalizado {x,y,z} ou null se inválido.
-*/
 function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     if (!v) return null;
 
@@ -184,19 +175,10 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     const pitch = degToRad(pitchDeg || 0);
     const roll = degToRad(rollDeg || 0);
 
-    // Rotation matrices components
-    // Rz(yaw)
     const cz = Math.cos(yaw), sz = Math.sin(yaw);
-    // Rx(pitch)
     const cx = Math.cos(pitch), sx = Math.sin(pitch);
-    // Ry(roll)
     const cy = Math.cos(roll), sy = Math.sin(roll);
 
-    // Build combined R = Rz * Rx * Ry
-    // Compute R = Rz * (Rx * Ry)  -> first compute RxRy = Rx * Ry
-    // Rx = [[1,0,0],[0,cx,-sx],[0,sx,cx]]
-    // Ry = [[cy,0,sy],[0,1,0],[-sy,0,cy]]
-    // RxRy = Rx * Ry:
     const r00 = cy;
     const r01 = 0;
     const r02 = sy;
@@ -209,7 +191,6 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     const r21 = sx;
     const r22 = cx * cy;
 
-    // Now R = Rz * (RxRy)
     const R00 = cz * r00 + (-sz) * r10 + 0 * r20;
     const R01 = cz * r01 + (-sz) * r11 + 0 * r21;
     const R02 = cz * r02 + (-sz) * r12 + 0 * r22;
@@ -222,7 +203,6 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     const R21 = r21;
     const R22 = r22;
 
-    // apply rotation
     const rx = R00 * v.x + R01 * v.y + R02 * v.z;
     const ry = R10 * v.x + R11 * v.y + R12 * v.z;
     const rz = R20 * v.x + R21 * v.y + R22 * v.z;
@@ -231,6 +211,160 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     if (!isFinite(norm) || norm === 0) return null;
 
     return { x: rx / norm, y: ry / norm, z: rz / norm };
+}
+
+/* --- GEOMETRY: closest points between two (infinite) lines --- */
+/* p1 + s*u1, p2 + t*u2, where u1,u2 are unit vectors */
+/* returns { c1, c2, distance } where c1 on line1, c2 on line2 */
+function closestPointsBetweenLines(p1, u1, p2, u2) {
+    // assume u1 and u2 are normalized (they are)
+    const w0 = { x: p1.x - p2.x, y: p1.y - p2.y, z: p1.z - p2.z };
+    const a = 1.0; // dot(u1,u1)
+    const b = u1.x * u2.x + u1.y * u2.y + u1.z * u2.z; // dot(u1,u2)
+    const c = 1.0; // dot(u2,u2)
+    const d = u1.x * w0.x + u1.y * w0.y + u1.z * w0.z; // dot(u1,w0)
+    const e = u2.x * w0.x + u2.y * w0.y + u2.z * w0.z; // dot(u2,w0)
+
+    const denom = a * c - b * b;
+    let sc, tc;
+
+    if (Math.abs(denom) < 1e-9) {
+        // lines nearly parallel: pick sc = 0, tc = e/c
+        sc = 0;
+        tc = e / c;
+    } else {
+        sc = (b * e - c * d) / denom;
+        tc = (a * e - b * d) / denom;
+    }
+
+    const c1 = { x: p1.x + u1.x * sc, y: p1.y + u1.y * sc, z: p1.z + u1.z * sc };
+    const c2 = { x: p2.x + u2.x * tc, y: p2.y + u2.y * tc, z: p2.z + u2.z * tc };
+
+    const dx = c1.x - c2.x, dy = c1.y - c2.y, dz = c1.z - c2.z;
+    const distance = Math.hypot(dx, dy, dz);
+
+    return { c1, c2, distance };
+}
+
+/* --- CLUSTERING / TRIANGULATION (incremental) --- */
+/* Parameters controlling triangulation sensitivity */
+const TRIANGULATION_DISTANCE_THRESH_MM = 6.0; // max distance between skew rays to consider intersecting (mm)
+const CLUSTER_MERGE_RADIUS_MM = 8.0; // when midpoint near existing cluster point, merge into cluster
+
+function addRayToTriangulation(ray) {
+    // ray: { origin: {x,y,z}, direction: {dx,dy,dz} }, origin coordinates in mm (may be null)
+    if (!ray || !ray.origin) return;
+
+    // if origin or direction null, skip triangulation
+    if (ray.origin.x === null || ray.direction.dx === null) return;
+
+    // Make simple representative ray object for calculations
+    const pNew = { x: ray.origin.x, y: ray.origin.y, z: ray.origin.z };
+    const uNew = { x: ray.direction.dx, y: ray.direction.dy, z: ray.direction.dz };
+
+    // try to pair with representative ray of each existing cluster
+    let matchedClusterIndex = -1;
+    let bestMidpoint = null;
+    let bestDistance = Infinity;
+
+    for (let i = 0; i < calibrationClusters.length; i++) {
+        const cluster = calibrationClusters[i];
+        // use cluster.repRay as representative
+        const rep = cluster.repRay;
+        if (!rep || !rep.origin) continue;
+        const pRep = { x: rep.origin.x, y: rep.origin.y, z: rep.origin.z };
+        const uRep = { x: rep.direction.dx, y: rep.direction.dy, z: rep.direction.dz };
+
+        const { c1, c2, distance } = closestPointsBetweenLines(pNew, uNew, pRep, uRep);
+
+        if (distance <= TRIANGULATION_DISTANCE_THRESH_MM && distance < bestDistance) {
+            bestDistance = distance;
+            // midpoint between closest points is triangulated estimate for this pairing
+            bestMidpoint = { x: (c1.x + c2.x) / 2, y: (c1.y + c2.y) / 2, z: (c1.z + c2.z) / 2 };
+            matchedClusterIndex = i;
+        }
+    }
+
+    if (matchedClusterIndex >= 0 && bestMidpoint) {
+        // merge into matched cluster: update cluster.point as running average of midpoints
+        const cluster = calibrationClusters[matchedClusterIndex];
+        // update running average: newPoint = (cluster.point * n + midpoint) / (n + 1)
+        const n = cluster.midpointsCounted || 1;
+        cluster.point = {
+            x: (cluster.point.x * n + bestMidpoint.x) / (n + 1),
+            y: (cluster.point.y * n + bestMidpoint.y) / (n + 1),
+            z: (cluster.point.z * n + bestMidpoint.z) / (n + 1)
+        };
+        cluster.midpointsCounted = n + 1;
+        cluster.raysCount = (cluster.raysCount || 1) + 1;
+
+        // Optionally update repRay to be average of directions/origins (keep simple: keep first rep)
+        // No change to repRay to minimize computation.
+
+    } else {
+        // Create new cluster with this ray as representative, but no triangulated point yet.
+        // We'll store a provisional point as point on this ray at z-distance 0 (i.e., origin)
+        calibrationClusters.push({
+            point: { x: pNew.x, y: pNew.y, z: pNew.z },
+            raysCount: 1,
+            repRay: { origin: { x: pNew.x, y: pNew.y, z: pNew.z }, direction: { dx: uNew.x, dy: uNew.y, dz: uNew.z } },
+            midpointsCounted: 0
+        });
+    }
+
+    // After adding/merging, attempt to merge nearby clusters to consolidate
+    mergeNearbyClustersIfNeeded();
+}
+
+function mergeNearbyClustersIfNeeded() {
+    if (calibrationClusters.length < 2) return;
+    const merged = [];
+    const used = new Array(calibrationClusters.length).fill(false);
+
+    for (let i = 0; i < calibrationClusters.length; i++) {
+        if (used[i]) continue;
+        let base = calibrationClusters[i];
+        used[i] = true;
+
+        for (let j = i + 1; j < calibrationClusters.length; j++) {
+            if (used[j]) continue;
+            const other = calibrationClusters[j];
+            const dx = base.point.x - other.point.x;
+            const dy = base.point.y - other.point.y;
+            const dz = base.point.z - other.point.z;
+            const d = Math.hypot(dx, dy, dz);
+            if (d <= CLUSTER_MERGE_RADIUS_MM) {
+                // merge other into base: weighted average by midpointsCounted (fallback to raysCount)
+                const w1 = base.midpointsCounted || base.raysCount || 1;
+                const w2 = other.midpointsCounted || other.raysCount || 1;
+                const tot = w1 + w2;
+                base.point = {
+                    x: (base.point.x * w1 + other.point.x * w2) / tot,
+                    y: (base.point.y * w1 + other.point.y * w2) / tot,
+                    z: (base.point.z * w1 + other.point.z * w2) / tot
+                };
+                base.raysCount = (base.raysCount || 0) + (other.raysCount || 0);
+                base.midpointsCounted = (base.midpointsCounted || 0) + (other.midpointsCounted || 0);
+                // Keep base.repRay as-is
+                used[j] = true;
+            }
+        }
+        merged.push(base);
+    }
+
+    calibrationClusters = merged;
+}
+
+/* returns number of determined 3D points (clusters with at least 2 supporting rays) */
+function countDetermined3DPoints() {
+    let c = 0;
+    for (const cl of calibrationClusters) {
+        if ((cl.raysCount || 0) >= 2 || (cl.midpointsCounted || 0) >= 1) {
+            // require at least 2 rays contributing (or at least one midpoint calculated)
+            c++;
+        }
+    }
+    return c;
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -300,6 +434,7 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrating = true;
         calibrationFrames = [];
         calibrationRays = [];
+        calibrationClusters = [];
 
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
@@ -307,6 +442,7 @@ calibrateBtn.addEventListener("click", () => {
         xEl.textContent = "0.00";
         yEl.textContent = "0.00";
         raysEl.textContent = "0";
+        points3DEl.textContent = "0";
 
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
@@ -328,6 +464,7 @@ calibrateBtn.addEventListener("click", () => {
             baseOriginScreen,
             frames: calibrationFrames,
             rays: calibrationRays
+            // NOTE: clusters / triangulated points are kept internal (not added to payload to avoid additional fields)
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -441,7 +578,6 @@ function processFrame() {
     }
 
     // SECOND PASS: recolor image, draw overlays, and (se calibrando) registrar raios por pixel preto
-    // Read current orientation values (as numbers) to use for rotation
     const pitchDegLive = parseFloat(pitchEl.textContent) || 0;
     const yawDegLive = parseFloat(yawEl.textContent) || 0;
     const rollDegLive = parseFloat(rollEl.textContent) || 0;
@@ -483,17 +619,23 @@ function processFrame() {
                 if (dirRotated && isFinite(dirRotated.x) && isFinite(dirRotated.y) && isFinite(dirRotated.z)) {
                     raysDefinedCount++;
 
-                    // make origin = current camera position (+X, +Y, +Z calculados) for this frame
-                    // If values are null, store null (consistent with frame record)
+                    // compute origin (camera position) for this frame
                     const originX = txMm !== null ? Number(txMm.toFixed(4)) : null;
                     const originY = tyMm !== null ? Number(tyMm.toFixed(4)) : null;
                     const originZ = computedZ !== null ? Number(computedZ.toFixed(4)) : (isCalibrated ? Number(baseZmm.toFixed(4)) : null);
 
                     // push single ray record as requested
-                    calibrationRays.push({
+                    const rayRecord = {
                         origin: { x: originX, y: originY, z: originZ },
                         direction: { dx: Number(dirRotated.x.toFixed(6)), dy: Number(dirRotated.y.toFixed(6)), dz: Number(dirRotated.z.toFixed(6)) }
-                    });
+                    };
+                    calibrationRays.push(rayRecord);
+
+                    // TRIANGULATE / AGGREGATE: add this ray to incremental triangulation
+                    // Only attempt triangulation if origin and direction are valid numbers
+                    if (originX !== null && originY !== null && originZ !== null) {
+                        addRayToTriangulation(rayRecord);
+                    }
                 }
             }
         }
@@ -554,6 +696,10 @@ function processFrame() {
 
         // update rays display (número de pixels pretos que tiveram direção definida neste frame)
         raysEl.textContent = String(raysDefinedCount);
+
+        // update cumulative determined 3D points count
+        const determinedCount = countDetermined3DPoints();
+        points3DEl.textContent = String(determinedCount);
     } else {
         // quando não calibrando, contador deve mostrar 0
         raysEl.textContent = "0";
