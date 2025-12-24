@@ -1,9 +1,8 @@
 /* main.js
-   Atualização: durante a calibração, além das funções já existentes, o programa:
-   - mantém em memória uma nuvem de pontos 3D (pontos triangulados com real_pos_mm)
-   - exibe o botão "Download Nuvem (.json)" enquanto a calibração estiver ativa
-   - ao clicar em Download, baixa um arquivo .json contendo a nuvem de pontos
-   Mantive todas as demais funcionalidades inalteradas.
+   Atualização: durante a calibração, cada ponto triangulado (quando real_pos_mm estiver disponível)
+   é pintado de rosa-claro na tela principal e permanece visível.
+   Além disso, desenha uma visualização rápida da nuvem em mini-canvas para inspecionar densidade.
+   Nenhuma outra função foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -13,6 +12,9 @@ const downloadBtn = document.getElementById("downloadBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+
+const miniCanvas = document.getElementById("miniCloud");
+const miniCtx = miniCanvas.getContext("2d");
 
 const redCountDisplay = document.getElementById("redCount");
 const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
@@ -76,6 +78,9 @@ let cumulativeTriangulatedCount = 0;
 // point cloud in memory (unique triangulated points) to be downloaded
 let pointCloud = [];
 
+// screen positions of triangulated points for persistent pink rendering
+let triangulatedScreenPoints = [];
+
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
@@ -107,9 +112,7 @@ scanBtn.addEventListener("click", async () => {
 });
 
 /*
- Calibrar button behavior:
- - If not atualmente calibrating: valida origem & escala, solicita +Z, trava escala, registra origem e inicia coleta (isCalibrating = true).
- - Se estiver calibrando: finaliza, gera JSON com frames + black_points (incluindo direction_cam e possivelmente real_pos_mm) e faz download.
+ Calibrar button behavior unchanged except managing download button visibility.
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -152,6 +155,7 @@ calibrateBtn.addEventListener("click", () => {
         cumulativeDirCount = 0;
         cumulativeTriangulatedCount = 0;
         pointCloud = [];
+        triangulatedScreenPoints = [];
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
@@ -232,7 +236,7 @@ downloadBtn.addEventListener('click', () => {
     URL.revokeObjectURL(url);
 });
 
-/* ... (rest of functions remain identical in behavior) ... */
+/* --- helper functions (unchanged behavior) --- */
 
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
@@ -432,6 +436,7 @@ function solve3x3(A, b) {
    - for each cluster with >=2 rays from distinct camera poses, solve for best-fit 3D point
    - writes real_pos_mm into member entries when successful
    - also rebuilds the in-memory pointCloud (unique points) used by the Download button
+   - also rebuilds triangulatedScreenPoints for persistent pink rendering
 */
 const CLUSTER_TOL_MM = 0.5; // tolerance to group mapped plane points (adjustable)
 
@@ -440,6 +445,7 @@ function updateTriangulation() {
         cumulativeTriangulatedCount = 0;
         triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
         pointCloud = [];
+        triangulatedScreenPoints = [];
         return;
     }
 
@@ -538,6 +544,14 @@ function updateTriangulation() {
     }
     pointCloud = pc;
 
+    // rebuild list of screen positions for triangulated points (pink rendering)
+    triangulatedScreenPoints = [];
+    for (const p of cumulativeBlackPoints) {
+        if (p.real_pos_mm && typeof p.screen_x_px === 'number' && typeof p.screen_y_px === 'number') {
+            triangulatedScreenPoints.push({ x: p.screen_x_px, y: p.screen_y_px });
+        }
+    }
+
     // update cumulativeTriangulatedCount: number of cumulativeBlackPoints with real_pos_mm set
     let c = 0;
     for (const p of cumulativeBlackPoints) {
@@ -547,6 +561,43 @@ function updateTriangulation() {
     triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
 }
 
+/* draw mini cloud onto miniCanvas from pointCloud (projects X,Y mm) */
+function drawMiniCloud() {
+    const w = miniCanvas.width;
+    const h = miniCanvas.height;
+    miniCtx.clearRect(0, 0, w, h);
+    miniCtx.fillStyle = "#000";
+    miniCtx.fillRect(0, 0, w, h);
+
+    if (!pointCloud || pointCloud.length === 0) return;
+
+    // compute bounding box in X,Y
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of pointCloud) {
+        if (p.x_mm < minX) minX = p.x_mm;
+        if (p.y_mm < minY) minY = p.y_mm;
+        if (p.x_mm > maxX) maxX = p.x_mm;
+        if (p.y_mm > maxY) maxY = p.y_mm;
+    }
+
+    // handle degenerate case
+    if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return;
+    const pad = 4; // pixels
+    const spanX = (maxX - minX) || 1;
+    const spanY = (maxY - minY) || 1;
+
+    // draw each point as small square; use semi-transparent pink for visibility
+    miniCtx.fillStyle = "rgba(255,182,193,0.9)"; // lightpink
+    for (const p of pointCloud) {
+        const nx = (p.x_mm - minX) / spanX;
+        const ny = (p.y_mm - minY) / spanY;
+        const px = Math.round(pad + nx * (w - 2 * pad));
+        const py = Math.round(pad + (1 - ny) * (h - 2 * pad)); // invert Y to show conventional top-down
+        miniCtx.fillRect(px, py, 2, 2);
+    }
+}
+
+/* main processing loop (keeps previous behavior). We only add drawing of pink triangulated points and call drawMiniCloud(). */
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -737,9 +788,7 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling,
-    //           define ray and compute pinhole direction for each registered pixel; rotate direction by yaw/pitch/roll
-    //           into the referencial dos pixels pretos; then attempt triangulation entre múltiplos raios (clusters).
+    // ---- map black pixels to XY (mm) and register cumulatively; compute & rotate directions; attempt triangulation.
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
@@ -828,6 +877,23 @@ function processFrame() {
     dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
     triangulatedCountDisplay.textContent = `Pixels pretos 3D determinados: ${cumulativeTriangulatedCount}`;
     // ---- end mapping & registration & pinhole direction rotation & triangulation logic ----
+
+    // --- draw persistent pink markers for triangulated screen points ---
+    if (triangulatedScreenPoints.length > 0) {
+        ctx.save();
+        ctx.fillStyle = "#FFB6C1"; // lightpink
+        for (let i = 0; i < triangulatedScreenPoints.length; i++) {
+            const p = triangulatedScreenPoints[i];
+            // draw small filled circle, size 3 px
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    // draw mini cloud visualization
+    drawMiniCloud();
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
