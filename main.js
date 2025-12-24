@@ -1,7 +1,7 @@
 /* main.js
    Atualizado: durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
    Agora o programa usa aproximação pinhole para calcular a direção desse raio (vetor unitário)
-   e conta quantos pixels pretos tiveram direção definida no frame.
+   e rotaciona esse vetor para o referencial dos pixels pretos usando yaw/pitch/roll (graus → rad).
    O número de raios definidos é mostrado em raysValue.
    Nenhuma outra funcionalidade foi alterada.
 */
@@ -121,16 +121,16 @@ function computeArrowTip(cx, cy, dx, dy, lengthPx) {
 }
 
 /* draw plane polygon */
-function drawPlanePolygon(origin, tipX, tipY) {
-    if (!origin || !tipX || !tipY) return;
-    const corner = { x: tipX.x + (tipY.x - origin.x), y: tipX.y + (tipY.y - origin.y) };
+function drawPlanePolygon(origin, tipX, tipXy) {
+    if (!origin || !tipX || !tipXy) return;
+    const corner = { x: tipX.x + (tipXy.x - origin.x), y: tipX.y + (tipXy.y - origin.y) };
 
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(origin.x, origin.y);
     ctx.lineTo(tipX.x, tipX.y);
     ctx.lineTo(corner.x, corner.y);
-    ctx.lineTo(tipY.x, tipY.y);
+    ctx.lineTo(tipXy.x, tipXy.y);
     ctx.closePath();
     ctx.fillStyle = "rgba(173,216,230,0.4)"; // lightblue
     ctx.fill();
@@ -163,6 +163,73 @@ function computePinholeDirection(px, py) {
     if (!isFinite(norm) || norm === 0) return null;
 
     return { x: vx / norm, y: vy / norm, z: vz / norm };
+}
+
+/* --- ROTATION: yaw/pitch/roll --- */
+/* Converte graus para radianos */
+function degToRad(deg) {
+    return deg * Math.PI / 180;
+}
+
+/* Rotaciona o vetor v ({x,y,z}) usando yaw (deg, z), pitch (deg, x) e roll (deg, y).
+   Aplica a matriz 3x3 R = Rz(yaw) * Rx(pitch) * Ry(roll)
+   Retorna vetor normalizado {x,y,z} ou null se inválido.
+*/
+function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
+    if (!v) return null;
+
+    const yaw = degToRad(yawDeg || 0);
+    const pitch = degToRad(pitchDeg || 0);
+    const roll = degToRad(rollDeg || 0);
+
+    // Rotation matrices components
+    // Rz(yaw)
+    const cz = Math.cos(yaw), sz = Math.sin(yaw);
+    // Rx(pitch)
+    const cx = Math.cos(pitch), sx = Math.sin(pitch);
+    // Ry(roll)
+    const cy = Math.cos(roll), sy = Math.sin(roll);
+
+    // Build combined R = Rz * Rx * Ry
+    // Compute R = Rz * (Rx * Ry)  -> first compute RxRy = Rx * Ry
+    // Rx = [[1,0,0],[0,cx,-sx],[0,sx,cx]]
+    // Ry = [[cy,0,sy],[0,1,0],[-sy,0,cy]]
+    // RxRy = Rx * Ry:
+    const r00 = 1 * cy + 0 * 0 + 0 * -sy; // cy
+    const r01 = 1 * 0  + 0 * 1 + 0 * 0;   // 0
+    const r02 = 1 * sy + 0 * 0 + 0 * cy;  // sy
+
+    const r10 = 0 * cy + cx * 0 + -sx * -sy; // 0 + 0 + sx*sy = sx*sy
+    const r11 = 0 * 0  + cx * 1 + -sx * 0;   // cx
+    const r12 = 0 * sy + cx * 0 + -sx * cy;  // -sx*cy
+
+    const r20 = 0 * cy + sx * 0 + cx * -sy; // 0 + 0 + -cx*sy = -cx*sy
+    const r21 = 0 * 0  + sx * 1 + cx * 0;   // sx
+    const r22 = 0 * sy + sx * 0 + cx * cy;  // cx*cy
+
+    // Now R = Rz * (RxRy)
+    // Rz = [[cz,-sz,0],[sz,cz,0],[0,0,1]]
+    const R00 = cz * r00 + (-sz) * r10 + 0 * r20;
+    const R01 = cz * r01 + (-sz) * r11 + 0 * r21;
+    const R02 = cz * r02 + (-sz) * r12 + 0 * r22;
+
+    const R10 = sz * r00 + cz * r10 + 0 * r20;
+    const R11 = sz * r01 + cz * r11 + 0 * r21;
+    const R12 = sz * r02 + cz * r12 + 0 * r22;
+
+    const R20 = 0 * r00 + 0 * r10 + 1 * r20;
+    const R21 = 0 * r01 + 0 * r11 + 1 * r21;
+    const R22 = 0 * r02 + 0 * r12 + 1 * r22;
+
+    // apply rotation
+    const rx = R00 * v.x + R01 * v.y + R02 * v.z;
+    const ry = R10 * v.x + R11 * v.y + R12 * v.z;
+    const rz = R20 * v.x + R21 * v.y + R22 * v.z;
+
+    const norm = Math.hypot(rx, ry, rz);
+    if (!isFinite(norm) || norm === 0) return null;
+
+    return { x: rx / norm, y: ry / norm, z: rz / norm };
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -296,9 +363,14 @@ function processFrame() {
 
     // NEW: count black pixels for ray estimation in this frame
     let blackPixelCount = 0;
-    // NEW: count of black pixels for which we successfully defined a direction via pinhole
+    // NEW: count of black pixels for which we successfully defined a direction via pinhole+rotation
     let raysDefinedCount = 0;
     const BLACK_THR = 30;
+
+    // Read current orientation values (as numbers) to use for rotation
+    const pitchDegLive = parseFloat(pitchEl.textContent) || 0;
+    const yawDegLive = parseFloat(yawEl.textContent) || 0;
+    const rollDegLive = parseFloat(rollEl.textContent) || 0;
 
     // per-pixel detection + coloring
     // Note: moved p/x/y computation to the top of the loop so black pixels (which may be skipped by HSV test)
@@ -323,7 +395,7 @@ function processFrame() {
             }
         }
 
-        // ---- ADDED: during calibragem, recolor visualmente pixels pretos para vermelho, contar e calcular direção via pinhole ----
+        // ---- ADDED: during calibragem, recolor visualmente pixels pretos para vermelho, contar e calcular direção via pinhole + rotação ----
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
             // paint visually red
             d[i] = 255;
@@ -333,12 +405,16 @@ function processFrame() {
             // increment black pixel count (cada define um raio)
             blackPixelCount++;
 
-            // compute pinhole direction for this pixel
-            const dir = computePinholeDirection(x, y);
-            if (dir && isFinite(dir.x) && isFinite(dir.y) && isFinite(dir.z)) {
-                // count as "raio definido"
-                raysDefinedCount++;
-                // (não armazenamos as direções para economizar memória — apenas as definimos/contamos)
+            // compute pinhole direction for this pixel (camera frame)
+            const dirCamera = computePinholeDirection(x, y);
+            if (dirCamera && isFinite(dirCamera.x) && isFinite(dirCamera.y) && isFinite(dirCamera.z)) {
+                // rotate this direction into the fixed pixel reference using current yaw/pitch/roll
+                const dirRotated = rotateVectorByYawPitchRoll(dirCamera, yawDegLive, pitchDegLive, rollDegLive);
+                if (dirRotated && isFinite(dirRotated.x) && isFinite(dirRotated.y) && isFinite(dirRotated.z)) {
+                    // count as "raio definido" (origem continua na câmera, direção está no referencial dos pixels pretos)
+                    raysDefinedCount++;
+                    // (não armazenamos as direções para economizar memória — apenas as definimos/contamos)
+                }
             }
         }
         // ---------------------------------------------------------------------------------------------------
@@ -376,7 +452,7 @@ function processFrame() {
         }
     }
 
-    // Plane drawing during calibragem
+    // Plane drawing durante calibragem
     if (isCalibrating && r && b && g) {
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
         const lengthPx = ARROW_LENGTH_MM * scaleUsed;
