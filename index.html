@@ -7,6 +7,9 @@
 
     <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="layout.css">
+
+    <!-- model-viewer (para visualização 3D rápida) -->
+    <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 </head>
 <body>
 
@@ -60,13 +63,27 @@
     </div>
 
     <div id="viewerRow">
-        <video id="camera" autoplay playsinline hidden></video>
-        <canvas id="canvas"></canvas>
+        <!-- camera and main canvas -->
+        <div id="mainArea">
+            <video id="camera" autoplay playsinline hidden></video>
+            <canvas id="canvas"></canvas>
+        </div>
 
-        <div id="miniCloudContainer">
-            <div class="miniTitle">Visualização rápida da nuvem</div>
-            <canvas id="miniCloud" width="200" height="200"></canvas>
-            <div class="miniLegend">(X,Y) projetado — densidade)</div>
+        <!-- mini visualizadores: mini-canvas e model-viewer -->
+        <div id="miniArea">
+            <div class="miniTitle">Visualização rápida (2D)</div>
+            <canvas id="miniCanvas" width="240" height="180"></canvas>
+
+            <div class="miniTitle">Visualização rápida (3D)</div>
+            <!-- model-viewer usado como viewport 3D leve; poster atualizado a partir do miniCanvas -->
+            <model-viewer id="viewer"
+                          alt="Nuvem 3D (preview)"
+                          camera-controls
+                          auto-rotate
+                          style="width:240px;height:180px;"
+                          src=""
+                          > <!-- src vazio por padrão, usamos poster/preview do miniCanvas -->
+            </model-viewer>
         </div>
     </div>
 
