@@ -4,12 +4,15 @@
    é atualizada na tela.
    Mantive todas as demais funcionalidades inalteradas.
 
-   Adição específica: rotaciona o vetor de direção do modelo pinhole pelo yaw/pitch/roll
-   (graus -> radianos, aplicação de matriz 3x3) e mantém o vetor normalizado.
+   Adições específicas:
+   - rotaciona o vetor de direção do modelo pinhole pelo yaw/pitch/roll (graus -> radianos, aplicação de matriz 3x3) e mantém o vetor normalizado.
+   - registra a posição 3D (x_mm, y_mm, z_mm) de cada ponto triangulado em uma nuvem de pontos (pointCloud).
+   - botão "Download Nuvem" aparece durante a calibração e permite baixar a nuvem de pontos atual em .json.
 */
 
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
+const downloadBtn = document.getElementById("downloadBtn");
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
@@ -59,6 +62,9 @@ let baseVecSet = false;
 // cumulative registered black points across the whole calibration session
 // Each entry: { x_mm, y_mm, timestamp, camera_pose: {...}, direction_cam: {dx,dy,dz} }
 let cumulativeBlackPoints = [];
+
+// point cloud (apenas posições 3D) — solicitado: armazenar posição 3D de cada ponto triangulado
+let pointCloud = [];
 
 // COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
 let blackDetectCounter = 0;
@@ -136,6 +142,9 @@ calibrateBtn.addEventListener("click", () => {
         baseVecSet = false;
         cumulativeBlackPoints = [];
 
+        // reset point cloud
+        pointCloud = [];
+
         // reset black detection counter so sampling starts fresh
         blackDetectCounter = 0;
 
@@ -156,6 +165,9 @@ calibrateBtn.addEventListener("click", () => {
         rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
         dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
 
+        // mostrar botão de download durante a calibração
+        if (downloadBtn) downloadBtn.hidden = false;
+
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
     }
@@ -163,6 +175,9 @@ calibrateBtn.addEventListener("click", () => {
     // finalize calibration if currently calibrating
     if (isCalibrating) {
         isCalibrating = false;
+
+        // esconder botão de download ao finalizar
+        if (downloadBtn) downloadBtn.hidden = true;
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
@@ -367,6 +382,22 @@ function rotateVectorByYawPitchRoll(vec, yawDeg, pitchDeg, rollDeg) {
     return normalizeVec({ x, y, z });
 }
 
+// evento do botão Download Nuvem — gera e baixa o arquivo .json com a nuvem atual
+if (downloadBtn) {
+    downloadBtn.addEventListener('click', () => {
+        const filename = `nuvem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        const blob = new Blob([JSON.stringify(pointCloud, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    });
+}
+
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -559,6 +590,7 @@ function processFrame() {
     // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling,
     //           define ray and compute pinhole direction for each registered pixel; rotate the direction by yaw/pitch/roll
     //           into the referencial fixo dos pixels pretos triangulados; increment cumulative counts accordingly.
+    //           Additionally: register 3D position (x_mm, y_mm, z_mm) into pointCloud (nuvem de pontos).
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
@@ -625,6 +657,13 @@ function processFrame() {
                                 dy: Number(rotatedDir.y.toFixed(6)),
                                 dz: Number(rotatedDir.z.toFixed(6))
                             }
+                        });
+
+                        // Registrar posição 3D na nuvem de pontos (x_mm, y_mm, z_mm)
+                        pointCloud.push({
+                            x_mm: Number(x_mm.toFixed(4)),
+                            y_mm: Number(y_mm.toFixed(4)),
+                            z_mm: poseZmm !== null ? Number(poseZmm.toFixed(4)) : null
                         });
 
                         // increment rays & directions counters (one ray and one direction per registered point)
