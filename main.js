@@ -1,7 +1,8 @@
 /* main.js
-   Atualizado: durante a calibragem, a posição 3D de cada ponto triangulado (pixel preto)
-   é registrada numa nuvem de pontos (.json). Um botão "Download Nuvem (.json)" aparece
-   durante a calibragem para baixar a nuvem atual. Nenhuma outra funcionalidade foi alterada.
+   Atualizado: durante a calibragem, cada ponto triangulado (>=2 raios) é desenhado
+   no canvas principal como rosa claro, e uma visualização rápida (mini canvas)
+   mostra a distribuição/densidade da nuvem triangulada.
+   Nenhuma outra funcionalidade foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -11,6 +12,9 @@ const downloadBtn = document.getElementById("downloadBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+
+const miniCanvas = document.getElementById("miniCloud");
+const miniCtx = miniCanvas.getContext("2d");
 
 const redCountDisplay = document.getElementById("redCount");
 const pitchEl = document.getElementById("pitch");
@@ -160,6 +164,43 @@ function computePinholeDirection(px, py) {
     if (!isFinite(norm) || norm === 0) return null;
 
     return { x: vx / norm, y: vy / norm, z: vz / norm };
+}
+
+/* project world point to screen (pixels) using pinhole approx and camera pose
+   pos: {x,y,z} in mm (world)
+   camOrigin: {x,y,z} in mm (world)
+   R: rotation matrix (camera->world) used previously (so we invert it with transpose)
+*/
+function projectPointToScreen(pos, camOrigin, R) {
+    if (!canvas || !canvas.width || !canvas.height) return null;
+
+    // compute R_transpose (inverse rotation)
+    const Rt = [
+        [R[0][0], R[1][0], R[2][0]],
+        [R[0][1], R[1][1], R[2][1]],
+        [R[0][2], R[1][2], R[2][2]]
+    ];
+
+    // vector from camera origin to point in world coords
+    const vx = pos.x - camOrigin.x;
+    const vy = pos.y - camOrigin.y;
+    const vz = pos.z - camOrigin.z;
+
+    // express in camera frame: v_cam = R^T * v_world_rel
+    const Xc = Rt[0][0] * vx + Rt[0][1] * vy + Rt[0][2] * vz;
+    const Yc = Rt[1][0] * vx + Rt[1][1] * vy + Rt[1][2] * vz;
+    const Zc = Rt[2][0] * vx + Rt[2][1] * vy + Rt[2][2] * vz;
+
+    if (!isFinite(Zc) || Zc <= 0) return null; // behind camera or invalid
+
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const f = Math.max(canvas.width, canvas.height) * 0.9; // same f used in pinhole
+
+    const px = (Xc / Zc) * f + cx;
+    const py = (Yc / Zc) * f + cy;
+
+    return { x: px, y: py };
 }
 
 /* Euler -> rotation matrix helpers */
@@ -625,6 +666,86 @@ function processFrame() {
     } else {
         raysEl.textContent = "0";
     }
+
+    // --- Desenhar pontos triangulados no canvas principal (rosa claro) ---
+    // Para desenhar, projetamos cada ponto 3D no plano da imagem usando pose atual.
+    // Usamos a pose atual (camOrigin/R) como aproximação; pontos sem projeção válida são ignorados.
+    if (isCalibrating) {
+        const pitch = parseFloat(pitchEl.textContent) || 0;
+        const yaw = parseFloat(yawEl.textContent) || 0;
+        const roll = parseFloat(rollEl.textContent) || 0;
+
+        const camOrigin = {
+            x: (txMm !== null && isFinite(txMm)) ? txMm : 0,
+            y: (tyMm !== null && isFinite(tyMm)) ? tyMm : 0,
+            z: (computedZ !== null && isFinite(computedZ)) ? computedZ : (isFinite(baseZmm) ? baseZmm : 100)
+        };
+
+        const R = eulerToRotationMatrix(yaw, pitch, roll);
+
+        ctx.save();
+        ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink-ish
+        // draw up to a reasonable number to avoid slowdown
+        const drawLimit = 10000;
+        let drawn = 0;
+        for (let i = 0; i < pointCandidates.length && drawn < drawLimit; i++) {
+            const p = pointCandidates[i];
+            if (p.raysCount < 2) continue;
+            const proj = projectPointToScreen(p.pos, camOrigin, R);
+            if (!proj) continue;
+            // small circle
+            ctx.beginPath();
+            ctx.arc(proj.x, proj.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+            drawn++;
+        }
+        ctx.restore();
+    }
+
+    // --- Atualizar mini canvas (visualização rápida da nuvem) ---
+    // Mapeamos as coordenadas X/Y (mm) dos pontos triangulados para o mini canvas.
+    function updateMiniCloud() {
+        const pts = pointCandidates.filter(p => p.raysCount >= 2);
+        // limpar
+        miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+        if (pts.length === 0) return;
+
+        // calcular bounding box em X/Y (mm)
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i < pts.length; i++) {
+            const q = pts[i].pos;
+            if (q.x < minX) minX = q.x;
+            if (q.y < minY) minY = q.y;
+            if (q.x > maxX) maxX = q.x;
+            if (q.y > maxY) maxY = q.y;
+        }
+        // adicionar margem mínima para evitar divisão por zero
+        if (maxX - minX < 1e-6) { maxX = minX + 1; minX = minX - 1; }
+        if (maxY - minY < 1e-6) { maxY = minY + 1; minY = minY - 1; }
+
+        const pad = 6; // pixels padding
+        const w = miniCanvas.width - pad * 2;
+        const h = miniCanvas.height - pad * 2;
+
+        // desenhar fundo leve
+        miniCtx.fillStyle = "#060606";
+        miniCtx.fillRect(0, 0, miniCanvas.width, miniCanvas.height);
+
+        // desenhar pontos como pequenos quadrados ou pixels para ver densidade
+        miniCtx.fillStyle = "rgba(255,182,193,0.95)"; // same light pink
+        const maxToDraw = 20000;
+        const step = Math.max(1, Math.ceil(pts.length / maxToDraw));
+        for (let i = 0, drawn = 0; i < pts.length; i += step, drawn++) {
+            const q = pts[i].pos;
+            const nx = (q.x - minX) / (maxX - minX);
+            const ny = (q.y - minY) / (maxY - minY);
+            const px = Math.round(pad + nx * w);
+            const py = Math.round(pad + (1 - ny) * h); // invert Y for display
+            miniCtx.fillRect(px, py, 2, 2);
+        }
+    }
+
+    if (isCalibrating) updateMiniCloud();
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
