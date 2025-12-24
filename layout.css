@@ -38,6 +38,13 @@ button {
     font-family: monospace;
 }
 
+#rayCount {
+    color: #88ccff;
+    font-size: 16px;
+    margin-bottom: 8px;
+    font-family: monospace;
+}
+
 #orientation {
     font-family: monospace;
     font-size: 14px;
