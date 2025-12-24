@@ -68,6 +68,14 @@ button {
     color: #ff88ff;
 }
 
+/* NOVO: estilo para o contador de pontos 3D */
+#points3DInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: #66ccff;
+}
+
 #calibrators {
     display: flex;
     gap: 12px;
