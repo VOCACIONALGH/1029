@@ -1,11 +1,7 @@
 /* main.js
-   Atualizações:
-   - Durante a calibragem, pixels pretos (RGB baixos) continuam sendo pintados de vermelho visualmente.
-   - Durante a calibragem, quando os vetores base são conhecidos, cada pixel preto mapeado tem sua posição XY (mm) calculada e **registrada cumulativamente**.
-   - A tela exibe a contagem cumulativa de pixels pretos registrados.
-   - Ao finalizar a calibragem (botão "Calibrar"), o arquivo .json agora inclui um array `black_points` com cada ponto registrado contendo:
-       { x_mm, y_mm, timestamp, camera_pose: { x_mm, y_mm, z_mm, pitch_deg, yaw_deg, roll_deg } }
-   - Nenhuma outra função foi alterada.
+   Atualização: durante a calibragem, apenas 1 em 10 pixels pretos detectados são contabilizados no arquivo .json.
+   Implementado via um contador cumulativo (blackDetectCounter) reiniciado no início da calibragem.
+   Nenhuma outra função foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -57,6 +53,9 @@ let baseVecSet = false;
 // cumulative registered black points across the whole calibration session
 // Each entry: { x_mm, y_mm, timestamp, camera_pose: { x_mm, y_mm, z_mm, pitch_deg, yaw_deg, roll_deg } }
 let cumulativeBlackPoints = [];
+
+// COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
+let blackDetectCounter = 0;
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -125,6 +124,9 @@ calibrateBtn.addEventListener("click", () => {
         baseVecY_px = null;
         baseVecSet = false;
         cumulativeBlackPoints = [];
+
+        // reset black detection counter so sampling starts fresh
+        blackDetectCounter = 0;
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
@@ -464,7 +466,7 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively ----
+    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling ----
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         // prepare matrix M = [ [ux.x, uy.x], [ux.y, uy.y] ]
         const ux = baseVecX_px;
@@ -505,20 +507,23 @@ function processFrame() {
                 const y_mm = inv10 * vx + inv11 * vy;
 
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
-                    // register cumulatively
-                    cumulativeBlackPoints.push({
-                        x_mm: Number(x_mm.toFixed(4)),
-                        y_mm: Number(y_mm.toFixed(4)),
-                        timestamp: timestampNow,
-                        camera_pose: {
-                            x_mm: poseXmm.x_mm,
-                            y_mm: poseXmm.y_mm,
-                            z_mm: poseZmm,
-                            pitch_deg: Number(pitch.toFixed(3)),
-                            yaw_deg: Number(yaw.toFixed(3)),
-                            roll_deg: Number(roll.toFixed(3))
-                        }
-                    });
+                    // increment global detection counter. Only register 1 in 10 (when blackDetectCounter % 10 === 0)
+                    blackDetectCounter++;
+                    if ((blackDetectCounter % 10) === 0) {
+                        cumulativeBlackPoints.push({
+                            x_mm: Number(x_mm.toFixed(4)),
+                            y_mm: Number(y_mm.toFixed(4)),
+                            timestamp: timestampNow,
+                            camera_pose: {
+                                x_mm: poseXmm.x_mm,
+                                y_mm: poseXmm.y_mm,
+                                z_mm: poseZmm,
+                                pitch_deg: Number(pitch.toFixed(3)),
+                                yaw_deg: Number(yaw.toFixed(3)),
+                                roll_deg: Number(roll.toFixed(3))
+                            }
+                        });
+                    }
                 }
             }
         }
