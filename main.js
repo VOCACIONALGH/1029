@@ -1,8 +1,8 @@
 /* main.js
-   Atualização: durante a calibragem, utiliza-se aproximação pinhole para definir a direção (vetor unitário)
-   de cada pixel preto registrado no arquivo .json. A contagem cumulativa de pixels com direção definida
-   é atualizada na tela.
-   Mantive todas as demais funcionalidades inalteradas.
+   Atualização: durante a calibragem, o programa triangula posições 3D reais de pixels pretos registrados
+   usando múltiplos raios (de diferentes poses). A contagem cumulativa de pixels com posição 3D determinada
+   é atualizada na tela e os pontos triangulados são incluídos no arquivo .json final.
+   Nenhuma outra funcionalidade foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -16,6 +16,7 @@ const redCountDisplay = document.getElementById("redCount");
 const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
 const rayCountDisplay = document.getElementById("rayCount");
 const dirCountDisplay = document.getElementById("dirCount");
+const triangulatedCountDisplay = document.getElementById("triangulatedCount");
 const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
@@ -39,7 +40,7 @@ let isCalibrated = false;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved durante calibragem
+let calibrationFrames = []; // array of frame objects saved during calibragem
 
 // last centroids
 let lastRcentroid = null;     // {x,y} of last detected red centroid
@@ -60,11 +61,16 @@ let cumulativeBlackPoints = [];
 // COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
 let blackDetectCounter = 0;
 
-// cumulative rays (kept for display/count). Each registered point also defines a ray; count maintained.
+// cumulative rays/directions counts
 let cumulativeRaysCount = 0;
-
-// cumulative count of points with direction defined (should increment when we add direction to a registered point)
 let cumulativeDirCount = 0;
+
+// triangulation structures:
+// map from spatial bin key -> array of rays { origin:{x,y,z}, dir:{x,y,z}, timestamp }
+// when >=2 rays available for a key, try triangulation and store in triangulatedPointsByKey
+const raysByKey = new Map();
+const triangulatedPointsByKey = new Map(); // key -> { x,y,z, num_rays, timestamp }
+let cumulativeTriangulatedCount = 0;
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -99,7 +105,7 @@ scanBtn.addEventListener("click", async () => {
 /*
  Calibrar button behavior:
  - If not atualmente calibrating: valida origem & escala, solicita +Z, trava escala, registra origem e inicia coleta (isCalibrating = true).
- - Se estiver calibrando: finaliza, gera JSON com frames + black_points (incluindo direction_cam) e faz download.
+ - Se estiver calibrando: finaliza, gera JSON com frames + black_points + triangulated_points e faz download.
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -137,7 +143,10 @@ calibrateBtn.addEventListener("click", () => {
         // reset black detection counter so sampling starts fresh
         blackDetectCounter = 0;
 
-        // reset cumulative rays and direction counts
+        // reset rays/triangulation structures
+        raysByKey.clear();
+        triangulatedPointsByKey.clear();
+        cumulativeTriangulatedCount = 0;
         cumulativeRaysCount = 0;
         cumulativeDirCount = 0;
 
@@ -153,6 +162,7 @@ calibrateBtn.addEventListener("click", () => {
         blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
         rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
         dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
+        triangulatedCountDisplay.textContent = `Pixels pretos com posição 3D: ${cumulativeTriangulatedCount}`;
 
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
@@ -167,14 +177,27 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
+        // build triangulated_points array from triangulatedPointsByKey
+        const triangulated_points = [];
+        triangulatedPointsByKey.forEach((v, key) => {
+            triangulated_points.push({
+                key,
+                x_mm: Number(v.x.toFixed(6)),
+                y_mm: Number(v.y.toFixed(6)),
+                z_mm: Number(v.z.toFixed(6)),
+                num_rays: v.num_rays,
+                timestamp: v.timestamp
+            });
+        });
+
         const payload = {
             createdAt: new Date().toISOString(),
             baseZmm,
             lockedScale,
             baseOriginScreen,
             frames: calibrationFrames,
-            black_points: cumulativeBlackPoints
-            // black_points entries now include direction_cam (pinhole approximation)
+            black_points: cumulativeBlackPoints,
+            triangulated_points
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -293,8 +316,8 @@ function normalizeVec(v) {
 
 /* pinhole direction approximation:
    - principal point assumed at image center (cx,cy)
-   - focal length (px) approximated as 0.8 * max(image width, height) (reasonable approximation)
-   - camera coordinate convention: z forward, x to right, y down (direction vector normalized)
+   - focal length (px) approximated as 0.8 * max(image width, height)
+   - camera coordinate convention: z forward, x right, y down
 */
 function computePinholeDirectionForPixel(pixelX, pixelY) {
     const cx = canvas.width / 2;
@@ -305,6 +328,93 @@ function computePinholeDirectionForPixel(pixelX, pixelY) {
     const z_cam = 1;
     const dir = normalizeVec({ x: x_cam, y: y_cam, z: z_cam });
     return dir;
+}
+
+/* triangulate from multiple rays using linear least squares:
+   Solve for X minimizing sum ||(I - u u^T) (X - p)||^2
+   Which yields: (sum (I - u u^T)) X = sum (I - u u^T) p
+*/
+function triangulateRaysLeastSquares(rays) {
+    // rays: [{origin:{x,y,z}, dir:{x,y,z}}]
+    // build A (3x3) and b (3)
+    let A = [[0,0,0],[0,0,0],[0,0,0]];
+    let b = [0,0,0];
+
+    for (let i = 0; i < rays.length; i++) {
+        const p = rays[i].origin;
+        const u = rays[i].dir;
+        // compute I - u u^T
+        const uuT = [
+            [u.x * u.x, u.x * u.y, u.x * u.z],
+            [u.y * u.x, u.y * u.y, u.y * u.z],
+            [u.z * u.x, u.z * u.y, u.z * u.z]
+        ];
+        const M = [
+            [1 - uuT[0][0], -uuT[0][1], -uuT[0][2]],
+            [-uuT[1][0], 1 - uuT[1][1], -uuT[1][2]],
+            [-uuT[2][0], -uuT[2][1], 1 - uuT[2][2]]
+        ];
+        // accumulate A += M
+        for (let r = 0; r < 3; r++) {
+            for (let c = 0; c < 3; c++) {
+                A[r][c] += M[r][c];
+            }
+        }
+        // accumulate b += M * p
+        b[0] += M[0][0]*p.x + M[0][1]*p.y + M[0][2]*p.z;
+        b[1] += M[1][0]*p.x + M[1][1]*p.y + M[1][2]*p.z;
+        b[2] += M[2][0]*p.x + M[2][1]*p.y + M[2][2]*p.z;
+    }
+
+    // solve A x = b (3x3)
+    const detA = determinant3(A);
+    if (Math.abs(detA) < 1e-12) return null;
+    const invA = invert3(A);
+    const X = {
+        x: invA[0][0]*b[0] + invA[0][1]*b[1] + invA[0][2]*b[2],
+        y: invA[1][0]*b[0] + invA[1][1]*b[1] + invA[1][2]*b[2],
+        z: invA[2][0]*b[0] + invA[2][1]*b[1] + invA[2][2]*b[2]
+    };
+    return X;
+}
+
+function determinant3(m) {
+    return m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+         - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+         + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+}
+
+function invert3(m) {
+    const det = determinant3(m);
+    if (Math.abs(det) < 1e-12) return null;
+    const invDet = 1 / det;
+    const a = m;
+    const inv = [
+        [
+            (a[1][1]*a[2][2]-a[1][2]*a[2][1]) * invDet,
+            (a[0][2]*a[2][1]-a[0][1]*a[2][2]) * invDet,
+            (a[0][1]*a[1][2]-a[0][2]*a[1][1]) * invDet
+        ],
+        [
+            (a[1][2]*a[2][0]-a[1][0]*a[2][2]) * invDet,
+            (a[0][0]*a[2][2]-a[0][2]*a[2][0]) * invDet,
+            (a[0][2]*a[1][0]-a[0][0]*a[1][2]) * invDet
+        ],
+        [
+            (a[1][0]*a[2][1]-a[1][1]*a[2][0]) * invDet,
+            (a[0][1]*a[2][0]-a[0][0]*a[2][1]) * invDet,
+            (a[0][0]*a[1][1]-a[0][1]*a[1][0]) * invDet
+        ]
+    ];
+    return inv;
+}
+
+// generate binning key for near-equal XY to group same physical pixel across frames
+function keyFromXY(x_mm, y_mm) {
+    const binSize = 0.5; // mm bins (adjustable). Groups points within 0.5 mm
+    const kx = Math.round(x_mm / binSize);
+    const ky = Math.round(y_mm / binSize);
+    return `${kx}_${ky}`;
 }
 
 function processFrame() {
@@ -334,8 +444,7 @@ function processFrame() {
 
         const { h, s, v } = rgbToHsv(r, g, b);
         if (s < 0.35 || v < 0.12) {
-            // keep scanning — we will still possibly recolor black pixels below if calibrating
-            // but skip color-based detections
+            // skip color-based detections
         } else {
             const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
 
@@ -351,7 +460,7 @@ function processFrame() {
             }
         }
 
-        // ---- recolor visually pixels pretos para vermelho durante calibragem ----
+        // recolor visually pixels pretos para vermelho durante calibragem
         const BLACK_THR = 30;
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
             d[i] = 255;
@@ -497,8 +606,7 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling,
-    //           define ray and compute pinhole direction for each registered pixel; increment cumulative counts accordingly.
+    // ---- NEW: process blackPixels -> map to XY, register subset (1-in-10), compute pinhole direction, store ray and try triangulation ----
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         const ux = baseVecX_px;
         const uy = baseVecY_px;
@@ -510,7 +618,7 @@ function processFrame() {
             const inv10 = -c / det;
             const inv11 = a / det;
 
-            // current camera pose to attach to each registered point
+            // current camera pose for attachment
             const poseXmm = (function() {
                 if (isCalibrated && lastRcentroid && baseOriginScreen) {
                     const dxPixels = lastRcentroid.x - baseOriginScreen.x;
@@ -540,7 +648,7 @@ function processFrame() {
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
                     blackDetectCounter++;
                     if ((blackDetectCounter % 10) === 0) {
-                        // compute pinhole direction for the screen pixel (uses screen pixel coords, independent of plane mapping)
+                        // compute pinhole direction for the screen pixel
                         const dir = computePinholeDirectionForPixel(p.x, p.y);
 
                         // register cumulative black point with direction_cam included
@@ -563,19 +671,50 @@ function processFrame() {
                             }
                         });
 
-                        // increment rays & directions counters (one ray and one direction per registered point)
                         cumulativeRaysCount++;
                         cumulativeDirCount++;
+
+                        // form ray in world coordinates:
+                        // origin = camera pose (x_mm, y_mm, z_mm)
+                        const origin = { x: poseXmm.x_mm, y: poseXmm.y_mm, z: poseZmm };
+                        const dirCam = dir; // in camera coords (approx). We assume camera axes aligned with world for this app.
+                        // NOTE: using camera coords as world coords because we only have approximate pose translations; this matches previous approximations in the program.
+
+                        const ray = { origin, dir: dirCam, timestamp: timestampNow };
+
+                        // decide key to group same physical point across frames using XY binning
+                        const key = keyFromXY(x_mm, y_mm);
+
+                        if (!raysByKey.has(key)) raysByKey.set(key, []);
+                        raysByKey.get(key).push(ray);
+
+                        // attempt triangulation if we have at least 2 rays and not yet triangulated for this key
+                        const raysForKey = raysByKey.get(key);
+                        if (raysForKey.length >= 2 && !triangulatedPointsByKey.has(key)) {
+                            const X = triangulateRaysLeastSquares(raysForKey);
+                            if (X) {
+                                triangulatedPointsByKey.set(key, {
+                                    x: X.x,
+                                    y: X.y,
+                                    z: X.z,
+                                    num_rays: raysForKey.length,
+                                    timestamp: new Date().toISOString()
+                                });
+                                cumulativeTriangulatedCount++;
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
     // update cumulative counts on screen
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
     rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
     dirCountDisplay.textContent = `Pixels pretos com direção definida: ${cumulativeDirCount}`;
-    // ---- end mapping & registration & pinhole direction logic ----
+    triangulatedCountDisplay.textContent = `Pixels pretos com posição 3D: ${cumulativeTriangulatedCount}`;
+    // ---- end mapping & registration & triangulation logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
