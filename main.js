@@ -1,9 +1,10 @@
 /* main.js
    Atualização: durante a calibragem, as posições 3D trianguladas são registradas numa nuvem de pontos (.json).
    Botão "Download Nuvem" aparece durante a calibragem para baixar a nuvem a qualquer momento.
-   Adição solicitada: durante a calibração cada ponto triangulado é pintado de rosa-claro no canvas principal,
-   e é desenhada uma visualização rápida da nuvem em um mini-canvas (densidade).
-   Nenhuma outra função foi alterada.
+   Mudança solicitada agora: ao computar a direção do raio a partir do pixel, rotacionar esse vetor usando
+   a pose da câmera (pitch, yaw, roll) para expressá-lo no referencial do mundo (referencial dos pixels pretos triangulados).
+   Os raios continuam tendo origem na câmera; apenas a direção é convertida para o referencial do mundo.
+   Nenhuma outra função do programa foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -344,6 +345,73 @@ function normalizeVec(v) {
     const mag = Math.hypot(v.x, v.y, v.z);
     if (mag === 0) return { x: 0, y: 0, z: 0 };
     return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
+}
+
+/* --- NOVA FUNÇÃO: rotaciona vetor de direção da câmera para o referencial do mundo usando pitch/yaw/roll ---
+   Observações:
+   - Os valores usados são os que aparecem na UI: pitch = pitchEl.textContent (e.beta), yaw = yawEl.textContent (e.alpha), roll = rollEl.textContent (e.gamma).
+   - Interpretação aplicada aqui:
+       pitch => rotação em torno do eixo X (graus)
+       roll  => rotação em torno do eixo Y (graus)
+       yaw   => rotação em torno do eixo Z (graus)
+   - A matriz de rotação usada (para transformar vetor_camera -> vetor_mundo) é:
+       R = Rz(yaw) * Ry(roll) * Rx(pitch)
+     onde Rx, Ry, Rz são matrizes de rotação elementares.
+   - A função retorna um vetor normalizado.
+*/
+function rotateDirByPose(dir, pitchDeg, yawDeg, rollDeg) {
+    // fallback se dir inválido
+    if (!dir) return dir;
+    const toRad = Math.PI / 180;
+    const px = (pitchDeg || 0) * toRad;
+    const yy = (yawDeg || 0) * toRad;
+    const rz = (rollDeg || 0) * toRad;
+
+    // Rx (pitch around X)
+    const cx = Math.cos(px), sx = Math.sin(px);
+    const Rx = [
+        [1, 0, 0],
+        [0, cx, -sx],
+        [0, sx, cx]
+    ];
+
+    // Ry (roll around Y)
+    const cy = Math.cos(rz), sy = Math.sin(rz);
+    const Ry = [
+        [cy, 0, sy],
+        [0, 1, 0],
+        [-sy, 0, cy]
+    ];
+
+    // Rz (yaw around Z)
+    const cz = Math.cos(yy), sz = Math.sin(yy);
+    const Rz = [
+        [cz, -sz, 0],
+        [sz, cz, 0],
+        [0, 0, 1]
+    ];
+
+    // R = Rz * Ry * Rx  (matrix multiply)
+    // temp = Ry * Rx
+    function matMul(A, B) {
+        const res = [];
+        for (let i = 0; i < 3; i++) {
+            res[i] = [];
+            for (let j = 0; j < 3; j++) {
+                res[i][j] = A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j];
+            }
+        }
+        return res;
+    }
+    const temp = matMul(Ry, Rx);
+    const R = matMul(Rz, temp);
+
+    // multiply R * dir
+    const vx = R[0][0]*dir.x + R[0][1]*dir.y + R[0][2]*dir.z;
+    const vy = R[1][0]*dir.x + R[1][1]*dir.y + R[1][2]*dir.z;
+    const vz = R[2][0]*dir.x + R[2][1]*dir.y + R[2][2]*dir.z;
+
+    return normalizeVec({ x: vx, y: vy, z: vz });
 }
 
 /* pinhole direction approximation:
@@ -721,7 +789,11 @@ function processFrame() {
                 if (isFinite(x_mm) && !isNaN(x_mm) && isFinite(y_mm) && !isNaN(y_mm)) {
                     blackDetectCounter++;
                     if ((blackDetectCounter % 10) === 0) {
-                        const dir = computePinholeDirectionForPixel(p.x, p.y);
+                        // compute ray direction in camera coords
+                        const camDir = computePinholeDirectionForPixel(p.x, p.y);
+
+                        // rotate camera direction into world (peça) frame using camera pose (pitch,yaw,roll)
+                        const worldDir = rotateDirByPose(camDir, pitch, yaw, roll);
 
                         cumulativeBlackPoints.push({
                             x_mm: Number(x_mm.toFixed(4)),
@@ -735,10 +807,11 @@ function processFrame() {
                                 yaw_deg: Number(yaw.toFixed(3)),
                                 roll_deg: Number(roll.toFixed(3))
                             },
+                            // direction now expressed in referencial do mundo (rotacionada)
                             direction_cam: {
-                                dx: Number(dir.x.toFixed(6)),
-                                dy: Number(dir.y.toFixed(6)),
-                                dz: Number(dir.z.toFixed(6))
+                                dx: Number(worldDir.x.toFixed(6)),
+                                dy: Number(worldDir.y.toFixed(6)),
+                                dz: Number(worldDir.z.toFixed(6))
                             }
                         });
 
@@ -747,7 +820,8 @@ function processFrame() {
 
                         // include pixel screen coords in the ray so we can mark triangulated point visually
                         const origin = { x: poseXmm.x_mm, y: poseXmm.y_mm, z: poseZmm };
-                        const ray = { origin, dir, timestamp: timestampNow, pixel: { x: p.x, y: p.y } };
+                        // ray.dir now contains the direction in world frame (as required)
+                        const ray = { origin, dir: worldDir, timestamp: timestampNow, pixel: { x: p.x, y: p.y } };
 
                         const key = keyFromXY(x_mm, y_mm);
 
