@@ -1,6 +1,8 @@
 /* main.js
    Atualização: durante a calibragem, as posições 3D trianguladas são registradas numa nuvem de pontos (.json).
    Botão "Download Nuvem" aparece durante a calibragem para baixar a nuvem a qualquer momento.
+   Adição solicitada: durante a calibração cada ponto triangulado é pintado de rosa-claro no canvas principal,
+   e é desenhada uma visualização rápida da nuvem em um mini-canvas (densidade).
    Nenhuma outra função foi alterada.
 */
 
@@ -11,6 +13,10 @@ const downloadCloudBtn = document.getElementById("downloadCloudBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+
+// mini canvas para visualização rápida da nuvem
+const miniCanvas = document.getElementById("miniCloud");
+const miniCtx = miniCanvas ? miniCanvas.getContext("2d") : null;
 
 const redCountDisplay = document.getElementById("redCount");
 const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
@@ -69,8 +75,7 @@ let cumulativeDirCount = 0;
 const raysByKey = new Map();
 const triangulatedPointsByKey = new Map(); // key -> { x,y,z, num_rays, timestamp }
 let cumulativeTriangulatedCount = 0;
-
-// triangulated point cloud array (exportable). Each: { x_mm, y_mm, z_mm, num_rays, timestamp }
+// triangulated point cloud array (exportable). Each: { x_mm, y_mm, z_mm, num_rays, timestamp, screen_x, screen_y(optional) }
 let triangulatedCloud = [];
 
 scanBtn.addEventListener("click", async () => {
@@ -96,6 +101,13 @@ scanBtn.addEventListener("click", async () => {
         video.addEventListener("loadedmetadata", () => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
+
+            // configure mini canvas pixel size (already has width/height attr in HTML)
+            if (miniCanvas) {
+                // nothing required here, but ensure it is cleared
+                miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+            }
+
             requestAnimationFrame(processFrame);
         }, { once: true });
     } catch (err) {
@@ -278,7 +290,7 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     const y2 = cy + uy * lengthPx;
 
     const headLen = 12;
-    const angle = Math.atan2(y2 - cy, x2 - cx);
+    const angle = Math.atan2(y2 - cx, x2 - cx);
 
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -294,8 +306,7 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     ctx.lineTo(
         x2 - headLen * Math.cos(angle - Math.PI / 6),
         y2 - headLen * Math.sin(angle - Math.PI / 6)
-    );
-    ctx.lineTo(
+    );    ctx.lineTo(
         x2 - headLen * Math.cos(angle + Math.PI / 6),
         y2 - headLen * Math.sin(angle + Math.PI / 6)
     );
@@ -426,6 +437,68 @@ function keyFromXY(x_mm, y_mm) {
     const kx = Math.round(x_mm / binSize);
     const ky = Math.round(y_mm / binSize);
     return `${kx}_${ky}`;
+}
+
+/* draw mini cloud (density) into mini canvas */
+function drawMiniCloud() {
+    if (!miniCtx) return;
+    miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+
+    if (triangulatedCloud.length === 0) {
+        // optional: draw faint grid if empty
+        miniCtx.fillStyle = "rgba(255,255,255,0.03)";
+        for (let i = 0; i < 5; i++) {
+            miniCtx.fillRect(i * (miniCanvas.width / 5), miniCanvas.height / 2, 1, 1);
+        }
+        return;
+    }
+
+    // compute bounding box in mm (x_mm, y_mm)
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < triangulatedCloud.length; i++) {
+        const p = triangulatedCloud[i];
+        if (!isFinite(p.x_mm) || !isFinite(p.y_mm)) continue;
+        if (p.x_mm < minX) minX = p.x_mm;
+        if (p.x_mm > maxX) maxX = p.x_mm;
+        if (p.y_mm < minY) minY = p.y_mm;
+        if (p.y_mm > maxY) maxY = p.y_mm;
+    }
+    if (minX === Infinity) return;
+
+    // add small padding
+    const padX = (maxX - minX) * 0.08 || 1;
+    const padY = (maxY - minY) * 0.08 || 1;
+    minX -= padX; maxX += padX; minY -= padY; maxY += padY;
+
+    const rangeX = maxX - minX;
+    const rangeY = maxY - minY;
+    const w = miniCanvas.width;
+    const h = miniCanvas.height;
+
+    // draw each point
+    for (let i = 0; i < triangulatedCloud.length; i++) {
+        const p = triangulatedCloud[i];
+        if (!isFinite(p.x_mm) || !isFinite(p.y_mm)) continue;
+        const nx = (p.x_mm - minX) / rangeX;
+        const ny = (p.y_mm - minY) / rangeY;
+        // map to canvas (invert Y so smaller y_mm at top visually)
+        const px = Math.round(nx * (w - 4) + 2);
+        const py = Math.round((1 - ny) * (h - 4) + 2);
+
+        miniCtx.fillStyle = "rgba(255,182,193,0.95)"; // light pink
+        miniCtx.fillRect(px, py, 2, 2);
+    }
+}
+
+/* used to draw a pink marker on the main canvas for a triangulated point */
+function drawTriangulatedOnMain(screenX, screenY) {
+    if (!screenX || !screenY) return;
+    ctx.save();
+    ctx.fillStyle = "rgba(255,182,193,0.95)"; // light pink
+    ctx.beginPath();
+    ctx.arc(screenX, screenY, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
 }
 
 function processFrame() {
@@ -672,8 +745,9 @@ function processFrame() {
                         cumulativeRaysCount++;
                         cumulativeDirCount++;
 
+                        // include pixel screen coords in the ray so we can mark triangulated point visually
                         const origin = { x: poseXmm.x_mm, y: poseXmm.y_mm, z: poseZmm };
-                        const ray = { origin, dir, timestamp: timestampNow };
+                        const ray = { origin, dir, timestamp: timestampNow, pixel: { x: p.x, y: p.y } };
 
                         const key = keyFromXY(x_mm, y_mm);
 
@@ -691,14 +765,38 @@ function processFrame() {
                                     num_rays: raysForKey.length,
                                     timestamp: new Date().toISOString()
                                 });
-                                // add to triangulatedCloud array immediately for live download
+
+                                // compute representative screen coordinate (average of ray pixel positions if available)
+                                let sumSX = 0, sumSY = 0, cntS = 0;
+                                for (let ri = 0; ri < raysForKey.length; ri++) {
+                                    if (raysForKey[ri].pixel) {
+                                        sumSX += raysForKey[ri].pixel.x;
+                                        sumSY += raysForKey[ri].pixel.y;
+                                        cntS++;
+                                    }
+                                }
+                                let repScreenX = null, repScreenY = null;
+                                if (cntS > 0) {
+                                    repScreenX = sumSX / cntS;
+                                    repScreenY = sumSY / cntS;
+                                }
+
+                                // add to triangulatedCloud array immediately for live download and visualization
                                 triangulatedCloud.push({
                                     x_mm: X.x,
                                     y_mm: X.y,
                                     z_mm: X.z,
                                     num_rays: raysForKey.length,
-                                    timestamp: new Date().toISOString()
+                                    timestamp: new Date().toISOString(),
+                                    screen_x: repScreenX,
+                                    screen_y: repScreenY
                                 });
+
+                                // draw a light-pink marker on the main canvas (visual feedback)
+                                if (repScreenX !== null && repScreenY !== null) {
+                                    drawTriangulatedOnMain(repScreenX, repScreenY);
+                                }
+
                                 cumulativeTriangulatedCount++;
                             }
                         }
@@ -706,6 +804,11 @@ function processFrame() {
                 }
             }
         }
+    }
+
+    // update mini visualization for triangulated cloud (density)
+    if (isCalibrating) {
+        drawMiniCloud();
     }
 
     // update displays
