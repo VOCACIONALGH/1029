@@ -1,9 +1,9 @@
 /* main.js
-   Atualização: durante a calibragem, para cada pixel preto (critério BLACK_THR)
-   o programa calcula uma direção 3D aproximada usando o modelo pinhole:
-     dir = normalize([x - cx, y - cy, f])
-   Conta quantos pixels pretos tiveram a direção definida e atualiza #raysValue.
-   Nenhuma outra lógica do programa foi modificada.
+   Atualizado: durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
+   Agora o programa usa aproximação pinhole para calcular a direção desse raio (vetor unitário)
+   e conta quantos pixels pretos tiveram direção definida no frame.
+   O número de raios definidos é mostrado em raysValue.
+   Nenhuma outra funcionalidade foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -38,7 +38,7 @@ let isCalibrated = false;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved during calibragem
+let calibrationFrames = []; // array of frame objects saved durante calibragem
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
@@ -137,31 +137,32 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.restore();
 }
 
-/* Pinhole approximation: return normalized direction vector for pixel (x,y)
-   using principal point at image center and an estimated focal length.
-   If focal length is zero or invalid, returns null.
+/* --- PINHOLE MODEL --- */
+/* Retorna vetor unitário de direção do raio no sistema da câmera (x, y, z)
+   usando aproximação pinhole simples:
+   - principal point (cx,cy) assumido no centro do canvas
+   - focal length (f) estimado a partir do tamanho do canvas (em pixels)
 */
-function pixelDirectionPinhole(x, y, canvasWidth, canvasHeight) {
-    // principal point (cx, cy)
-    const cx = canvasWidth / 2;
-    const cy = canvasHeight / 2;
+function computePinholeDirection(px, py) {
+    if (!canvas || !canvas.width || !canvas.height) return null;
 
-    // estimate focal length in pixels:
-    // choose a heuristic focal length proportional to image diagonal.
-    // This is an approximation — user did not request camera intrinsics.
-    const imgDiag = Math.hypot(canvasWidth, canvasHeight);
-    const f = imgDiag * 0.9; // focal length estimate (px)
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
 
-    if (!isFinite(f) || f === 0) return null;
+    // Estimate focal length in pixels.
+    // Escolha razoável: use a maior dimensão e um fator para obter f em ordem de pixels.
+    // Isso é apenas uma aproximação (o real depende da câmera).
+    const f = Math.max(canvas.width, canvas.height) * 0.9;
 
-    const vx = x - cx;
-    const vy = y - cy;
-    const vz = f;
+    // coordinates in camera frame (z forward)
+    const vx = (px - cx) / f;
+    const vy = (py - cy) / f;
+    const vz = 1.0;
 
-    const mag = Math.hypot(vx, vy, vz);
-    if (mag === 0) return null;
+    const norm = Math.hypot(vx, vy, vz);
+    if (!isFinite(norm) || norm === 0) return null;
 
-    return { x: vx / mag, y: vy / mag, z: vz / mag };
+    return { x: vx / norm, y: vy / norm, z: vz / norm };
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -295,19 +296,21 @@ function processFrame() {
 
     // NEW: count black pixels for ray estimation in this frame
     let blackPixelCount = 0;
-    let directionalRayCount = 0; // count pixels for which a pinhole direction was computed
+    // NEW: count of black pixels for which we successfully defined a direction via pinhole
+    let raysDefinedCount = 0;
     const BLACK_THR = 30;
 
     // per-pixel detection + coloring
+    // Note: moved p/x/y computation to the top of the loop so black pixels (which may be skipped by HSV test)
+    // can also have their screen coordinates computed for direction.
     for (let i = 0; i < d.length; i += 4) {
         const r = d[i], g = d[i + 1], b = d[i + 2];
+        const p = i / 4;
+        const x = p % canvas.width;
+        const y = (p / canvas.width) | 0;
 
         const { h, s, v } = rgbToHsv(r, g, b);
-        if (s < 0.35 || v < 0.12) {
-            // skip normal color detections (we still check black recolor below)
-        } else {
-            const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
-
+        if (s >= 0.35 && v >= 0.12) {
             if (hueDistance(h, 0) <= rTol) {
                 rC++; rX += x; rY += y;
                 d[i] = 255; d[i + 1] = 165; d[i + 2] = 0;
@@ -320,29 +323,25 @@ function processFrame() {
             }
         }
 
-        // ---- ADDED: during calibragem, recolor visually pixels pretos to red AND compute pinhole direction ----
+        // ---- ADDED: during calibragem, recolor visualmente pixels pretos para vermelho, contar e calcular direção via pinhole ----
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
             // paint visually red
             d[i] = 255;
             d[i + 1] = 0;
             d[i + 2] = 0;
 
+            // increment black pixel count (cada define um raio)
             blackPixelCount++;
 
-            // compute pixel coords
-            const p = i / 4;
-            const px = p % canvas.width;
-            const py = (p / canvas.width) | 0;
-
-            // compute pinhole direction approx
-            const dir = pixelDirectionPinhole(px, py, canvas.width, canvas.height);
-            if (dir) {
-                // direction defined (we don't store the vector to avoid extra memory allocations;
-                // we just count how many black pixels produced a valid direction)
-                directionalRayCount++;
+            // compute pinhole direction for this pixel
+            const dir = computePinholeDirection(x, y);
+            if (dir && isFinite(dir.x) && isFinite(dir.y) && isFinite(dir.z)) {
+                // count as "raio definido"
+                raysDefinedCount++;
+                // (não armazenamos as direções para economizar memória — apenas as definimos/contamos)
             }
         }
-        // -------------------------------------------------------------------------------
+        // ---------------------------------------------------------------------------------------------------
     }
 
     // update visible image
@@ -457,10 +456,10 @@ function processFrame() {
         };
         calibrationFrames.push(record);
 
-        // update rays display: show number of black pixels that had a pinhole direction computed
-        raysEl.textContent = String(directionalRayCount);
+        // update rays display (número de pixels pretos que tiveram direção definida)
+        raysEl.textContent = String(raysDefinedCount);
     } else {
-        // when not calibrating, ensure rays counter shows 0
+        // quando não calibrando, contador deve mostrar 0
         raysEl.textContent = "0";
     }
 
