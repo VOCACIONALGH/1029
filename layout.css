@@ -48,6 +48,13 @@ button {
 #dirCount {
     color: #aadd88;
     font-size: 16px;
+    margin-bottom: 6px;
+    font-family: monospace;
+}
+
+#triangulatedCount {
+    color: #66ffcc;
+    font-size: 16px;
     margin-bottom: 8px;
     font-family: monospace;
 }
