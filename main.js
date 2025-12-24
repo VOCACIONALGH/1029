@@ -1,8 +1,9 @@
 /* main.js
-   Atualizado: durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
-   Agora o programa usa aproximação pinhole para calcular a direção desse raio (vetor unitário)
-   e rotaciona esse vetor para o referencial dos pixels pretos usando yaw/pitch/roll (graus → rad).
-   O número de raios definidos é mostrado em raysValue.
+   Atualizado:
+   - durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
+   - o programa calcula a direção pelo modelo pinhole, rotaciona por yaw/pitch/roll e mantém normalizado.
+   - para cada pixel preto e para cada frame, registra um objeto { origin: {x,y,z}, direction: {dx,dy,dz} }
+     em calibrationRays. Esses registros são incluídos no JSON final.
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -38,7 +39,8 @@ let isCalibrated = false;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved durante calibragem
+let calibrationFrames = []; // array of frame summary objects saved durante calibragem
+let calibrationRays = [];   // array of ray records { origin:{x,y,z}, direction:{dx,dy,dz} }
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
@@ -121,16 +123,16 @@ function computeArrowTip(cx, cy, dx, dy, lengthPx) {
 }
 
 /* draw plane polygon */
-function drawPlanePolygon(origin, tipX, tipXy) {
-    if (!origin || !tipX || !tipXy) return;
-    const corner = { x: tipX.x + (tipXy.x - origin.x), y: tipX.y + (tipXy.y - origin.y) };
+function drawPlanePolygon(origin, tipX, tipY) {
+    if (!origin || !tipX || !tipY) return;
+    const corner = { x: tipX.x + (tipY.x - origin.x), y: tipX.y + (tipY.y - origin.y) };
 
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(origin.x, origin.y);
     ctx.lineTo(tipX.x, tipX.y);
     ctx.lineTo(corner.x, corner.y);
-    ctx.lineTo(tipXy.x, tipXy.y);
+    ctx.lineTo(tipY.x, tipY.y);
     ctx.closePath();
     ctx.fillStyle = "rgba(173,216,230,0.4)"; // lightblue
     ctx.fill();
@@ -195,20 +197,19 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     // Rx = [[1,0,0],[0,cx,-sx],[0,sx,cx]]
     // Ry = [[cy,0,sy],[0,1,0],[-sy,0,cy]]
     // RxRy = Rx * Ry:
-    const r00 = 1 * cy + 0 * 0 + 0 * -sy; // cy
-    const r01 = 1 * 0  + 0 * 1 + 0 * 0;   // 0
-    const r02 = 1 * sy + 0 * 0 + 0 * cy;  // sy
+    const r00 = cy;
+    const r01 = 0;
+    const r02 = sy;
 
-    const r10 = 0 * cy + cx * 0 + -sx * -sy; // 0 + 0 + sx*sy = sx*sy
-    const r11 = 0 * 0  + cx * 1 + -sx * 0;   // cx
-    const r12 = 0 * sy + cx * 0 + -sx * cy;  // -sx*cy
+    const r10 = sx * sy;
+    const r11 = cx;
+    const r12 = -sx * cy;
 
-    const r20 = 0 * cy + sx * 0 + cx * -sy; // 0 + 0 + -cx*sy = -cx*sy
-    const r21 = 0 * 0  + sx * 1 + cx * 0;   // sx
-    const r22 = 0 * sy + sx * 0 + cx * cy;  // cx*cy
+    const r20 = -cx * sy;
+    const r21 = sx;
+    const r22 = cx * cy;
 
     // Now R = Rz * (RxRy)
-    // Rz = [[cz,-sz,0],[sz,cz,0],[0,0,1]]
     const R00 = cz * r00 + (-sz) * r10 + 0 * r20;
     const R01 = cz * r01 + (-sz) * r11 + 0 * r21;
     const R02 = cz * r02 + (-sz) * r12 + 0 * r22;
@@ -217,9 +218,9 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     const R11 = sz * r01 + cz * r11 + 0 * r21;
     const R12 = sz * r02 + cz * r12 + 0 * r22;
 
-    const R20 = 0 * r00 + 0 * r10 + 1 * r20;
-    const R21 = 0 * r01 + 0 * r11 + 1 * r21;
-    const R22 = 0 * r02 + 0 * r12 + 1 * r22;
+    const R20 = r20;
+    const R21 = r21;
+    const R22 = r22;
 
     // apply rotation
     const rx = R00 * v.x + R01 * v.y + R02 * v.z;
@@ -266,7 +267,7 @@ scanBtn.addEventListener("click", async () => {
 /*
  Calibrar button behavior:
  - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
- - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+ - If currently calibrating: finish collecting, generate JSON with recorded frames and recorded rays, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -298,6 +299,7 @@ calibrateBtn.addEventListener("click", () => {
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
+        calibrationRays = [];
 
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
@@ -324,7 +326,8 @@ calibrateBtn.addEventListener("click", () => {
             baseZmm,
             lockedScale,
             baseOriginScreen,
-            frames: calibrationFrames
+            frames: calibrationFrames,
+            rays: calibrationRays
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -357,24 +360,11 @@ function processFrame() {
     const bTol = sliderToHueTolerance(blueThresholdSlider.value);
     const gTol = sliderToHueTolerance(greenThresholdSlider.value);
 
+    // FIRST PASS: detect color centroids (não altera a imagem)
     let rC = 0, rX = 0, rY = 0;
     let bC = 0, bX = 0, bY = 0;
     let gC = 0, gX = 0, gY = 0;
 
-    // NEW: count black pixels for ray estimation in this frame
-    let blackPixelCount = 0;
-    // NEW: count of black pixels for which we successfully defined a direction via pinhole+rotation
-    let raysDefinedCount = 0;
-    const BLACK_THR = 30;
-
-    // Read current orientation values (as numbers) to use for rotation
-    const pitchDegLive = parseFloat(pitchEl.textContent) || 0;
-    const yawDegLive = parseFloat(yawEl.textContent) || 0;
-    const rollDegLive = parseFloat(rollEl.textContent) || 0;
-
-    // per-pixel detection + coloring
-    // Note: moved p/x/y computation to the top of the loop so black pixels (which may be skipped by HSV test)
-    // can also have their screen coordinates computed for direction.
     for (let i = 0; i < d.length; i += 4) {
         const r = d[i], g = d[i + 1], b = d[i + 2];
         const p = i / 4;
@@ -385,43 +375,13 @@ function processFrame() {
         if (s >= 0.35 && v >= 0.12) {
             if (hueDistance(h, 0) <= rTol) {
                 rC++; rX += x; rY += y;
-                d[i] = 255; d[i + 1] = 165; d[i + 2] = 0;
             } else if (hueDistance(h, 230) <= bTol) {
                 bC++; bX += x; bY += y;
-                d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
             } else if (hueDistance(h, 120) <= gTol) {
                 gC++; gX += x; gY += y;
-                d[i] = 160; d[i + 1] = 32; d[i + 2] = 240;
             }
         }
-
-        // ---- ADDED: during calibragem, recolor visualmente pixels pretos para vermelho, contar e calcular direção via pinhole + rotação ----
-        if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
-            // paint visually red
-            d[i] = 255;
-            d[i + 1] = 0;
-            d[i + 2] = 0;
-
-            // increment black pixel count (cada define um raio)
-            blackPixelCount++;
-
-            // compute pinhole direction for this pixel (camera frame)
-            const dirCamera = computePinholeDirection(x, y);
-            if (dirCamera && isFinite(dirCamera.x) && isFinite(dirCamera.y) && isFinite(dirCamera.z)) {
-                // rotate this direction into the fixed pixel reference using current yaw/pitch/roll
-                const dirRotated = rotateVectorByYawPitchRoll(dirCamera, yawDegLive, pitchDegLive, rollDegLive);
-                if (dirRotated && isFinite(dirRotated.x) && isFinite(dirRotated.y) && isFinite(dirRotated.z)) {
-                    // count as "raio definido" (origem continua na câmera, direção está no referencial dos pixels pretos)
-                    raysDefinedCount++;
-                    // (não armazenamos as direções para economizar memória — apenas as definimos/contamos)
-                }
-            }
-        }
-        // ---------------------------------------------------------------------------------------------------
     }
-
-    // update visible image
-    ctx.putImageData(img, 0, 0);
 
     let r = null, b = null, g = null;
 
@@ -452,41 +412,6 @@ function processFrame() {
         }
     }
 
-    // Plane drawing durante calibragem
-    if (isCalibrating && r && b && g) {
-        const scaleUsed = isCalibrated ? lockedScale : currentScale;
-        const lengthPx = ARROW_LENGTH_MM * scaleUsed;
-
-        const tipX = computeArrowTip(r.x, r.y, b.x - r.x, b.y - r.y, lengthPx);
-        const tipY = computeArrowTip(r.x, r.y, g.x - r.x, g.y - r.y, lengthPx);
-
-        if (tipX && tipY) {
-            drawPlanePolygon(r, tipX, tipY);
-        }
-    }
-
-    // draw points and arrows
-    if (r) {
-        ctx.fillStyle = "red";
-        ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
-    }
-    if (b) {
-        ctx.fillStyle = "blue";
-        ctx.beginPath(); ctx.arc(b.x, b.y, 6, 0, Math.PI * 2); ctx.fill();
-    }
-    if (g) {
-        ctx.fillStyle = "green";
-        ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill();
-    }
-
-    const scaleForArrows = isCalibrated ? lockedScale : currentScale;
-    if (r && b && scaleForArrows) {
-        drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "blue");
-    }
-    if (r && g && scaleForArrows) {
-        drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
-    }
-
     // +Z calculation (uses lockedScale if calibrated)
     let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
@@ -515,7 +440,102 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
-    // If calibragem ativa, save a frame record
+    // SECOND PASS: recolor image, draw overlays, and (se calibrando) registrar raios por pixel preto
+    // Read current orientation values (as numbers) to use for rotation
+    const pitchDegLive = parseFloat(pitchEl.textContent) || 0;
+    const yawDegLive = parseFloat(yawEl.textContent) || 0;
+    const rollDegLive = parseFloat(rollEl.textContent) || 0;
+
+    let blackPixelCount = 0;
+    let raysDefinedCount = 0;
+    const BLACK_THR = 30;
+
+    for (let i = 0; i < d.length; i += 4) {
+        const rr = d[i], gg = d[i + 1], bb = d[i + 2];
+        const p = i / 4;
+        const x = p % canvas.width;
+        const y = (p / canvas.width) | 0;
+
+        const { h, s, v } = rgbToHsv(rr, gg, bb);
+        if (s >= 0.35 && v >= 0.12) {
+            if (hueDistance(h, 0) <= rTol) {
+                d[i] = 255; d[i + 1] = 165; d[i + 2] = 0;
+            } else if (hueDistance(h, 230) <= bTol) {
+                d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
+            } else if (hueDistance(h, 120) <= gTol) {
+                d[i] = 160; d[i + 1] = 32; d[i + 2] = 240;
+            }
+        }
+
+        if (isCalibrating && rr < BLACK_THR && gg < BLACK_THR && bb < BLACK_THR) {
+            // paint visually red
+            d[i] = 255;
+            d[i + 1] = 0;
+            d[i + 2] = 0;
+
+            blackPixelCount++;
+
+            // compute pinhole direction for this pixel (camera frame)
+            const dirCamera = computePinholeDirection(x, y);
+            if (dirCamera && isFinite(dirCamera.x) && isFinite(dirCamera.y) && isFinite(dirCamera.z)) {
+                // rotate this direction into the fixed pixel reference using current yaw/pitch/roll
+                const dirRotated = rotateVectorByYawPitchRoll(dirCamera, yawDegLive, pitchDegLive, rollDegLive);
+                if (dirRotated && isFinite(dirRotated.x) && isFinite(dirRotated.y) && isFinite(dirRotated.z)) {
+                    raysDefinedCount++;
+
+                    // make origin = current camera position (+X, +Y, +Z calculados) for this frame
+                    // If values are null, store null (consistent with frame record)
+                    const originX = txMm !== null ? Number(txMm.toFixed(4)) : null;
+                    const originY = tyMm !== null ? Number(tyMm.toFixed(4)) : null;
+                    const originZ = computedZ !== null ? Number(computedZ.toFixed(4)) : (isCalibrated ? Number(baseZmm.toFixed(4)) : null);
+
+                    // push single ray record as requested
+                    calibrationRays.push({
+                        origin: { x: originX, y: originY, z: originZ },
+                        direction: { dx: Number(dirRotated.x.toFixed(6)), dy: Number(dirRotated.y.toFixed(6)), dz: Number(dirRotated.z.toFixed(6)) }
+                    });
+                }
+            }
+        }
+    }
+
+    // update visible image (after recolor)
+    ctx.putImageData(img, 0, 0);
+
+    // Plane drawing durante calibragem (mantido)
+    const scaleForArrows = isCalibrated ? lockedScale : currentScale;
+    if (isCalibrating && r && b && g) {
+        const lengthPx = ARROW_LENGTH_MM * scaleForArrows;
+        const tipX = computeArrowTip(r.x, r.y, b.x - r.x, b.y - r.y, lengthPx);
+        const tipY = computeArrowTip(r.x, r.y, g.x - r.x, g.y - r.y, lengthPx);
+
+        if (tipX && tipY) {
+            drawPlanePolygon(r, tipX, tipY);
+        }
+    }
+
+    // draw points and arrows (mantido)
+    if (r) {
+        ctx.fillStyle = "red";
+        ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    if (b) {
+        ctx.fillStyle = "blue";
+        ctx.beginPath(); ctx.arc(b.x, b.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    if (g) {
+        ctx.fillStyle = "green";
+        ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+
+    if (r && b && scaleForArrows) {
+        drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "blue");
+    }
+    if (r && g && scaleForArrows) {
+        drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
+    }
+
+    // If calibragem ativa, save a frame record (summary) and update rays display
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
         const yaw = parseFloat(yawEl.textContent) || 0;
@@ -532,7 +552,7 @@ function processFrame() {
         };
         calibrationFrames.push(record);
 
-        // update rays display (número de pixels pretos que tiveram direção definida)
+        // update rays display (número de pixels pretos que tiveram direção definida neste frame)
         raysEl.textContent = String(raysDefinedCount);
     } else {
         // quando não calibrando, contador deve mostrar 0
