@@ -1,10 +1,9 @@
 /* main.js
-   Atualização: durante a calibragem, TODOS os pontos calculados (da nuvem)
-   são transformados para o mesmo sistema de coordenadas mundial relativo à
-   origem fixa estabelecida no início da calibragem. Isso é feito definindo
-   baseCamOrigin no momento da calibração e convertendo rayOrigin/pos para
-   esse referencial antes de armazenar na nuvem acumulativa.
-   Nenhuma outra funcionalidade foi alterada.
+   Atualizado: durante a calibragem, o programa identifica um marcador fixo na peça
+   (um pixel preto próximo ao ponto vermelho de referência no momento da calibração),
+   calcula a posição 3D inicial desse marcador e armazena TODOS os pontos triangulados
+   no referencial desse marcador. Assim a nuvem fica "grudada" na peça mesmo se
+   a câmera se mover. Nenhuma outra função foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -41,9 +40,13 @@ let basePixelDistance = 0;     // calibrated arrow length in px (ARROW_LENGTH_MM
 let baseOriginScreen = null;   // {x,y} of origin in screen coords at calibration
 let isCalibrated = false;
 
-// ** baseCamOrigin: câmera no momento da calibração (usado como referência de mundo).
-// Quando definido, todas as posições guardadas serão relativas a esse baseCamOrigin.
+// ** baseCamOrigin: câmera no momento da calibração (usada como referência inicial)
 let baseCamOrigin = null;
+
+// ** marker: posição do marcador fixo na peça, armazenada no sistema mundial relativo a baseCamOrigin.
+// Quando definido, toda a nuvem é armazenada em coordenadas relativas a markerWorld (marker frame).
+let markerWorld = null;      // {x,y,z} em mm, no referencial mundial (baseCamOrigin como referência)
+let markerScreen = null;     // {x,y} pixel coords do marcador no frame de calibração
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
@@ -54,7 +57,7 @@ let currentScale = 0;         // px/mm live estimate (before locking)
 
 /* point cloud candidates built during calibragem
    cada entry: { pos: {x,y,z}, raysCount: n, lastUpdated: timestamp, fixed: boolean }
-   - pos armazenada em mm NO SISTEMA MUNDIAL RELATIVO A baseCamOrigin (quando definido)
+   - pos armazenada em mm NO SISTEMA RELATIVO AO MARCADOR (se marker definido), senão relativo ao baseCamOrigin.
    - quando raysCount >= 2 o ponto é marcado fixed = true
    - pointCandidates persiste entre frames (nuvem acumulativa)
 */
@@ -176,9 +179,9 @@ function computePinholeDirection(px, py) {
 }
 
 /* project world point to screen (pixels) using pinhole approx and camera pose
-   pos: {x,y,z} in mm (world, relativo a baseCamOrigin quando definido)
-   camOrigin: {x,y,z} em mm no mesmo referencial (world relativo a baseCamOrigin)
-   R: rotation matrix (camera->world) usado anteriormente
+   pos: {x,y,z} in mm (world, relativo ao marcador se marker definido)
+   camOrigin: {x,y,z} em mm no mesmo referencial (world relativo ao marcador se marker definido)
+   R: rotation matrix (camera->world)
 */
 function projectPointToScreen(pos, camOrigin, R) {
     if (!canvas || !canvas.width || !canvas.height) return null;
@@ -190,7 +193,7 @@ function projectPointToScreen(pos, camOrigin, R) {
         [R[0][2], R[1][2], R[2][2]]
     ];
 
-    // vector from camera origin to point in world coords (same referencial)
+    // vector from camera origin to point in world coords
     const vx = pos.x - camOrigin.x;
     const vy = pos.y - camOrigin.y;
     const vz = pos.z - camOrigin.z;
@@ -296,9 +299,9 @@ function closestPointOnRayToPoint(point, rayOrigin, rayDir) {
     };
 }
 
-/* addRayToCandidates agora espera rayOrigin SER no MESMO referencial onde pos será armazenado.
-   Quando baseCamOrigin está definido, chamamos addRayToCandidates passando rayOrigin já transformado
-   para esse referencial (world relativo a baseCamOrigin).
+/* addRayToCandidates espera rayOrigin e rayDir no mesmo referencial de pointCandidates[].pos.
+   pointCandidates[].pos será armazenado no referencial do marcador se markerWorld estiver definido,
+   caso contrário será no referencial baseCamOrigin.
 */
 function addRayToCandidates(rayOrigin, rayDir) {
     let bestIdx = -1;
@@ -381,7 +384,9 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
-/* Download handler: constrói JSON da nuvem (somente pontos com raysCount >= 2) */
+/* Download handler: constrói JSON da nuvem (somente pontos com raysCount >= 2)
+   As posições são salvas no referencial do marcador (se definido), ou no referencial baseCamOrigin.
+*/
 function downloadPointCloud() {
     const pts = pointCandidates
         .filter(p => p.raysCount >= 2)
@@ -394,6 +399,8 @@ function downloadPointCloud() {
 
     const payload = {
         createdAt: new Date().toISOString(),
+        markerDefined: markerWorld !== null,
+        markerScreen,
         pointCount: pts.length,
         points: pts
     };
@@ -415,8 +422,11 @@ downloadBtn.addEventListener('click', downloadPointCloud);
 /*
  Calibrar button behavior:
  - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
-   Aqui: definimos baseCamOrigin como referência mundial (câmera no instante da calibração).
- - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+   Aqui definimos:
+     - baseCamOrigin como a pose da câmera no instante da calibração (usado como base).
+     - procuramos um pixel preto próximo ao centro/vermelho para ser o marcador da peça e calculamos markerWorld.
+     - após isso toda nuvem é armazenada no referencial do marcador (marker frame).
+ - If currently calibrating: finish collecting, keep calibration locked.
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -452,10 +462,65 @@ calibrateBtn.addEventListener("click", () => {
         // reset pointCandidates for uma nova triangulação (nuvem acumulativa começa limpa)
         pointCandidates.length = 0;
 
-        // define baseCamOrigin: câmera no instante da calibração.
-        // Como tx/ty são calculados em relação à baseOriginScreen, no instante da calibração
-        // assumimos camOrigin (tx,ty) = 0, e z = baseZmm. Assim a origem mundial fica em baseCamOrigin.
+        // define baseCamOrigin como a câmera no instante da calibração (usado como referência)
+        // tx/ty naquele instante são zero por definição do sistema usado, z = baseZmm
         baseCamOrigin = { x: 0, y: 0, z: baseZmm };
+
+        // procurar marcador fixo na peça: pixel preto mais próximo do ponto vermelho detectado
+        markerWorld = null;
+        markerScreen = null;
+        try {
+            // ler pixels atuais do canvas
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const d = img.data;
+            const BLACK_THR = 30;
+            let best = null;
+            let bestDist = Infinity;
+            // procurar nos pixels pretos o mais próximo de lastRcentroid
+            for (let i = 0; i < d.length; i += 4) {
+                const rr = d[i], gg = d[i + 1], bb = d[i + 2];
+                if (rr < BLACK_THR && gg < BLACK_THR && bb < BLACK_THR) {
+                    const p = i / 4;
+                    const x = p % canvas.width;
+                    const y = (p / canvas.width) | 0;
+                    const dx = x - lastRcentroid.x;
+                    const dy = y - lastRcentroid.y;
+                    const dist = Math.hypot(dx, dy);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = { x, y };
+                    }
+                }
+            }
+            if (best) {
+                // calcular direção pinhole do marcador e converter para mundo usando orientação atual
+                // usar orientação atual (se disponível) para rotacionar
+                const pitch = parseFloat(pitchEl.textContent) || 0;
+                const yaw = parseFloat(yawEl.textContent) || 0;
+                const roll = parseFloat(rollEl.textContent) || 0;
+                const R = eulerToRotationMatrix(yaw, pitch, roll);
+                const dirCam = computePinholeDirection(best.x, best.y);
+                if (dirCam) {
+                    const dirWorld = rotateVector(R, dirCam);
+                    const norm = Math.hypot(dirWorld.x, dirWorld.y, dirWorld.z) || 1;
+                    dirWorld.x /= norm; dirWorld.y /= norm; dirWorld.z /= norm;
+                    // posicionar marcador ao longo do raio a distância baseZmm
+                    // camOrigin no referencial mundial igual a baseCamOrigin (padrão)
+                    const camOriginWorld = { x: baseCamOrigin.x, y: baseCamOrigin.y, z: baseCamOrigin.z };
+                    const marker = {
+                        x: camOriginWorld.x + dirWorld.x * baseZmm,
+                        y: camOriginWorld.y + dirWorld.y * baseZmm,
+                        z: camOriginWorld.z + dirWorld.z * baseZmm
+                    };
+                    markerWorld = marker;
+                    markerScreen = { x: best.x, y: best.y };
+                }
+            }
+        } catch (e) {
+            // falha ao acessar pixels — marker permanece nulo e comportamento cai para baseCamOrigin
+            markerWorld = null;
+            markerScreen = null;
+        }
 
         // show download button (disponível durante calibragem)
         downloadBtn.style.display = 'inline-block';
@@ -467,7 +532,8 @@ calibrateBtn.addEventListener("click", () => {
         yEl.textContent = "0.00";
         raysEl.textContent = "0";
 
-        alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
+        alert("Calibragem iniciada. Marcador definido: " + (markerWorld ? "SIM" : "NÃO") +
+              ". Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
     }
 
@@ -488,6 +554,8 @@ calibrateBtn.addEventListener("click", () => {
             baseZmm,
             lockedScale,
             baseOriginScreen,
+            markerDefined: markerWorld !== null,
+            markerScreen,
             frames: calibrationFrames
         };
 
@@ -650,22 +718,22 @@ function processFrame() {
         const yaw = parseFloat(yawEl.textContent) || 0;
         const roll = parseFloat(rollEl.textContent) || 0;
 
-        // camOrigin no referencial "antes da transformação" (em mm). Depois transformamos para o
-        // referencial mundial relativo a baseCamOrigin (se definido).
+        // camOrigin no referencial do "mundo" usado aqui: inicialmente baseCamOrigin, mas queremos
+        // trabalhar NO REFERENCIAL DO MARCADOR (se marker definido), portanto transformamos abaixo.
         const camOriginRaw = {
             x: (txMm !== null && isFinite(txMm)) ? txMm : 0,
             y: (tyMm !== null && isFinite(tyMm)) ? tyMm : 0,
             z: (computedZ !== null && isFinite(computedZ)) ? computedZ : (isFinite(baseZmm) ? baseZmm : 100)
         };
 
-        // R: rotação câmera->mundo (usada para rotacionar direção para o mesmo referencial)
         const R = eulerToRotationMatrix(yaw, pitch, roll);
 
-        // camOriginWorld: transforme camOriginRaw para o referencial mundial relativo a baseCamOrigin.
-        // Se baseCamOrigin estiver definido, subtraímos para ter a câmera em coordenadas relativas à origem fixa.
-        const camOriginWorld = baseCamOrigin
-            ? { x: camOriginRaw.x - baseCamOrigin.x, y: camOriginRaw.y - baseCamOrigin.y, z: camOriginRaw.z - baseCamOrigin.z }
-            : camOriginRaw;
+        // calcular camOrigin no referencial do marcador (se marker definido), senão usar baseCamOrigin referencial
+        // note: markerWorld e baseCamOrigin estão no mesmo referencial (baseCamOrigin foi usado para calcular markerWorld)
+        // Para representar camOrigin no referencial do marcador: camOriginRel = camOriginRaw - markerWorld
+        const camOriginRel = markerWorld
+            ? { x: camOriginRaw.x - markerWorld.x, y: camOriginRaw.y - markerWorld.y, z: camOriginRaw.z - markerWorld.z }
+            : { x: camOriginRaw.x - baseCamOrigin.x, y: camOriginRaw.y - baseCamOrigin.y, z: camOriginRaw.z - baseCamOrigin.z };
 
         for (let idx = 0; idx < blackPixelsThisFrame.length; idx++) {
             const px = blackPixelsThisFrame[idx].x;
@@ -678,8 +746,9 @@ function processFrame() {
             const norm = Math.hypot(dirWorld.x, dirWorld.y, dirWorld.z) || 1;
             dirWorld.x /= norm; dirWorld.y /= norm; dirWorld.z /= norm;
 
-            // ADICIONAR o raio usando rayOrigin já transformado para o referencial mundial comum (camOriginWorld)
-            addRayToCandidates(camOriginWorld, dirWorld);
+            // Quando adicionamos o raio, passamos rayOrigin já convertido para o referencial DO MARCADOR:
+            // rayOriginRel = camOriginRel
+            addRayToCandidates(camOriginRel, dirWorld);
         }
     }
 
@@ -715,15 +784,15 @@ function processFrame() {
         const yaw = parseFloat(yawEl.textContent) || 0;
         const roll = parseFloat(rollEl.textContent) || 0;
 
-        // camOriginRaw novamente calculado para projeção: transformamos para o mesmo referencial das posições
+        // camOriginRaw -> camOriginRel (no mesmo referencial das posições)
         const camOriginRaw = {
             x: (txMm !== null && isFinite(txMm)) ? txMm : 0,
             y: (tyMm !== null && isFinite(tyMm)) ? tyMm : 0,
             z: (computedZ !== null && isFinite(computedZ)) ? computedZ : (isFinite(baseZmm) ? baseZmm : 100)
         };
-        const camOriginWorld = baseCamOrigin
-            ? { x: camOriginRaw.x - baseCamOrigin.x, y: camOriginRaw.y - baseCamOrigin.y, z: camOriginRaw.z - baseCamOrigin.z }
-            : camOriginRaw;
+        const camOriginRel = markerWorld
+            ? { x: camOriginRaw.x - markerWorld.x, y: camOriginRaw.y - markerWorld.y, z: camOriginRaw.z - markerWorld.z }
+            : { x: camOriginRaw.x - baseCamOrigin.x, y: camOriginRaw.y - baseCamOrigin.y, z: camOriginRaw.z - baseCamOrigin.z };
 
         const R = eulerToRotationMatrix(yaw, pitch, roll);
 
@@ -733,8 +802,8 @@ function processFrame() {
         let drawn = 0;
         for (let i = 0; i < pointCandidates.length && drawn < drawLimit; i++) {
             const p = pointCandidates[i];
-            if (p.raysCount < 2) continue; // somente pontos triangulados (fixos)
-            const proj = projectPointToScreen(p.pos, camOriginWorld, R);
+            if (p.raysCount < 2) continue; // somente pontos triangulados
+            const proj = projectPointToScreen(p.pos, camOriginRel, R);
             if (!proj) continue;
             ctx.beginPath();
             ctx.arc(proj.x, proj.y, 2, 0, Math.PI * 2);
