@@ -3,8 +3,7 @@ body {
     height: 100vh;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    align-items: center;
+    gap: 8px;
     background-color: #000;
     color: #fff;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
@@ -13,14 +12,13 @@ body {
 }
 
 #controlsRow {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 8px;
+    display:flex;
+    gap:8px;
+    align-items:center;
 }
 
 button {
-    padding: 14px 20px;
+    padding: 10px 18px;
     font-size: 16px;
     font-weight: bold;
     cursor: pointer;
@@ -37,135 +35,80 @@ button {
 }
 
 #countsRow {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    justify-content: center;
-    margin-bottom: 6px;
+    display:flex;
+    gap:12px;
+    flex-wrap:wrap;
+    align-items:center;
 }
 
-#redCount {
-    color: #ff4444;
-    font-size: 16px;
-    font-family: monospace;
-}
-
-#blackRegisteredCount {
-    color: #ff88ff;
-    font-size: 14px;
-    font-family: monospace;
-}
-
-#rayCount {
-    color: #88ccff;
-    font-size: 14px;
-    font-family: monospace;
-}
-
-#dirCount {
-    color: #aadd88;
-    font-size: 14px;
-    font-family: monospace;
-}
-
-#triangulatedCount {
-    color: #66ffcc;
-    font-size: 14px;
-    font-family: monospace;
-}
+#redCount { color: #ff4444; font-size: 14px; font-family: monospace; }
+#blackRegisteredCount { color: #ff88ff; font-size: 13px; font-family: monospace; }
+#rayCount { color: #88ccff; font-size: 13px; font-family: monospace; }
+#dirCount { color: #aadd88; font-size: 13px; font-family: monospace; }
+#triangulatedCount { color: #66ffcc; font-size: 13px; font-family: monospace; }
 
 #orientation {
     font-family: monospace;
-    font-size: 14px;
-    margin-bottom: 6px;
+    font-size: 13px;
     color: #00ffaa;
     display: flex;
     gap: 12px;
 }
 
-#scaleInfo {
-    font-family: monospace;
-    font-size: 14px;
-    margin-bottom: 4px;
-    color: #ffaa00;
-}
-
-#zInfo {
-    font-family: monospace;
-    font-size: 14px;
-    margin-bottom: 4px;
-    color: #00aaff;
-}
-
-#xyInfo {
-    font-family: monospace;
-    font-size: 14px;
-    margin-bottom: 8px;
-    color: #aaff66;
-}
+#scaleInfo { font-family: monospace; font-size: 13px; color: #ffaa00; }
+#zInfo { font-family: monospace; font-size: 13px; color: #00aaff; }
+#xyInfo { font-family: monospace; font-size: 13px; color: #aaff66; }
 
 #calibrators {
     display: flex;
     gap: 12px;
     flex-direction: column;
-    align-items: center;
-    margin-bottom: 12px;
-    width: 100%;
-    max-width: 480px;
-}
-
-.calLabel {
-    font-size: 14px;
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-}
-
-.calLabel input {
-    margin-top: 6px;
-}
-
-#viewerRow {
-    display: flex;
-    gap: 12px;
     align-items: flex-start;
-}
-
-canvas#canvas {
+    margin-bottom: 4px;
     width: 100%;
     max-width: 480px;
+}
+
+.calLabel { font-size: 13px; display: flex; flex-direction: column; width: 100%; }
+.calLabel input { margin-top: 6px; }
+
+#viewerRow { display:flex; gap:12px; align-items:flex-start; }
+
+#mainArea { flex:1; }
+canvas#canvas {
+    width: 480px;
+    max-width: 100%;
     height: auto;
     background-color: #000;
-    border: 1px solid #222;
-    display: block;
+    border: 1px solid rgba(255,255,255,0.06);
 }
 
-/* mini cloud */
-#miniCloudContainer {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    padding: 8px;
-    background: #071018;
-    border-radius: 8px;
-    border: 1px solid #123;
+#miniArea {
+    width: 260px;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    align-items:center;
 }
 
-#miniCloud {
-    width: 200px;
-    height: 200px;
-    background: #000;
-    border: 1px solid #222;
-    image-rendering: pixelated;
+#miniCanvas {
+    width:240px;
+    height:180px;
+    background:#081018;
+    border:1px solid rgba(255,255,255,0.06);
+}
+
+/* model-viewer styling */
+model-viewer#viewer {
+    width:240px;
+    height:180px;
+    background: linear-gradient(180deg,#020308 0%, #07111a 100%);
+    border-radius:6px;
+    border:1px solid rgba(255,255,255,0.04);
 }
 
 .miniTitle {
-    font-size: 12px;
-    color: #cff;
-}
-
-.miniLegend {
-    font-size: 11px;
-    color: #889;
+    font-size:12px;
+    color:#bfe;
+    font-family: monospace;
 }
