@@ -1,6 +1,7 @@
 /* main.js
-   Atualização: durante a calibragem, apenas 1 em 10 pixels pretos detectados são contabilizados no arquivo .json.
-   Implementado via um contador cumulativo (blackDetectCounter) reiniciado no início da calibragem.
+   Atualização: durante a calibragem, para cada pixel preto registrado (amostragem 1/10 já implementada),
+   o programa define um raio 3D saindo da câmera em direção ao ponto XY mapeado no plano (Z=0).
+   A contagem cumulativa de raios definidos é exibida na tela.
    Nenhuma outra função foi alterada.
 */
 
@@ -13,6 +14,7 @@ const ctx = canvas.getContext("2d");
 
 const redCountDisplay = document.getElementById("redCount");
 const blackRegisteredCountDisplay = document.getElementById("blackRegisteredCount");
+const rayCountDisplay = document.getElementById("rayCount");
 const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
@@ -36,7 +38,7 @@ let isCalibrated = false;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved during calibragem
+let calibrationFrames = []; // array of frame objects saved durante calibragem
 
 // last centroids
 let lastRcentroid = null;     // {x,y} of last detected red centroid
@@ -45,7 +47,7 @@ let lastGcentroid = null;
 
 let currentScale = 0;         // px/mm live estimate (before locking)
 
-// base vectors (px per mm) used to map pixels -> XY mm during calibragem
+// base vectors (px per mm) used to map pixels -> XY mm durante calibragem
 let baseVecX_px = null; // {x,y} px per mm along X-axis
 let baseVecY_px = null; // {x,y} px per mm along Y-axis
 let baseVecSet = false;
@@ -56,6 +58,10 @@ let cumulativeBlackPoints = [];
 
 // COUNTER: increment for every black pixel detected; only register when counter % 10 === 0
 let blackDetectCounter = 0;
+
+// cumulative rays defined (one ray per registered black point)
+let cumulativeRays = []; // each: { origin: {x,y,z}, direction: {dx,dy,dz} }
+let cumulativeRaysCount = 0;
 
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -128,6 +134,10 @@ calibrateBtn.addEventListener("click", () => {
         // reset black detection counter so sampling starts fresh
         blackDetectCounter = 0;
 
+        // reset cumulative rays
+        cumulativeRays = [];
+        cumulativeRaysCount = 0;
+
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
@@ -138,6 +148,7 @@ calibrateBtn.addEventListener("click", () => {
         xEl.textContent = "0.00";
         yEl.textContent = "0.00";
         blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
+        rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
 
         alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
@@ -159,6 +170,7 @@ calibrateBtn.addEventListener("click", () => {
             baseOriginScreen,
             frames: calibrationFrames,
             black_points: cumulativeBlackPoints
+            // Note: cumulativeRays is not included in JSON per your instruction (only count displayed).
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -267,6 +279,12 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.fillStyle = "rgba(173,216,230,0.4)"; // lightblue
     ctx.fill();
     ctx.restore();
+}
+
+function normalizeVec(v) {
+    const mag = Math.hypot(v.x, v.y, v.z);
+    if (mag === 0) return { x: 0, y: 0, z: 0 };
+    return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
 }
 
 function processFrame() {
@@ -385,7 +403,7 @@ function processFrame() {
         }
     }
 
-    // Plane drawing during calibragem
+    // Plane drawing durante calibragem
     if (isCalibrating && r && b && g) {
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
         const lengthPx = ARROW_LENGTH_MM * scaleUsed;
@@ -466,7 +484,8 @@ function processFrame() {
         calibrationFrames.push(record);
     }
 
-    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling ----
+    // ---- NEW: map black pixels to XY (mm) using baseOriginScreen and baseVecs, register cumulatively with 1-in-10 sampling
+    //         and define a 3D ray from camera to the point. Increment cumulativeRaysCount for each registered point.
     if (isCalibrating && baseVecSet && baseOriginScreen && blackPixels.length > 0) {
         // prepare matrix M = [ [ux.x, uy.x], [ux.y, uy.y] ]
         const ux = baseVecX_px;
@@ -510,6 +529,7 @@ function processFrame() {
                     // increment global detection counter. Only register 1 in 10 (when blackDetectCounter % 10 === 0)
                     blackDetectCounter++;
                     if ((blackDetectCounter % 10) === 0) {
+                        // register cumulative black point (already implemented behavior)
                         cumulativeBlackPoints.push({
                             x_mm: Number(x_mm.toFixed(4)),
                             y_mm: Number(y_mm.toFixed(4)),
@@ -523,14 +543,35 @@ function processFrame() {
                                 roll_deg: Number(roll.toFixed(3))
                             }
                         });
+
+                        // ---- NEW: define 3D ray from camera to the mapped point (point assumed on plane Z=0)
+                        // camera origin:
+                        const camOrigin = { x: poseXmm.x_mm, y: poseXmm.y_mm, z: poseZmm };
+                        // target point on plane (Z = 0)
+                        const target = { x: Number(x_mm.toFixed(4)), y: Number(y_mm.toFixed(4)), z: 0 };
+                        // direction = target - origin
+                        const dirVec = {
+                            x: target.x - (camOrigin.x !== null ? camOrigin.x : 0),
+                            y: target.y - (camOrigin.y !== null ? camOrigin.y : 0),
+                            z: target.z - (camOrigin.z !== null ? camOrigin.z : 0)
+                        };
+                        const dirNorm = normalizeVec(dirVec);
+
+                        // store ray (minimal representation). This is internal only (counted/displayed); not included in JSON.
+                        cumulativeRays.push({
+                            origin: camOrigin,
+                            direction: dirNorm
+                        });
+                        cumulativeRaysCount++;
                     }
                 }
             }
         }
     }
-    // update cumulative count on screen
+    // update cumulative counts on screen
     blackRegisteredCountDisplay.textContent = `Pixels pretos registrados (cumulativo): ${cumulativeBlackPoints.length}`;
-    // ---- end mapping & registration logic ----
+    rayCountDisplay.textContent = `Raios definidos (cumulativo): ${cumulativeRaysCount}`;
+    // ---- end mapping & registration & ray logic ----
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
