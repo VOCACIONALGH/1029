@@ -1,8 +1,10 @@
 /* main.js
-   Atualização: durante a calibração todos os pontos calculados são explicitamente
-   transformados/armazenados no mesmo sistema de coordenadas mundial (world coords),
-   relativo à origem fixa definida no momento da calibração (baseOriginWorld).
-   Não alterei nenhuma outra funcionalidade.
+   Atualização: durante a calibragem, TODOS os pontos calculados (da nuvem)
+   são transformados para o mesmo sistema de coordenadas mundial relativo à
+   origem fixa estabelecida no início da calibragem. Isso é feito definindo
+   baseCamOrigin no momento da calibração e convertendo rayOrigin/pos para
+   esse referencial antes de armazenar na nuvem acumulativa.
+   Nenhuma outra funcionalidade foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -39,12 +41,9 @@ let basePixelDistance = 0;     // calibrated arrow length in px (ARROW_LENGTH_MM
 let baseOriginScreen = null;   // {x,y} of origin in screen coords at calibration
 let isCalibrated = false;
 
-// ** WORLD ORIGIN **
-// baseOriginWorld is the fixed origin in world coordinates. When calibration is locked,
-// baseOriginWorld is set (we choose it to be (0,0,0) and interpret camera positions
-// computed (txMm,tyMm,computedZ) relative to this origin). All stored points are
-// explicitly represented in this world coordinate system.
-let baseOriginWorld = { x: 0, y: 0, z: 0 };
+// ** baseCamOrigin: câmera no momento da calibração (usado como referência de mundo).
+// Quando definido, todas as posições guardadas serão relativas a esse baseCamOrigin.
+let baseCamOrigin = null;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
@@ -54,9 +53,10 @@ let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
 
 /* point cloud candidates built during calibragem
-   cada entry: { pos: {x,y,z} (WORLD coords, mm), raysCount: n, lastUpdated: timestamp, fixed: boolean }
-   - quando raysCount >= 2 o ponto é marcado fixed = true e sua posição NÃO será mais alterada.
-   - pointCandidates persiste entre frames (nuvem acumulativa).
+   cada entry: { pos: {x,y,z}, raysCount: n, lastUpdated: timestamp, fixed: boolean }
+   - pos armazenada em mm NO SISTEMA MUNDIAL RELATIVO A baseCamOrigin (quando definido)
+   - quando raysCount >= 2 o ponto é marcado fixed = true
+   - pointCandidates persiste entre frames (nuvem acumulativa)
 */
 const pointCandidates = [];
 const MAX_POINT_CANDIDATES = 50000; // limite de segurança
@@ -176,9 +176,9 @@ function computePinholeDirection(px, py) {
 }
 
 /* project world point to screen (pixels) using pinhole approx and camera pose
-   pos: {x,y,z} in mm (world)
-   camOrigin: {x,y,z} in mm (world)
-   R: rotation matrix (camera->world) used previously (so we invert it with transpose)
+   pos: {x,y,z} in mm (world, relativo a baseCamOrigin quando definido)
+   camOrigin: {x,y,z} em mm no mesmo referencial (world relativo a baseCamOrigin)
+   R: rotation matrix (camera->world) usado anteriormente
 */
 function projectPointToScreen(pos, camOrigin, R) {
     if (!canvas || !canvas.width || !canvas.height) return null;
@@ -190,7 +190,7 @@ function projectPointToScreen(pos, camOrigin, R) {
         [R[0][2], R[1][2], R[2][2]]
     ];
 
-    // vector from camera origin to point in world coords
+    // vector from camera origin to point in world coords (same referencial)
     const vx = pos.x - camOrigin.x;
     const vy = pos.y - camOrigin.y;
     const vz = pos.z - camOrigin.z;
@@ -296,16 +296,17 @@ function closestPointOnRayToPoint(point, rayOrigin, rayDir) {
     };
 }
 
-/* addRayToCandidates agora respeita "fixed" e armazena pontos em WORLD COORDS (relativo a baseOriginWorld)
-   - existing.pos está em WORLD coords
+/* addRayToCandidates agora espera rayOrigin SER no MESMO referencial onde pos será armazenado.
+   Quando baseCamOrigin está definido, chamamos addRayToCandidates passando rayOrigin já transformado
+   para esse referencial (world relativo a baseCamOrigin).
 */
-function addRayToCandidates(rayOriginWorld, rayDirWorld) {
+function addRayToCandidates(rayOrigin, rayDir) {
     let bestIdx = -1;
     let bestDist = Infinity;
 
     for (let i = 0; i < pointCandidates.length; i++) {
         const pt = pointCandidates[i];
-        const dist = distancePointToRay(pt.pos, rayOriginWorld, rayDirWorld);
+        const dist = distancePointToRay(pt.pos, rayOrigin, rayDir);
         if (dist < bestDist) {
             bestDist = dist;
             bestIdx = i;
@@ -321,8 +322,8 @@ function addRayToCandidates(rayOriginWorld, rayDirWorld) {
             return;
         }
 
-        // não-fixed: calcule ponto mais próximo no raio e refine posição incrementalmente (tudo em WORLD coords)
-        const closest = closestPointOnRayToPoint(existing.pos, rayOriginWorld, rayDirWorld);
+        // não-fixed: calcule ponto mais próximo no raio e refine posição incrementalmente
+        const closest = closestPointOnRayToPoint(existing.pos, rayOrigin, rayDir);
         const n = existing.raysCount;
         existing.pos.x = (existing.pos.x * n + closest.x) / (n + 1);
         existing.pos.y = (existing.pos.y * n + closest.y) / (n + 1);
@@ -337,32 +338,16 @@ function addRayToCandidates(rayOriginWorld, rayDirWorld) {
         return;
     }
 
-    // se não achou candidato próximo, cria novo (fixed = false) com posição em WORLD coords
+    // se não achou candidato próximo, cria novo (fixed = false)
     if (pointCandidates.length < MAX_POINT_CANDIDATES) {
         const initDist = (baseZmm && isFinite(baseZmm)) ? Math.abs(baseZmm) : 100;
         const pos = {
-            x: rayOriginWorld.x + rayDirWorld.x * initDist,
-            y: rayOriginWorld.y + rayDirWorld.y * initDist,
-            z: rayOriginWorld.z + rayDirWorld.z * initDist
+            x: rayOrigin.x + rayDir.x * initDist,
+            y: rayOrigin.y + rayDir.y * initDist,
+            z: rayOrigin.z + rayDir.z * initDist
         };
         pointCandidates.push({ pos, raysCount: 1, lastUpdated: Date.now(), fixed: false });
     }
-}
-
-/* Converte a pose da câmera (txMm,tyMm,computedZ) — que são valores relativos ao origin fixado
-   — para uma posição de câmera em WORLD coords (soma com baseOriginWorld).
-   Isto garante que mesmo que a câmera esteja em lugares diferentes, todos os pontos que
-   armazenamos ficam no MESMO sistema de referência (baseOriginWorld).
-*/
-function cameraPoseToWorld(txMm, tyMm, camZmm) {
-    // txMm, tyMm, camZmm já são calculados no programa como deslocamentos relativos à origem fixa
-    // No momento da calibração nós definimos baseOriginWorld = {0,0,0} e usamos esses valores diretamente.
-    // Aqui fazemos a soma explícita por clareza:
-    return {
-        x: baseOriginWorld.x + (txMm !== null && isFinite(txMm) ? txMm : 0),
-        y: baseOriginWorld.y + (tyMm !== null && isFinite(tyMm) ? tyMm : 0),
-        z: baseOriginWorld.z + (camZmm !== null && isFinite(camZmm) ? camZmm : baseZmm)
-    };
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -396,7 +381,7 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
-/* Download handler: constrói JSON da nuvem (somente pontos com raysCount >= 2) e inclui metadados da origem mundial */
+/* Download handler: constrói JSON da nuvem (somente pontos com raysCount >= 2) */
 function downloadPointCloud() {
     const pts = pointCandidates
         .filter(p => p.raysCount >= 2)
@@ -409,11 +394,6 @@ function downloadPointCloud() {
 
     const payload = {
         createdAt: new Date().toISOString(),
-        baseOriginWorld: {
-            x_mm: Number(baseOriginWorld.x.toFixed(4)),
-            y_mm: Number(baseOriginWorld.y.toFixed(4)),
-            z_mm: Number(baseOriginWorld.z.toFixed(4))
-        },
         pointCount: pts.length,
         points: pts
     };
@@ -435,6 +415,7 @@ downloadBtn.addEventListener('click', downloadPointCloud);
 /*
  Calibrar button behavior:
  - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
+   Aqui: definimos baseCamOrigin como referência mundial (câmera no instante da calibração).
  - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
 */
 calibrateBtn.addEventListener("click", () => {
@@ -464,17 +445,17 @@ calibrateBtn.addEventListener("click", () => {
         baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
         isCalibrated = true;
 
-        // define explicit baseOriginWorld (a origem fixa do mundo). aqui definimos como (0,0,0),
-        // e interpretamos as mm; todas as poses da câmera (txMm,tyMm,computedZ) já são relativas a esta origem,
-        // portanto todos os pontos serão armazenados no mesmo sistema de coordenadas mundial.
-        baseOriginWorld = { x: 0, y: 0, z: 0 };
-
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
 
         // reset pointCandidates for uma nova triangulação (nuvem acumulativa começa limpa)
         pointCandidates.length = 0;
+
+        // define baseCamOrigin: câmera no instante da calibração.
+        // Como tx/ty são calculados em relação à baseOriginScreen, no instante da calibração
+        // assumimos camOrigin (tx,ty) = 0, e z = baseZmm. Assim a origem mundial fica em baseCamOrigin.
+        baseCamOrigin = { x: 0, y: 0, z: baseZmm };
 
         // show download button (disponível durante calibragem)
         downloadBtn.style.display = 'inline-block';
@@ -669,11 +650,22 @@ function processFrame() {
         const yaw = parseFloat(yawEl.textContent) || 0;
         const roll = parseFloat(rollEl.textContent) || 0;
 
-        // camOriginWorld: converte explicitamente a pose atual da câmera para WORLD coords
-        const camOriginWorld = cameraPoseToWorld(txMm, tyMm, computedZ);
+        // camOrigin no referencial "antes da transformação" (em mm). Depois transformamos para o
+        // referencial mundial relativo a baseCamOrigin (se definido).
+        const camOriginRaw = {
+            x: (txMm !== null && isFinite(txMm)) ? txMm : 0,
+            y: (tyMm !== null && isFinite(tyMm)) ? tyMm : 0,
+            z: (computedZ !== null && isFinite(computedZ)) ? computedZ : (isFinite(baseZmm) ? baseZmm : 100)
+        };
 
-        // R: rotação da câmera (camera->world)
+        // R: rotação câmera->mundo (usada para rotacionar direção para o mesmo referencial)
         const R = eulerToRotationMatrix(yaw, pitch, roll);
+
+        // camOriginWorld: transforme camOriginRaw para o referencial mundial relativo a baseCamOrigin.
+        // Se baseCamOrigin estiver definido, subtraímos para ter a câmera em coordenadas relativas à origem fixa.
+        const camOriginWorld = baseCamOrigin
+            ? { x: camOriginRaw.x - baseCamOrigin.x, y: camOriginRaw.y - baseCamOrigin.y, z: camOriginRaw.z - baseCamOrigin.z }
+            : camOriginRaw;
 
         for (let idx = 0; idx < blackPixelsThisFrame.length; idx++) {
             const px = blackPixelsThisFrame[idx].x;
@@ -682,12 +674,11 @@ function processFrame() {
             const dirCam = computePinholeDirection(px, py);
             if (!dirCam) continue;
 
-            // converter direção para o referencial do mundo
             const dirWorld = rotateVector(R, dirCam);
             const norm = Math.hypot(dirWorld.x, dirWorld.y, dirWorld.z) || 1;
             dirWorld.x /= norm; dirWorld.y /= norm; dirWorld.z /= norm;
 
-            // adiciona raio já em WORLD coords (ray origin = camOriginWorld, ray dir = dirWorld)
+            // ADICIONAR o raio usando rayOrigin já transformado para o referencial mundial comum (camOriginWorld)
             addRayToCandidates(camOriginWorld, dirWorld);
         }
     }
@@ -724,7 +715,16 @@ function processFrame() {
         const yaw = parseFloat(yawEl.textContent) || 0;
         const roll = parseFloat(rollEl.textContent) || 0;
 
-        const camOriginWorld = cameraPoseToWorld(txMm, tyMm, computedZ);
+        // camOriginRaw novamente calculado para projeção: transformamos para o mesmo referencial das posições
+        const camOriginRaw = {
+            x: (txMm !== null && isFinite(txMm)) ? txMm : 0,
+            y: (tyMm !== null && isFinite(tyMm)) ? tyMm : 0,
+            z: (computedZ !== null && isFinite(computedZ)) ? computedZ : (isFinite(baseZmm) ? baseZmm : 100)
+        };
+        const camOriginWorld = baseCamOrigin
+            ? { x: camOriginRaw.x - baseCamOrigin.x, y: camOriginRaw.y - baseCamOrigin.y, z: camOriginRaw.z - baseCamOrigin.z }
+            : camOriginRaw;
+
         const R = eulerToRotationMatrix(yaw, pitch, roll);
 
         ctx.save();
@@ -750,7 +750,6 @@ function processFrame() {
         miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
         if (pts.length === 0) return;
 
-        // bounding box em X/Y (WORLD coords em mm)
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (let i = 0; i < pts.length; i++) {
             const q = pts[i].pos;
