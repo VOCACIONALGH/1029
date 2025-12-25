@@ -1,9 +1,9 @@
 /* main.js
    Mantive todas as funcionalidades existentes e adicionei:
-   - durante a calibragem ativa: exibir um botão "Upload GLB" que abre um input file para subir um .glb.
-   - após upload (durante calibração): carregar o .glb no <model-viewer>, posicionar o model-viewer de forma que
-     sua origem coincida com o ponto preto (+X=50,+Y=50) e rotacionar o modelo no plano para alinhar +X do modelo
-     com a seta +X detectada. Nenhuma outra função extra.
+   - Mostrar botão/input de upload durante calibração (já presente anteriormente).
+   - Após upload do .glb: carregar no <model-viewer>, exibir o modelo, definir camera-target no ponto preto (50mm 50mm 0mm)
+     e aplicar orientação baseada nos valores atuais de roll/pitch/yaw (atributo orientation). Chamo updateFraming()
+     para que o viewer reconsidere o enquadramento. Nenhuma outra função extra foi adicionada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -31,8 +31,7 @@ const uploadBtn = document.getElementById("uploadBtn");
 const glbInput = document.getElementById("glbInput");
 const glbName = document.getElementById("glbName");
 
-const modelViewerContainer = document.getElementById("modelViewerContainer");
-const modelViewer = document.getElementById("mv");
+const modelViewer = document.getElementById("modelViewer"); // <model-viewer> element
 
 const ARROW_LENGTH_MM = 100;
 
@@ -51,7 +50,7 @@ let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
 
 let glbFile = null; // referência ao arquivo GLB carregado (não processado aqui)
-let glbObjectUrl = null; // url criado para o blob
+let currentGlbUrl = null; // para revogar quando trocar
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
@@ -159,25 +158,6 @@ function hideUploadUI() {
     if (glbInput) glbInput.value = "";
     if (glbName) glbName.textContent = "";
     glbFile = null;
-    if (glbObjectUrl) {
-        URL.revokeObjectURL(glbObjectUrl);
-        glbObjectUrl = null;
-    }
-}
-
-/* show/hide model viewer */
-function showModelViewer() {
-    if (modelViewerContainer) modelViewerContainer.hidden = false;
-}
-function hideModelViewer() {
-    if (modelViewerContainer) modelViewerContainer.hidden = true;
-    if (modelViewer) modelViewer.removeAttribute('src');
-    if (glbObjectUrl) {
-        URL.revokeObjectURL(glbObjectUrl);
-        glbObjectUrl = null;
-    }
-    glbFile = null;
-    if (glbName) glbName.textContent = "";
 }
 
 /* event listeners for upload */
@@ -192,28 +172,44 @@ if (uploadBtn && glbInput) {
             glbFile = f;
             if (glbName) glbName.textContent = f.name;
 
-            // create object URL and set model-viewer src
-            if (glbObjectUrl) {
-                URL.revokeObjectURL(glbObjectUrl);
-                glbObjectUrl = null;
+            // --- AQUI: carregar GLB no model-viewer e posicionar/alinhar ---
+            try {
+                // revoke previous URL if exists
+                if (currentGlbUrl) {
+                    URL.revokeObjectURL(currentGlbUrl);
+                    currentGlbUrl = null;
+                }
+                currentGlbUrl = URL.createObjectURL(f);
+                if (modelViewer) {
+                    modelViewer.src = currentGlbUrl;
+                    // camera target = ponto preto (âncora) em mm
+                    // conforme solicitado: +X=50mm, +Y=50mm, +Z=0
+                    modelViewer.setAttribute('camera-target', '50mm 50mm 0mm');
+
+                    // read current device orientation values (texto mostrado na UI)
+                    const pitch = parseFloat(pitchEl.textContent) || 0;
+                    const yaw = parseFloat(yawEl.textContent) || 0;
+                    const roll = parseFloat(rollEl.textContent) || 0;
+
+                    // model-viewer orientation uses: roll pitch yaw (degrees)
+                    // apply the device values so the model aligns with the computed axes (best-effort)
+                    modelViewer.setAttribute('orientation', `${roll}deg ${pitch}deg ${yaw}deg`);
+
+                    // reveal and display the viewer
+                    modelViewer.style.display = '';
+                    // after changing orientation/camera-target, request framing update if available
+                    if (typeof modelViewer.updateFraming === 'function') {
+                        try { modelViewer.updateFraming(); } catch (e) { /* ignore */ }
+                    }
+                }
+            } catch (err) {
+                console.error("Erro ao carregar GLB:", err);
             }
-            glbObjectUrl = URL.createObjectURL(f);
-            if (modelViewer) {
-                modelViewer.setAttribute('src', glbObjectUrl);
-                // reveal mode already set on element; make viewer visible (if calibrating)
-                if (isCalibrating) showModelViewer();
-            }
+            // Nota: não há processamento adicional do GLB (nenhuma outra função extra).
         } else {
             glbFile = null;
             if (glbName) glbName.textContent = "";
-            if (modelViewer) modelViewer.removeAttribute('src');
-            if (glbObjectUrl) {
-                URL.revokeObjectURL(glbObjectUrl);
-                glbObjectUrl = null;
-            }
-            hideModelViewer();
         }
-        // Nota: não há processamento do GLB além de carregá-lo no model-viewer (nenhuma função extra).
     });
 }
 
@@ -286,9 +282,6 @@ calibrateBtn.addEventListener("click", () => {
         // show upload UI during calibration
         showUploadUI();
 
-        // if GLB already selected, show model viewer
-        if (glbFile && modelViewer) showModelViewer();
-
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
@@ -306,9 +299,6 @@ calibrateBtn.addEventListener("click", () => {
 
         // hide upload UI as calibration ended
         hideUploadUI();
-
-        // hide model viewer if shown
-        hideModelViewer();
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
@@ -408,8 +398,6 @@ function processFrame() {
 
     // --- PLANE DRAWING (during calibragem) ---
     // Only draw plane if calibragem ativa and have origin + both vectors (b and g)
-    let lastBlackPos = null;
-    let lastPlaneAngleDeg = 0;
     if (isCalibrating && r && b && g) {
         // use lockedScale if available (should be locked at start of calibragem), else fallback to currentScale
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
@@ -436,41 +424,6 @@ function processFrame() {
                 ctx.beginPath();
                 ctx.arc(blackX, blackY, 6, 0, Math.PI * 2);
                 ctx.fill();
-
-                lastBlackPos = { x: blackX, y: blackY };
-
-                // compute angle of +X arrow in screen plane (radians); canvas Y is downwards.
-                const angleRad = Math.atan2(tipX.uy, tipX.ux); // direction of +X in screen coords
-                const angleDeg = angleRad * 180 / Math.PI;
-
-                lastPlaneAngleDeg = angleDeg;
-
-                // If a GLB was loaded and model-viewer is visible, position and rotate it so:
-                // - its center aligns with the black point (visual origin)
-                // - it is rotated around Z so that model +X is colinear with arrow +X (in-plane).
-                if (glbFile && modelViewer && !modelViewerContainer.hidden) {
-                    // compute size of the model-viewer element
-                    const mvRect = modelViewer.getBoundingClientRect();
-                    const mvW = mvRect.width || 240;
-                    const mvH = mvRect.height || 240;
-
-                    // canvas position in page to compute absolute coords
-                    const canvasRect = canvas.getBoundingClientRect();
-
-                    // absolute page coordinates for black point
-                    const absX = canvasRect.left + blackX * (canvasRect.width / canvas.width);
-                    const absY = canvasRect.top + blackY * (canvasRect.height / canvas.height);
-
-                    // place modelViewerContainer so that its center is at the black point
-                    modelViewerContainer.style.left = (absX - mvW / 2) + 'px';
-                    modelViewerContainer.style.top = (absY - mvH / 2) + 'px';
-
-                    // rotate the model-viewer element to align model +X with arrow +X
-                    // rotate around Z (in-plane). CSS rotate uses degrees clockwise.
-                    modelViewer.style.transform = `rotate(${angleDeg}deg)`;
-
-                    // Note: deeper 3D alignment (e.g., pitch/roll mapping) is not added, per "nenhuma outra função extra".
-                }
                 // -----------------------------------------------------------
             }
         }
