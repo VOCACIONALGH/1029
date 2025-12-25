@@ -8,7 +8,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="layout.css">
 
-    <!-- model-viewer (usado só para exibir o .glb; não processa dados do modelo) -->
+    <!-- model-viewer (module) -->
     <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 </head>
 <body>
@@ -60,22 +60,18 @@
         <div id="glbName" aria-live="polite"></div>
     </div>
 
-    <!-- Escala do modelo (m/mm) — aparece após upload do GLB -->
-    <div id="scaleModelContainer" hidden>
-        <label class="calLabel" style="align-items:center;">
-            Escala do modelo (m/mm)
-            <div style="display:flex; gap:8px; margin-top:6px;">
-                <input id="modelScaleInput" type="text" placeholder="ex: 0.001" aria-label="escala m por mm">
-                <button id="applyModelScaleBtn" type="button">Aplicar</button>
-            </div>
-        </label>
-        <div id="scaleHint" class="tinyHint">Digite a escala em metros por milímetro (m/mm). Ex: 0.001</div>
-    </div>
-
     <video id="camera" autoplay playsinline hidden></video>
+
+    <!-- model-viewer: será mostrado quando o usuário fizer upload (e posicionado sobre o canvas) -->
+    <model-viewer id="modelViewer"
+                  style="display:none;"
+                  camera-controls
+                  interaction-prompt="none"
+                  exposure="1"
+                  aria-label="Modelo 3D"></model-viewer>
+
     <canvas id="canvas"></canvas>
 
-    <!-- model-viewer será criado dinamicamente e posicionado sobre o canvas -->
     <script src="main.js"></script>
     <script src="export.js"></script>
 
