@@ -24,6 +24,13 @@ button {
     color: #fff;
 }
 
+#downloadBtn {
+    background: #0a6;
+    color: #002;
+    font-weight: bold;
+    margin-left: 8px;
+}
+
 #redCount {
     color: #ff4444;
     font-size: 18px;
