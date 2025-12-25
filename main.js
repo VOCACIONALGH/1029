@@ -1,8 +1,9 @@
 /* main.js
-   Mantive toda a lógica anterior e adicionei somente:
-   - gravação acumulativa da nuvem de pontos (triangulatedMap -> triangulatedPoints)
-   - botão "Download Nuvem (.json)" visível somente durante calibragem, que baixa a nuvem atual
+   Adições:
+   - cada ponto triangulado é pintado rapidamente de rosa claro no canvas principal.
+   - visualização rápida da nuvem: desenhar pontos triangulados no mini canvas para ver densidade.
    Nenhuma outra funcionalidade foi alterada.
+   (O restante do código pré-existente foi mantido.)
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -12,6 +13,10 @@ const downloadBtn = document.getElementById("downloadBtn"); // botão de downloa
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+
+// mini canvas for quick cloud preview
+const miniCanvas = document.getElementById("miniCloud");
+const miniCtx = miniCanvas.getContext("2d");
 
 const redCountDisplay = document.getElementById("redCount");
 const pitchEl = document.getElementById("pitch");
@@ -306,7 +311,7 @@ function extractTranslationFromMat4(M) {
     return { x: M[0][3], y: M[1][3], z: M[2][3] };
 }
 
-/* --- Triangulação: funções utilitárias --- */
+/* --- Triangulação: funções utilitárias (mantidas) --- */
 function mat3Add(A, B) {
     const C = [[0,0,0],[0,0,0],[0,0,0]];
     for (let i=0;i<3;i++) for (let j=0;j<3;j++) C[i][j] = (A[i][j]||0) + (B[i][j]||0);
@@ -380,6 +385,90 @@ function triangulateRays(rayArray) {
     const X = mat3MulVec(Ainv, b);
     if (!isFinite(X.x) || !isFinite(X.y) || !isFinite(X.z)) return null;
     return { x: Number(X.x.toFixed(4)), y: Number(X.y.toFixed(4)), z: Number(X.z.toFixed(4)) };
+}
+
+/* --- Desenho dos pontos triangulados ---
+   - desenha pequenos círculos rosa no canvas principal usando o pixelX,pixelY (muito rápido)
+   - atualiza miniCanvas com projeção XY (x_mm,y_mm) para ver densidade.
+*/
+function drawTriangulatedOverlay() {
+    // draw light pink dots at original pixel coordinates on main canvas
+    if (triangulatedMap.size === 0) return;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
+    for (const [key, pt] of triangulatedMap.entries()) {
+        // key is "pixelX,pixelY" as stored
+        const [px, py] = key.split(',').map(Number);
+        // draw small square/circle for speed
+        ctx.beginPath();
+        ctx.arc(px, py, 2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.restore();
+}
+
+function drawMiniCloud() {
+    // mini canvas shows points (x_mm, y_mm) (world coords)
+    const W = miniCanvas.width;
+    const H = miniCanvas.height;
+
+    // clear
+    miniCtx.clearRect(0, 0, W, H);
+    miniCtx.fillStyle = "#030303";
+    miniCtx.fillRect(0, 0, W, H);
+
+    if (triangulatedMap.size === 0) {
+        // draw crosshair
+        miniCtx.strokeStyle = "#444";
+        miniCtx.beginPath();
+        miniCtx.moveTo(0, 0); miniCtx.lineTo(W, H);
+        miniCtx.moveTo(W, 0); miniCtx.lineTo(0, H);
+        miniCtx.stroke();
+        return;
+    }
+
+    // compute bounds from triangulatedMap values (x,y)
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const pts = [];
+    for (const [key, p] of triangulatedMap.entries()) {
+        if (!isFinite(p.x) || !isFinite(p.y)) continue;
+        pts.push(p);
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+
+    if (pts.length === 0) return;
+
+    // if degenerate range, expand a bit
+    if (Math.abs(maxX - minX) < 1e-6) { minX -= 1; maxX += 1; }
+    if (Math.abs(maxY - minY) < 1e-6) { minY -= 1; maxY += 1; }
+
+    // padding
+    const pad = 0.05;
+    const dx = maxX - minX;
+    const dy = maxY - minY;
+    minX -= dx * pad; maxX += dx * pad;
+    minY -= dy * pad; maxY += dy * pad;
+
+    // draw each point
+    miniCtx.fillStyle = "rgba(255,182,193,0.95)"; // same light pink
+    for (const p of pts) {
+        // map to [0,W] and [0,H], invert Y so larger Y is downwards on canvas
+        const u = (p.x - minX) / (maxX - minX);
+        const v = (p.y - minY) / (maxY - minY);
+        const cx = Math.round(u * (W - 2)) + 1;
+        const cy = Math.round((1 - v) * (H - 2)) + 1;
+        miniCtx.beginPath();
+        miniCtx.arc(cx, cy, 1.2, 0, Math.PI * 2);
+        miniCtx.fill();
+    }
+
+    // optional: draw border
+    miniCtx.strokeStyle = "#444";
+    miniCtx.strokeRect(0.5, 0.5, W - 1, H - 1);
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -462,6 +551,8 @@ calibrateBtn.addEventListener("click", () => {
         triangulatedMap.clear();
         triangulatedCount = 0;
         triEl.textContent = String(triangulatedCount);
+        // clear mini canvas
+        drawMiniCloud();
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
@@ -470,7 +561,6 @@ calibrateBtn.addEventListener("click", () => {
 
         // show download button (user can download current cloud while still collecting)
         downloadBtn.style.display = "inline-block";
-        // set download handler (creates .json with current triangulatedPoints)
         downloadBtn.onclick = () => {
             const triangulatedPoints = [];
             for (const [key, p] of triangulatedMap.entries()) {
@@ -734,6 +824,7 @@ function processFrame() {
                                 triangulatedMap.set(key, pt);
                                 triangulatedCount++;
                                 triEl.textContent = String(triangulatedCount);
+                                // NOTE: painting is done after putImageData (overlay)
                             }
                         }
                     }
@@ -776,6 +867,12 @@ function processFrame() {
 
     // update visible image (after recolor)
     ctx.putImageData(img, 0, 0);
+
+    // draw triangulated overlay (light pink points at pixel coords)
+    drawTriangulatedOverlay();
+
+    // update mini canvas preview (world XY)
+    drawMiniCloud();
 
     // Plane drawing durante calibragem (mantido)
     const scaleForArrows = isCalibrated ? lockedScale : currentScale;
