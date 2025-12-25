@@ -3,7 +3,7 @@
    - durante a calibragem ativa, desenhar o plano XY (área azul clara) cujos lados são as setas +X e +Y.
    - o polígono é construído a partir: origem (red centroid), ponta +X, canto (ponta +X + ponta +Y relativa) e ponta +Y.
    - o desenho do plano é feito antes das setas/pontos para manter as setas/pontos visíveis.
-   - ADIÇÃO: um ponto preto fixo no referencial do mundo em +X = 50 mm, +Y = 50 mm, +Z = 0 (desenhado quando calibrado).
+   - adicionado: durante a calibragem ativa, criar um ponto preto no plano azul em +X=50mm, +Y=50mm, +Z=0.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -27,9 +27,6 @@ const blueThresholdSlider = document.getElementById("blueThreshold");
 const greenThresholdSlider = document.getElementById("greenThreshold");
 
 const ARROW_LENGTH_MM = 100;
-
-// fixed world point (requested): +X=50 mm, +Y=50 mm, +Z=0
-const FIXED_POINT_WORLD = { x_mm: 50, y_mm: 50, z_mm: 0 };
 
 // calibration / locking state
 let baseZmm = 0;
@@ -323,15 +320,31 @@ function processFrame() {
     if (isCalibrating && r && b && g) {
         // use lockedScale if available (should be locked at start of calibragem), else fallback to currentScale
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
-        const lengthPx = ARROW_LENGTH_MM * scaleUsed;
+        if (isFinite(scaleUsed) && scaleUsed > 0) {
+            const lengthPx = ARROW_LENGTH_MM * scaleUsed;
 
-        // compute arrow tips (coordinates of arrow endpoints)
-        const tipX = computeArrowTip(r.x, r.y, b.x - r.x, b.y - r.y, lengthPx);
-        const tipY = computeArrowTip(r.x, r.y, g.x - r.x, g.y - r.y, lengthPx);
+            // compute arrow tips (coordinates of arrow endpoints)
+            const tipX = computeArrowTip(r.x, r.y, b.x - r.x, b.y - r.y, lengthPx);
+            const tipY = computeArrowTip(r.x, r.y, g.x - r.x, g.y - r.y, lengthPx);
 
-        if (tipX && tipY) {
-            // draw light-blue filled polygon representing the XY plane
-            drawPlanePolygon(r, tipX, tipY);
+            if (tipX && tipY) {
+                // draw light-blue filled polygon representing the XY plane
+                drawPlanePolygon(r, tipX, tipY);
+
+                // ---------- ADIÇÃO: ponto preto em +X=50mm, +Y=50mm ----------
+                // converte offsets mm -> px e soma as componentes unitárias de tipX e tipY
+                const offsetMm = 50; // mm conforme solicitado
+                const offsetPx = offsetMm * scaleUsed;
+
+                const blackX = r.x + tipX.ux * offsetPx + tipY.ux * offsetPx;
+                const blackY = r.y + tipX.uy * offsetPx + tipY.uy * offsetPx;
+
+                ctx.fillStyle = "black";
+                ctx.beginPath();
+                ctx.arc(blackX, blackY, 6, 0, Math.PI * 2);
+                ctx.fill();
+                // -----------------------------------------------------------
+            }
         }
     }
 
@@ -357,20 +370,6 @@ function processFrame() {
     }
     if (r && g && scaleForArrows) {
         drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
-    }
-
-    // --- DESENHO DO PONTO PRETO FIXO NO REFERENCIAL DO MUNDO (+X=50, +Y=50, +Z=0) ---
-    // Só é desenhado quando a calibração está travada (isCalibrated) e temos origem e escala válidas.
-    if (isCalibrated && baseOriginScreen && lockedScale && isFinite(lockedScale) && lockedScale > 0) {
-        // screenX = baseOriginScreen.x - X_mm * lockedScale
-        // screenY = baseOriginScreen.y + Y_mm * lockedScale
-        const px = baseOriginScreen.x - (FIXED_POINT_WORLD.x_mm * lockedScale);
-        const py = baseOriginScreen.y + (FIXED_POINT_WORLD.y_mm * lockedScale);
-
-        ctx.fillStyle = "black";
-        ctx.beginPath();
-        ctx.arc(px, py, 6, 0, Math.PI * 2);
-        ctx.fill();
     }
 
     // +Z calculation (uses lockedScale if calibrated)
