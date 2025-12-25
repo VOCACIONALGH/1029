@@ -1,11 +1,12 @@
 /* main.js
-   Atualizado para:
-   - definir um referencial de mundo fixo no instante inicial da calibragem
-   - para cada frame subsequente: calcular a matriz homogênea 4x4 da pose atual da câmera,
-     transformar para o referencial do mundo usando a inversa da pose inicial e
-     expressar cada raio (origem + direção) no referencial do mundo antes de gravar.
-   - a triangulação deverá usar apenas raios já expressos no referencial do mundo.
-   Nenhuma outra funcionalidade além do acima foi adicionada.
+   Adições específicas:
+   - coleta de raios por pixel (pixelX, pixelY) durante calibragem (cada registro em referencial do mundo).
+   - mantém um mapa raysByPixel para agrupar raios pelo pixel da imagem.
+   - implementa triangulação incremental (mínimo 2 raios) por pixel usando método dos mínimos quadrados
+     para encontrar o ponto 3D que minimiza distância aos raios.
+   - mantém contador acumulado de pixels triangulados e o exibe em tela (triCount).
+   - inclui lista de pontos triangulados no JSON final.
+   Nenhuma outra funcionalidade foi adicionada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -24,6 +25,7 @@ const zEl = document.getElementById("zValue");
 const xEl = document.getElementById("xValue");
 const yEl = document.getElementById("yValue");
 const raysEl = document.getElementById("raysValue");
+const triEl = document.getElementById("triCount");
 
 const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
@@ -41,7 +43,7 @@ let isCalibrated = false;
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
 let calibrationFrames = []; // array of frame summary objects saved durante calibragem
-let calibrationRays = [];   // array of ray records { origin:{x,y,z}, direction:{dx,dy,dz} } -- agora em referencial do mundo
+let calibrationRays = [];   // array de ray records { pixelX, pixelY, origin:{x,y,z}, direction:{dx,dy,dz} } -- em referencial do mundo
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
@@ -51,11 +53,16 @@ let initialPoseMatrix = null;      // 4x4 matrix (referencial do mundo = instant
 let initialPoseMatrixInverse = null;
 let initialPoseCaptured = false;
 
+/* Para triangulação incremental */
+const raysByPixel = new Map(); // key "x,y" => array of {origin:{x,y,z}, direction:{dx,dy,dz}}
+const triangulatedMap = new Map(); // key "x,y" => { x,y,z }
+let triangulatedCount = 0;
+
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
     const max = Math.max(rN, gN, bN);
-    const min = Math.min(rN, gN, bN);
+    const min = Math.min(rN, rN, bN);
     const d = max - min;
 
     let h = 0;
@@ -145,21 +152,14 @@ function drawPlanePolygon(origin, tipX, tipY) {
 }
 
 /* --- PINHOLE MODEL --- */
-/* Retorna vetor unitário de direção do raio no sistema da câmera (x, y, z)
-   usando aproximação pinhole simples:
-   - principal point (cx,cy) assumido no centro do canvas
-   - focal length (f) estimado a partir do tamanho do canvas (em pixels)
-*/
 function computePinholeDirection(px, py) {
     if (!canvas || !canvas.width || !canvas.height) return null;
 
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
 
-    // Estimate focal length in pixels.
     const f = Math.max(canvas.width, canvas.height) * 0.9;
 
-    // coordinates in camera frame (z forward)
     const vx = (px - cx) / f;
     const vy = (py - cy) / f;
     const vz = 1.0;
@@ -171,15 +171,8 @@ function computePinholeDirection(px, py) {
 }
 
 /* --- ROTATION: yaw/pitch/roll --- */
-/* Converte graus para radianos */
-function degToRad(deg) {
-    return deg * Math.PI / 180;
-}
+function degToRad(deg) { return deg * Math.PI / 180; }
 
-/* Rotaciona o vetor v ({x,y,z}) usando yaw (deg, z), pitch (deg, x) e roll (deg, y).
-   Aplica a matriz 3x3 R = Rz(yaw) * Rx(pitch) * Ry(roll)
-   Retorna vetor normalizado {x,y,z} ou null se inválido.
-*/
 function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     if (!v) return null;
 
@@ -187,14 +180,10 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     const pitch = degToRad(pitchDeg || 0);
     const roll = degToRad(rollDeg || 0);
 
-    // Rotation matrices components
-    // Rz(yaw)
     const cz = Math.cos(yaw), sz = Math.sin(yaw);
-    // Rx(pitch)
     const cx = Math.cos(pitch), sx = Math.sin(pitch);
-    // Ry(roll)
-    const cy = Math.cos(roll), sy = Math.sin(roll);  // Build combined R = Rz * Rx * Ry
-    // Compute R = Rz * (Rx * Ry)
+    const cy = Math.cos(roll), sy = Math.sin(roll);
+
     const r00 = cy;
     const r01 = 0;
     const r02 = sy;
@@ -219,7 +208,6 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     const R21 = r21;
     const R22 = r22;
 
-    // apply rotation
     const rx = R00 * v.x + R01 * v.y + R02 * v.z;
     const ry = R10 * v.x + R11 * v.y + R12 * v.z;
     const rz = R20 * v.x + R21 * v.y + R22 * v.z;
@@ -230,12 +218,7 @@ function rotateVectorByYawPitchRoll(v, yawDeg, pitchDeg, rollDeg) {
     return { x: rx / norm, y: ry / norm, z: rz / norm };
 }
 
-/* --- MATRIZES HOMOGÊNEAS 4x4 (row-major com acesso m[row][col]) --- */
-
-/* constroi matriz 4x4 de pose a partir de tx,ty,tz (mm) e yaw/pitch/roll (deg),
-   usando a mesma ordem de rotações R = Rz(yaw) * Rx(pitch) * Ry(roll).
-   Retorna matriz 4x4 (array de 4 arrays de 4 elementos).
-*/
+/* --- MATRIZES HOMOGÊNEAS 4x4 e utilitários --- */
 function poseMatrixFromYawPitchRollAndTranslation(tx, ty, tz, yawDeg, pitchDeg, rollDeg) {
     const yaw = degToRad(yawDeg || 0);
     const pitch = degToRad(pitchDeg || 0);
@@ -245,7 +228,6 @@ function poseMatrixFromYawPitchRollAndTranslation(tx, ty, tz, yawDeg, pitchDeg, 
     const cx = Math.cos(pitch), sx = Math.sin(pitch);
     const cy = Math.cos(roll), sy = Math.sin(roll);
 
-    // Rx * Ry parts (as in rotateVectorByYawPitchRoll implementation)
     const r00 = cy;
     const r01 = 0;
     const r02 = sy;
@@ -278,7 +260,6 @@ function poseMatrixFromYawPitchRollAndTranslation(tx, ty, tz, yawDeg, pitchDeg, 
     ];
 }
 
-/* multiplica duas matrizes 4x4 (row-major) */
 function multiplyMat4(A, B) {
     const C = [];
     for (let i = 0; i < 4; i++) {
@@ -292,22 +273,18 @@ function multiplyMat4(A, B) {
     return C;
 }
 
-/* inversa de matriz de transformação rígida [R t; 0 1] = [R^T, -R^T t; 0 1] */
 function invertPoseMatrix(M) {
-    // M assumed 4x4 rigid transform
     const R = [
         [M[0][0], M[0][1], M[0][2]],
         [M[1][0], M[1][1], M[1][2]],
         [M[2][0], M[2][1], M[2][2]]
     ];
     const t = [M[0][3], M[1][3], M[2][3]];
-    // R^T
     const Rt = [
         [R[0][0], R[1][0], R[2][0]],
         [R[0][1], R[1][1], R[2][1]],
         [R[0][2], R[1][2], R[2][2]]
     ];
-    // -R^T * t
     const ntx = -(Rt[0][0] * t[0] + Rt[0][1] * t[1] + Rt[0][2] * t[2]);
     const nty = -(Rt[1][0] * t[0] + Rt[1][1] * t[1] + Rt[1][2] * t[2]);
     const ntz = -(Rt[2][0] * t[0] + Rt[2][1] * t[1] + Rt[2][2] * t[2]);
@@ -320,7 +297,6 @@ function invertPoseMatrix(M) {
     ];
 }
 
-/* aplica rotação 3x3 (parte superior esquerda da matriz 4x4) a vetor v */
 function applyRotationFromMat4(M, v) {
     return {
         x: M[0][0] * v.x + M[0][1] * v.y + M[0][2] * v.z,
@@ -329,9 +305,87 @@ function applyRotationFromMat4(M, v) {
     };
 }
 
-/* extrai tradução da matriz 4x4 */
 function extractTranslationFromMat4(M) {
     return { x: M[0][3], y: M[1][3], z: M[2][3] };
+}
+
+/* --- Triangulação: resolver A x = b, A é 3x3 --- */
+function mat3Add(A, B) {
+    const C = [[0,0,0],[0,0,0],[0,0,0]];
+    for (let i=0;i<3;i++) for (let j=0;j<3;j++) C[i][j] = (A[i][j]||0) + (B[i][j]||0);
+    return C;
+}
+function vec3Add(a,b){ return { x: a.x+b.x, y: a.y+b.y, z: a.z+b.z }; }
+function mat3MulVec(A, v) {
+    return {
+        x: A[0][0]*v.x + A[0][1]*v.y + A[0][2]*v.z,
+        y: A[1][0]*v.x + A[1][1]*v.y + A[1][2]*v.z,
+        z: A[2][0]*v.x + A[2][1]*v.y + A[2][2]*v.z
+    };
+}
+function determinant3(A) {
+    return A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+         - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+         + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+}
+function inverse3(A) {
+    const det = determinant3(A);
+    if (!isFinite(det) || Math.abs(det) < 1e-8) return null;
+    const invDet = 1.0 / det;
+    const C = [
+        [
+            (A[1][1]*A[2][2]-A[1][2]*A[2][1]) * invDet,
+            (A[0][2]*A[2][1]-A[0][1]*A[2][2]) * invDet,
+            (A[0][1]*A[1][2]-A[0][2]*A[1][1]) * invDet
+        ],
+        [
+            (A[1][2]*A[2][0]-A[1][0]*A[2][2]) * invDet,
+            (A[0][0]*A[2][2]-A[0][2]*A[2][0]) * invDet,
+            (A[0][2]*A[1][0]-A[0][0]*A[1][2]) * invDet
+        ],
+        [
+            (A[1][0]*A[2][1]-A[1][1]*A[2][0]) * invDet,
+            (A[0][1]*A[2][0]-A[0][0]*A[2][1]) * invDet,
+            (A[0][0]*A[1][1]-A[0][1]*A[1][0]) * invDet
+        ]
+    ];
+    return C;
+}
+
+/* Recebe array de rays [{ origin:{x,y,z}, direction:{dx,dy,dz} }, ...]
+   Retorna ponto {x,y,z} ou null se não puder resolver.
+   Método: minimizar soma || (I - d d^T)(X - p) ||^2 -> A X = b
+*/
+function triangulateRays(rayArray) {
+    if (!rayArray || rayArray.length < 2) return null;
+
+    // initialize A (3x3) and b (3x1)
+    let A = [[0,0,0],[0,0,0],[0,0,0]];
+    let b = { x:0, y:0, z:0 };
+
+    for (const r of rayArray) {
+        const d = [r.direction.dx, r.direction.dy, r.direction.dz];
+        // (I - d d^T)
+        const M = [
+            [1 - d[0]*d[0],    - d[0]*d[1],    - d[0]*d[2]],
+            [   - d[1]*d[0], 1 - d[1]*d[1],    - d[1]*d[2]],
+            [   - d[2]*d[0],    - d[2]*d[1], 1 - d[2]*d[2]]
+        ];
+        // A += M
+        A = mat3Add(A, M);
+        // b += M * p
+        const p = r.origin;
+        const Mp = mat3MulVec(M, p);
+        b = vec3Add(b, Mp);
+    }
+
+    const Ainv = inverse3(A);
+    if (!Ainv) return null;
+
+    // X = Ainv * b
+    const X = mat3MulVec(Ainv, b);
+    if (!isFinite(X.x) || !isFinite(X.y) || !isFinite(X.z)) return null;
+    return { x: Number(X.x.toFixed(4)), y: Number(X.y.toFixed(4)), z: Number(X.z.toFixed(4)) };
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -369,7 +423,7 @@ scanBtn.addEventListener("click", async () => {
  Calibrar button behavior:
  - Se não está calibrando: valida origem & escala, pede +Z, bloqueia escala, registra pose inicial (matriz homogênea)
    e inicia a coleta de frames (isCalibrating = true).
- - Se está calibrando: finaliza a coleta, gera JSON com frames + raios (já em referencial do mundo) e baixa o arquivo.
+ - Se está calibrando: finaliza a coleta, gera JSON com frames + raios + pontos triangulados e baixa o arquivo.
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -399,7 +453,6 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrated = true;
 
         // capture initial pose (world reference) at the instant calibration begins
-        // At this instant, since baseOriginScreen == lastRcentroid, tx0 and ty0 are zero in our screen->mm model
         const pitch0 = parseFloat(pitchEl.textContent) || 0;
         const yaw0 = parseFloat(yawEl.textContent) || 0;
         const roll0 = parseFloat(rollEl.textContent) || 0;
@@ -408,6 +461,12 @@ calibrateBtn.addEventListener("click", () => {
         initialPoseMatrix = poseMatrixFromYawPitchRollAndTranslation(0.0, 0.0, baseZmm, yaw0, pitch0, roll0);
         initialPoseMatrixInverse = invertPoseMatrix(initialPoseMatrix);
         initialPoseCaptured = true;
+
+        // reset triangulation state for a fresh session
+        raysByPixel.clear();
+        triangulatedMap.clear();
+        triangulatedCount = 0;
+        triEl.textContent = String(triangulatedCount);
 
         // start collecting frames (calibragem ativa)
         isCalibrating = true;
@@ -434,8 +493,14 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
-        // include initialPoseMatrix and its inverse in the payload for reference (flattened)
         function mat4ToNestedArray(M) { return M; }
+
+        // export triangulated points as array
+        const triangulatedPoints = [];
+        for (const [key, p] of triangulatedMap.entries()) {
+            const [px, py] = key.split(',').map(Number);
+            triangulatedPoints.push({ pixelX: px, pixelY: py, x_mm: p.x, y_mm: p.y, z_mm: p.z });
+        }
 
         const payload = {
             createdAt: new Date().toISOString(),
@@ -445,7 +510,8 @@ calibrateBtn.addEventListener("click", () => {
             initialPoseMatrix: mat4ToNestedArray(initialPoseMatrix),
             initialPoseMatrixInverse: mat4ToNestedArray(initialPoseMatrixInverse),
             frames: calibrationFrames,
-            rays: calibrationRays // já em referencial do mundo fixo
+            rays: calibrationRays, // já em referencial do mundo
+            triangulatedPoints // pontos calculados por triangulação (acumulado)
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -568,19 +634,16 @@ function processFrame() {
     const BLACK_THR = 30;
 
     // Precompute current camera-to-world transformation in world referential:
-    // cameraPoseCurrent (4x4) built from txMm,tyMm,computedZ,yawDegLive,pitchDegLive,rollDegLive
-    // transformToWorld = inverse(initialPose) * cameraPoseCurrent  (so coordinates are expressed in the world fixed at t0)
+    // cameraPoseCurrent -> transformToWorld = inverse(initialPose) * cameraPoseCurrent
     let transformToWorld = null;
     if (isCalibrating && initialPoseCaptured) {
-        // use txMm/tyMm/computedZ (should be numbers during calibragem)
         const txUse = txMm !== null ? txMm : 0.0;
         const tyUse = tyMm !== null ? tyMm : 0.0;
         const tzUse = computedZ !== null ? computedZ : baseZmm;
 
         const cameraPoseCurrent = poseMatrixFromYawPitchRollAndTranslation(txUse, tyUse, tzUse, yawDegLive, pitchDegLive, rollDegLive);
-        // transform current camera pose into world referential (world = initial camera pose)
         transformToWorld = multiplyMat4(initialPoseMatrixInverse, cameraPoseCurrent);
-        // transformToWorld maps points expressed in camera coordinates into world coordinates
+        // transformToWorld maps points from camera coordinates into world coordinates
     }
 
     for (let i = 0; i < d.length; i += 4) {
@@ -611,26 +674,44 @@ function processFrame() {
             // compute pinhole direction for this pixel in camera frame
             const dirCamera = computePinholeDirection(x, y);
             if (dirCamera && isFinite(dirCamera.x) && isFinite(dirCamera.y) && isFinite(dirCamera.z)) {
-                // Transform this direction into the fixed world reference using transformToWorld (rotation part)
                 if (transformToWorld) {
                     const dirWorldRaw = applyRotationFromMat4(transformToWorld, dirCamera);
-                    // normalize
                     const mag = Math.hypot(dirWorldRaw.x, dirWorldRaw.y, dirWorldRaw.z);
                     if (mag > 0 && isFinite(mag)) {
                         const dirWorld = { dx: Number((dirWorldRaw.x / mag).toFixed(6)), dy: Number((dirWorldRaw.y / mag).toFixed(6)), dz: Number((dirWorldRaw.z / mag).toFixed(6)) };
 
-                        // origin in world coordinates = translation part of transformToWorld (camera center in world frame)
+                        // origin in world coordinates = translation part of transformToWorld
                         const originWorld = extractTranslationFromMat4(transformToWorld);
 
                         raysDefinedCount++;
 
-                        calibrationRays.push({
+                        // include pixel coords in the ray record
+                        const rayRecord = {
+                            pixelX: x,
+                            pixelY: y,
                             origin: { x: Number(originWorld.x.toFixed(4)), y: Number(originWorld.y.toFixed(4)), z: Number(originWorld.z.toFixed(4)) },
                             direction: dirWorld
-                        });
+                        };
+                        calibrationRays.push(rayRecord);
+
+                        // store in raysByPixel map
+                        const key = `${x},${y}`;
+                        if (!raysByPixel.has(key)) raysByPixel.set(key, []);
+                        raysByPixel.get(key).push({ origin: rayRecord.origin, direction: rayRecord.direction });
+
+                        // if we have at least 2 rays for this pixel and not yet triangulated, try triangulate
+                        const rayList = raysByPixel.get(key);
+                        if (!triangulatedMap.has(key) && rayList.length >= 2) {
+                            const pt = triangulateRays(rayList);
+                            if (pt) {
+                                triangulatedMap.set(key, pt);
+                                triangulatedCount++;
+                                triEl.textContent = String(triangulatedCount);
+                            }
+                        }
                     }
                 } else {
-                    // fallback: if for some reason transform not ready, still provide rotated ray in camera-local rotated frame (previous behavior)
+                    // fallback behavior (shouldn't normally happen because initialPoseCaptured is set at start)
                     const dirRotated = rotateVectorByYawPitchRoll(dirCamera, yawDegLive, pitchDegLive, rollDegLive);
                     if (dirRotated) {
                         const originX = txMm !== null ? Number(txMm.toFixed(4)) : null;
@@ -639,10 +720,27 @@ function processFrame() {
 
                         raysDefinedCount++;
 
-                        calibrationRays.push({
+                        const rayRecord = {
+                            pixelX: x,
+                            pixelY: y,
                             origin: { x: originX, y: originY, z: originZ },
                             direction: { dx: Number(dirRotated.x.toFixed(6)), dy: Number(dirRotated.y.toFixed(6)), dz: Number(dirRotated.z.toFixed(6)) }
-                        });
+                        };
+                        calibrationRays.push(rayRecord);
+
+                        const key = `${x},${y}`;
+                        if (!raysByPixel.has(key)) raysByPixel.set(key, []);
+                        raysByPixel.get(key).push({ origin: rayRecord.origin, direction: rayRecord.direction });
+
+                        const rayList = raysByPixel.get(key);
+                        if (!triangulatedMap.has(key) && rayList.length >= 2) {
+                            const pt = triangulateRays(rayList);
+                            if (pt) {
+                                triangulatedMap.set(key, pt);
+                                triangulatedCount++;
+                                triEl.textContent = String(triangulatedCount);
+                            }
+                        }
                     }
                 }
             }
@@ -704,6 +802,7 @@ function processFrame() {
 
         // update rays display (número de pixels pretos que tiveram direção definida neste frame)
         raysEl.textContent = String(raysDefinedCount);
+        // triEl já atualizado quando triângulos são encontrados
     } else {
         // quando não calibrando, contador deve mostrar 0
         raysEl.textContent = "0";
