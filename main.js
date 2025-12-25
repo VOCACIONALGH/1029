@@ -58,8 +58,8 @@ let accumulatedRays = [];
 let triangulatedPoints = [];
 
 // parâmetros de triangulação / fusão (ajustáveis)
-const TRIANG_DIST_THR_MM = 1.0;   // distância máxima entre as duas linhas no ponto de menor aproximação para aceitar triangulação
-const MERGE_THR_MM = 10.0;         // distância para considerar dois pontos como o mesmo (merge)
+const TRIANG_DIST_THR_MM = 1;   // distância máxima entre as duas linhas no ponto de menor aproximação para aceitar triangulação
+const MERGE_THR_MM = 5.0;         // distância para considerar dois pontos como o mesmo (merge)
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
