@@ -1,11 +1,9 @@
 /* main.js
-   Atualizações:
-   - Define um sistema de coordenadas do mundo fixo no instante inicial da calibração.
-   - Exibe "Mundo fixado" quando o mundo é fixado.
-   - Para cada frame da calibragem: converte a pose da câmera em matriz homogênea 4x4,
-     transforma-a para o referencial do mundo fixo (usando a inversa da pose inicial),
-     e exprime cada raio 3D (origem + direção) no referencial do mundo fixo.
-   - As direções são normalizadas; as origens estão em mm no referencial do mundo fixo.
+   Atualizado: durante a calibragem, para cada pixel preto e para cada frame,
+   o programa registra somente um raio 3D real no formato:
+     { origin: { x, y, z }, direction: { dx, dy, dz } }
+   (origin em mm no referencial do mundo fixo; direction é vetor unitário
+   resultante da rotação por yaw/pitch/roll).
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -52,7 +50,6 @@ let worldFixed = false;
 let initialPose = null;       // initial pose object captured at the instant of fixation
 let initialPoseMatrix = null; // 4x4
 let initialPoseInv = null;    // inverse 4x4
-let initialInvR = null;       // 3x3 inverse rotation (for directions)
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
@@ -149,23 +146,14 @@ function drawPlanePolygon(origin, tipX, tipY) {
 }
 
 /* --- PINHOLE MODEL --- */
-/* Retorna vetor unitário de direção do raio no sistema da câmera (x, y, z)
-   usando aproximação pinhole simples:
-   - principal point (cx,cy) assumido no centro do canvas
-   - focal length (f) estimado a partir do tamanho do canvas (em pixels)
-*/
 function computePinholeDirection(px, py) {
     if (!canvas || !canvas.width || !canvas.height) return null;
 
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
 
-    // Estimate focal length in pixels.
-    // Escolha razoável: use a maior dimensão e um fator para obter f em ordem de pixels.
-    // Isso é apenas uma aproximação (o real depende da câmera).
     const f = Math.max(canvas.width, canvas.height) * 0.9;
 
-    // coordinates in camera frame (z forward)
     const vx = (px - cx) / f;
     const vy = (py - cy) / f;
     const vz = 1.0;
@@ -176,16 +164,12 @@ function computePinholeDirection(px, py) {
     return { x: vx / norm, y: vy / norm, z: vz / norm };
 }
 
-/* --- Rotation utilities: yaw (Z), pitch (X), roll (Y) ---
-   Convert degrees -> radians, build combined rotation matrix R = Rz(yaw) * Rx(pitch) * Ry(roll)
-   and apply to vectors. Result is normalized.
-*/
+/* --- Rotation utilities: yaw (Z), pitch (X), roll (Y) --- */
 function degToRad(deg) {
     return deg * Math.PI / 180;
 }
 
 function buildRotationMatrix(yawRad, pitchRad, rollRad) {
-    // Rz (yaw)
     const cy = Math.cos(yawRad), sy = Math.sin(yawRad);
     const Rz = [
         [ cy, -sy, 0 ],
@@ -193,7 +177,6 @@ function buildRotationMatrix(yawRad, pitchRad, rollRad) {
         [  0,   0, 1 ]
     ];
 
-    // Rx (pitch)
     const cp = Math.cos(pitchRad), sp = Math.sin(pitchRad);
     const Rx = [
         [ 1,   0,   0 ],
@@ -201,7 +184,6 @@ function buildRotationMatrix(yawRad, pitchRad, rollRad) {
         [ 0,  sp,  cp ]
     ];
 
-    // Ry (roll)
     const cr = Math.cos(rollRad), sr = Math.sin(rollRad);
     const Ry = [
         [ cr, 0, sr ],
@@ -209,7 +191,6 @@ function buildRotationMatrix(yawRad, pitchRad, rollRad) {
         [ -sr,0, cr ]
     ];
 
-    // Multiply Rz * Rx -> tmp, then tmp * Ry -> R
     const tmp = multiplyMatrix3(Rz, Rx);
     const R = multiplyMatrix3(tmp, Ry);
     return R;
@@ -241,10 +222,9 @@ function applyRotationToVec(v, R) {
     return { x: x/mag, y: y/mag, z: z/mag };
 }
 
-/* --- 4x4 pose helpers (R from buildRotationMatrix, t in mm) --- */
+/* --- 4x4 pose helpers --- */
 function buildPoseMatrix(tx, ty, tz, yawRad, pitchRad, rollRad) {
     const R = buildRotationMatrix(yawRad, pitchRad, rollRad);
-    // 4x4: [ R | t ]
     return [
         [ R[0][0], R[0][1], R[0][2], tx ],
         [ R[1][0], R[1][1], R[1][2], ty ],
@@ -253,14 +233,12 @@ function buildPoseMatrix(tx, ty, tz, yawRad, pitchRad, rollRad) {
     ];
 }
 
-// inverse of rigid transform [R | t; 0 1] is [R^T | -R^T t; 0 1]
 function invertPoseMatrix(T) {
     const R = [
         [T[0][0], T[0][1], T[0][2]],
         [T[1][0], T[1][1], T[1][2]],
         [T[2][0], T[2][1], T[2][2]]
     ];
-    // transpose
     const Rt = [
         [R[0][0], R[1][0], R[2][0]],
         [R[0][1], R[1][1], R[2][1]],
@@ -290,13 +268,6 @@ function multiplyMatrix4(A, B) {
         }
     }
     return C;
-}
-
-function applyPoseToPoint(T, p) { // p: {x,y,z}
-    const x = T[0][0]*p.x + T[0][1]*p.y + T[0][2]*p.z + T[0][3];
-    const y = T[1][0]*p.x + T[1][1]*p.y + T[1][2]*p.z + T[1][3];
-    const z = T[2][0]*p.x + T[2][1]*p.y + T[2][2]*p.z + T[2][3];
-    return { x, y, z };
 }
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
@@ -366,9 +337,7 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrating = true;
         calibrationFrames = [];
 
-        // FIXAR o mundo: capture pose inicial (x,y,z e yaw/pitch/roll)
-        // Use os valores visíveis atualmente (xEl,yEl,zEl podem estar em "0.00" por design no instante de fixação)
-        // Por segurança, use os valores calculados a partir das leitura ao toque: xEl,yEl,zEl exibem mm
+        // FIXAR o mundo: capture pose inicial
         const initX = parseFloat(xEl.textContent) || 0;
         const initY = parseFloat(yEl.textContent) || 0;
         const initZ = parseFloat(zEl.textContent) || 0;
@@ -385,18 +354,11 @@ calibrateBtn.addEventListener("click", () => {
             roll_deg: initRoll
         };
 
-        // build initial pose matrix and its inverse
         const yawRad0 = degToRad(initYaw);
         const pitchRad0 = degToRad(initPitch);
         const rollRad0 = degToRad(initRoll);
         initialPoseMatrix = buildPoseMatrix(initX, initY, initZ, yawRad0, pitchRad0, rollRad0);
         initialPoseInv = invertPoseMatrix(initialPoseMatrix);
-        // store inverse rotation (3x3) for quick direction transforms
-        initialInvR = [
-            [ initialPoseInv[0][0], initialPoseInv[0][1], initialPoseInv[0][2] ],
-            [ initialPoseInv[1][0], initialPoseInv[1][1], initialPoseInv[1][2] ],
-            [ initialPoseInv[2][0], initialPoseInv[2][1], initialPoseInv[2][2] ]
-        ];
 
         // mark world fixed and show message
         worldFixed = true;
@@ -466,13 +428,10 @@ function processFrame() {
     let bC = 0, bX = 0, bY = 0;
     let gC = 0, gX = 0, gY = 0;
 
-    // NEW: count black pixels for ray estimation in this frame
     let blackPixelCount = 0;
-    // NEW: count of black pixels for which we successfully defined a direction via pinhole + rotation + transform
-    let raysDefinedCount = 0;
     const BLACK_THR = 30;
 
-    // Prepare rotation matrix for this frame if calibrating (camera orientation -> device/world)
+    // Prepare rotation matrix for this frame if calibrating
     let rotationMatrix = null;
     if (isCalibrating) {
         const pitchDeg = parseFloat(pitchEl.textContent) || 0;
@@ -486,10 +445,9 @@ function processFrame() {
         rotationMatrix = buildRotationMatrix(yawRad, pitchRad, rollRad);
     }
 
-    // TEMP store of black-pixel directions (in camera/device-rotated frame) for later transform to world
-    const blackRaysTemp = []; // { px, py, dir_cam_rotated }
+    // temporary store of dir vectors (already rotated by device orientation) for black pixels this frame
+    const blackRaysTemp = []; // { px, py, dir_cam_rot }
 
-    // per-pixel detection + coloring
     for (let i = 0; i < d.length; i += 4) {
         const r = d[i], g = d[i + 1], b = d[i + 2];
         const p = i / 4;
@@ -510,31 +468,20 @@ function processFrame() {
             }
         }
 
-        // ---- ADDED: during calibragem, recolor visualmente pixels pretos para vermelho, contar e calcular direção via pinhole + rotate ----
         if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
-            // paint visually red
-            d[i] = 255;
-            d[i + 1] = 0;
-            d[i + 2] = 0;
-
-            // increment black pixel count (cada define um raio)
+            d[i] = 255; d[i + 1] = 0; d[i + 2] = 0;
             blackPixelCount++;
 
-            // compute pinhole direction for this pixel (camera frame)
             const dirCam = computePinholeDirection(x, y);
-            if (dirCam && isFinite(dirCam.x) && isFinite(dirCam.y) && isFinite(dirCam.z)) {
-                // rotate the direction with the device orientation matrix (camera -> device/world-local)
+            if (dirCam) {
                 const dirRot = applyRotationToVec(dirCam, rotationMatrix);
                 if (dirRot) {
-                    // store temporarily; we'll transform to world-fixed after we compute the camera pose for this frame
                     blackRaysTemp.push({ px: x, py: y, dir_cam_rot: dirRot });
                 }
             }
         }
-        // ---------------------------------------------------------------------------------------------------
     }
 
-    // update visible image
     ctx.putImageData(img, 0, 0);
 
     let r = null, b = null, g = null;
@@ -554,7 +501,6 @@ function processFrame() {
         g = { x: gX / gC, y: gY / gC };
     }
 
-    // compute live scale (px/mm) from red->blue if available
     let currentPixelDistance = 0;
     if (r && b) {
         currentPixelDistance = Math.hypot(b.x - r.x, b.y - r.y);
@@ -566,7 +512,6 @@ function processFrame() {
         }
     }
 
-    // Plane drawing during calibragem
     if (isCalibrating && r && b && g) {
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
         const lengthPx = ARROW_LENGTH_MM * scaleUsed;
@@ -579,7 +524,6 @@ function processFrame() {
         }
     }
 
-    // draw points and arrows
     if (r) {
         ctx.fillStyle = "red";
         ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
@@ -601,10 +545,9 @@ function processFrame() {
         drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
     }
 
-    // +Z calculation (uses lockedScale if calibrated)
     let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
-        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale; // smaller arrow px => larger +Z
+        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale;
         computedZ = baseZmm + dzMm;
         zEl.textContent = computedZ.toFixed(2);
     } else {
@@ -612,14 +555,13 @@ function processFrame() {
         else zEl.textContent = baseZmm.toFixed(2);
     }
 
-    // +X and +Y calculations (camera translation), only after calibration and if origin detected
     let txMm = null, tyMm = null;
     if (isCalibrated && lastRcentroid && baseOriginScreen) {
         const dxPixels = lastRcentroid.x - baseOriginScreen.x;
         const dyPixels = lastRcentroid.y - baseOriginScreen.y;
 
-        const tx = -(dxPixels) / lockedScale;        // X: negative of origin movement
-        const ty = (dyPixels) / lockedScale;         // Y: positive when origin moves down
+        const tx = -(dxPixels) / lockedScale;
+        const ty = (dyPixels) / lockedScale;
         txMm = tx; tyMm = ty;
 
         xEl.textContent = txMm.toFixed(2);
@@ -629,14 +571,12 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
-    // Now: if calibragem ativa, transform stored black rays into the world-fixed reference
+    // If calibragem ativa, transform stored black rays into the world-fixed reference
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
         const yaw = parseFloat(yawEl.textContent) || 0;
         const roll = parseFloat(rollEl.textContent) || 0;
 
-        // Build current camera pose matrix (in mm) using txMm, tyMm, computedZ and yaw/pitch/roll
-        // If txMm/tyMm/computedZ are null (missing), default to 0 to avoid crash (frame will have null pose)
         const camTx = txMm !== null ? txMm : 0;
         const camTy = tyMm !== null ? tyMm : 0;
         const camTz = computedZ !== null ? computedZ : 0;
@@ -647,63 +587,42 @@ function processFrame() {
 
         const T_cam = buildPoseMatrix(camTx, camTy, camTz, yawRad, pitchRad, rollRad);
 
-        // Transform camera pose to world-fixed reference: T_world_rel = initialPoseInv * T_cam
-        // (if worldFixed; otherwise treat world == camera initial and simply use T_cam)
         let T_world_rel = T_cam;
-        let R_world_rel = [
-            [ T_cam[0][0], T_cam[0][1], T_cam[0][2] ],
-            [ T_cam[1][0], T_cam[1][1], T_cam[1][2] ],
-            [ T_cam[2][0], T_cam[2][1], T_cam[2][2] ]
-        ];
-        let t_world_rel = { x: T_cam[0][3], y: T_cam[1][3], z: T_cam[2][3] };
-
         if (worldFixed && initialPoseInv) {
             T_world_rel = multiplyMatrix4(initialPoseInv, T_cam);
-            R_world_rel = [
-                [ T_world_rel[0][0], T_world_rel[0][1], T_world_rel[0][2] ],
-                [ T_world_rel[1][0], T_world_rel[1][1], T_world_rel[1][2] ],
-                [ T_world_rel[2][0], T_world_rel[2][1], T_world_rel[2][2] ]
-            ];
-            t_world_rel = { x: T_world_rel[0][3], y: T_world_rel[1][3], z: T_world_rel[2][3] };
         }
 
-        // For each stored rotated camera-direction, compute world direction: dir_world = R_world_rel * dir_cam_rot
+        const R_world_rel = [
+            [ T_world_rel[0][0], T_world_rel[0][1], T_world_rel[0][2] ],
+            [ T_world_rel[1][0], T_world_rel[1][1], T_world_rel[1][2] ],
+            [ T_world_rel[2][0], T_world_rel[2][1], T_world_rel[2][2] ]
+        ];
+        const t_world_rel = { x: T_world_rel[0][3], y: T_world_rel[1][3], z: T_world_rel[2][3] };
+
+        // Build rays in world-fixed coordinates; each ray follows EXACTLY the requested format
         const raysWorld = [];
         for (let k = 0; k < blackRaysTemp.length; k++) {
-            const entry = blackRaysTemp[k];
-            const dirCamRot = entry.dir_cam_rot; // already rotated by current rotationMatrix earlier
-            // apply R_world_rel (3x3)
+            const dirCamRot = blackRaysTemp[k].dir_cam_rot;
             const rx = R_world_rel[0][0]*dirCamRot.x + R_world_rel[0][1]*dirCamRot.y + R_world_rel[0][2]*dirCamRot.z;
             const ry = R_world_rel[1][0]*dirCamRot.x + R_world_rel[1][1]*dirCamRot.y + R_world_rel[1][2]*dirCamRot.z;
             const rz = R_world_rel[2][0]*dirCamRot.x + R_world_rel[2][1]*dirCamRot.y + R_world_rel[2][2]*dirCamRot.z;
             const mag = Math.hypot(rx, ry, rz);
             if (!isFinite(mag) || mag === 0) continue;
             const dirWorld = { dx: rx / mag, dy: ry / mag, dz: rz / mag };
-            // origin of ray in world-fixed coordinates is the camera origin transformed: that's t_world_rel (in mm)
-            const originWorld = { x: t_world_rel.x, y: t_world_rel.y, z: t_world_rel.z };
+            const originWorld = { x: Number(t_world_rel.x.toFixed(4)), y: Number(t_world_rel.y.toFixed(4)), z: Number(t_world_rel.z.toFixed(4)) };
             raysWorld.push({ origin: originWorld, direction: dirWorld });
         }
 
-        // push frame record (pose + rays expressed in world-fixed coordinates)
-        const record = {
+        // Push a frame record that contains only timestamp + array of ray records (each ray follows the exact format requested)
+        const frameRecord = {
             timestamp: new Date().toISOString(),
-            // camera pose in world-fixed coordinates (translation & rotation as displayed)
-            x_mm: camTx !== null ? Number(camTx.toFixed(4)) : null,
-            y_mm: camTy !== null ? Number(camTy.toFixed(4)) : null,
-            z_mm: camTz !== null ? Number(camTz.toFixed(4)) : null,
-            pitch_deg: Number(pitch.toFixed(3)),
-            yaw_deg: Number(yaw.toFixed(3)),
-            roll_deg: Number(roll.toFixed(3)),
-            // rays: array of { origin: {x,y,z}, direction: {dx,dy,dz} } all in world-fixed coordinates
             rays: raysWorld
         };
-        calibrationFrames.push(record);
+        calibrationFrames.push(frameRecord);
 
-        // update rays display (número de pixels pretos que tiveram direção definida e transformada para o mundo)
-        raysDefinedCount = raysWorld.length;
-        raysEl.textContent = String(raysDefinedCount);
+        // update rays display (número de raios registrados neste frame)
+        raysEl.textContent = String(raysWorld.length);
     } else {
-        // quando não calibrando, contador deve mostrar 0
         raysEl.textContent = "0";
     }
 
