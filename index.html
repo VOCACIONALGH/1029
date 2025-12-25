@@ -10,42 +10,46 @@
 </head>
 <body>
 
-    <button id="scanBtn">ESCÂNER</button>
-    <button id="calibrateBtn">Calibrar</button>
-    <!-- Botão de download da nuvem de pontos (aparece durante a calibração) -->
-    <button id="downloadBtn" hidden>Download</button>
-
-    <div id="redCount">Pixels vermelhos: 0</div>
-
-    <div id="orientation">
-        <div>Pitch: <span id="pitch">0</span>°</div>
-        <div>Yaw: <span id="yaw">0</span>°</div>
-        <div>Roll: <span id="roll">0</span>°</div>
+    <div id="controls">
+        <button id="scanBtn">ESCÂNER</button>
+        <button id="calibrateBtn">Calibrar</button>
+        <!-- Botão de download da nuvem de pontos (aparece durante a calibração) -->
+        <button id="downloadBtn" hidden>Download</button>
     </div>
 
-    <div id="scaleInfo">
-        Escala: <span id="scaleValue">0</span> px/mm
-    </div>
+    <div id="statusRow">
+        <div id="redCount">Pixels vermelhos: 0</div>
 
-    <div id="zInfo">
-        +Z: <span id="zValue">0</span> mm
-    </div>
+        <div id="orientation">
+            <div>Pitch: <span id="pitch">0</span>°</div>
+            <div>Yaw: <span id="yaw">0</span>°</div>
+            <div>Roll: <span id="roll">0</span>°</div>
+        </div>
 
-    <div id="xyInfo">
-        +X: <span id="xValue">0</span> mm &nbsp;&nbsp; +Y: <span id="yValue">0</span> mm
-    </div>
+        <div id="scaleInfo">
+            Escala: <span id="scaleValue">0</span> px/mm
+        </div>
 
-    <div id="raysInfo">
-        Raios 3D (pixels pretos neste frame): <span id="raysValue">0</span>
-    </div>
+        <div id="zInfo">
+            +Z: <span id="zValue">0</span> mm
+        </div>
 
-    <!-- Novo: contador cumulativo de pontos triangulados -->
-    <div id="triangInfo">
-        Pontos 3D determinados: <span id="triangValue">0</span>
-    </div>
+        <div id="xyInfo">
+            +X: <span id="xValue">0</span> mm &nbsp;&nbsp; +Y: <span id="yValue">0</span> mm
+        </div>
 
-    <!-- Mensagem de estado do mundo fixo -->
-    <div id="worldMsg" class="worldMsg" hidden>Mundo fixado</div>
+        <div id="raysInfo">
+            Raios 3D (pixels pretos neste frame): <span id="raysValue">0</span>
+        </div>
+
+        <!-- Novo: contador cumulativo de pontos triangulados -->
+        <div id="triangInfo">
+            Pontos 3D determinados: <span id="triangValue">0</span>
+        </div>
+
+        <!-- Mensagem de estado do mundo fixo -->
+        <div id="worldMsg" class="worldMsg" hidden>Mundo fixado</div>
+    </div>
 
     <div id="calibrators">
         <label class="calLabel">
@@ -64,8 +68,16 @@
         </label>
     </div>
 
-    <video id="camera" autoplay playsinline hidden></video>
-    <canvas id="canvas"></canvas>
+    <div id="viewRow">
+        <video id="camera" autoplay playsinline hidden></video>
+        <canvas id="canvas"></canvas>
+
+        <!-- mini visualização rápida da nuvem (densidade) -->
+        <div id="miniView">
+            <div class="miniTitle">Visualização rápida da nuvem</div>
+            <canvas id="miniCanvas" width="240" height="240"></canvas>
+        </div>
+    </div>
 
     <script src="main.js"></script>
     <script src="export.js"></script>
