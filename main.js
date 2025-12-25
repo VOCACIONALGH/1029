@@ -1,9 +1,7 @@
 /* main.js
-   Atualizado: durante a calibragem, para cada pixel preto e para cada frame,
-   o programa registra somente um raio 3D real no formato:
-     { origin: { x, y, z }, direction: { dx, dy, dz } }
-   (origin em mm no referencial do mundo fixo; direction é vetor unitário
-   resultante da rotação por yaw/pitch/roll).
+   Atualização: durante a calibragem o programa tenta triangular posições 3D reais
+   a partir de múltiplos raios (de diferentes poses). O número cumulativo de pontos
+   3D determinados é mostrado em #triangValue.
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -23,6 +21,7 @@ const zEl = document.getElementById("zValue");
 const xEl = document.getElementById("xValue");
 const yEl = document.getElementById("yValue");
 const raysEl = document.getElementById("raysValue");
+const triagEl = document.getElementById("triangValue");
 const worldMsgEl = document.getElementById("worldMsg");
 
 const redThresholdSlider = document.getElementById("redThreshold");
@@ -50,6 +49,17 @@ let worldFixed = false;
 let initialPose = null;       // initial pose object captured at the instant of fixation
 let initialPoseMatrix = null; // 4x4
 let initialPoseInv = null;    // inverse 4x4
+
+// ACUMULAÇÃO DE RAIOS (em world-fixed) para triangulação
+// Cada item: { origin: {x,y,z}, direction: {dx,dy,dz}, frameTimestamp: string }
+let accumulatedRays = [];
+
+// PONTOS TRIANGULADOS DETERMINADOS (lista de {x,y,z})
+let triangulatedPoints = [];
+
+// parâmetros de triangulação / fusão (ajustáveis)
+const TRIANG_DIST_THR_MM = 5.0;   // distância máxima entre as duas linhas no ponto de menor aproximação para aceitar triangulação
+const MERGE_THR_MM = 5.0;         // distância para considerar dois pontos como o mesmo (merge)
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
@@ -270,6 +280,37 @@ function multiplyMatrix4(A, B) {
     return C;
 }
 
+/* --- UTIL: triangulação entre duas retas (o1 + s*d1, o2 + t*d2)
+   Retorna { p1, p2, midpoint, dist } onde p1 e p2 são os pontos de menor aproximação
+*/
+function closestPointsBetweenLines(o1, d1, o2, d2) {
+    // vector between origins
+    const w0 = { x: o1.x - o2.x, y: o1.y - o2.y, z: o1.z - o2.z };
+    const a = dot(d1, d1);
+    const b = dot(d1, d2);
+    const c = dot(d2, d2);
+    const d = dot(d1, w0);
+    const e = dot(d2, w0);
+
+    const denom = a * c - b * b;
+    if (Math.abs(denom) < 1e-12) {
+        // quase paralelas -> não triangulamos
+        return null;
+    }
+    const s = (b * e - c * d) / denom;
+    const t = (a * e - b * d) / denom;
+
+    const p1 = { x: o1.x + d1.x * s, y: o1.y + d1.y * s, z: o1.z + d1.z * s };
+    const p2 = { x: o2.x + d2.x * t, y: o2.y + d2.y * t, z: o2.z + d2.z * t };
+    const mid = { x: 0.5 * (p1.x + p2.x), y: 0.5 * (p1.y + p2.y), z: 0.5 * (p1.z + p2.z) };
+    const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
+    return { p1, p2, midpoint: mid, dist, s, t };
+}
+
+function dot(a, b) {
+    return a.x*b.x + a.y*b.y + a.z*b.z;
+}
+
 /* --- Inicialização da câmera / DeviceOrientation --- */
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -360,6 +401,11 @@ calibrateBtn.addEventListener("click", () => {
         initialPoseMatrix = buildPoseMatrix(initX, initY, initZ, yawRad0, pitchRad0, rollRad0);
         initialPoseInv = invertPoseMatrix(initialPoseMatrix);
 
+        // reset accumulators when fixando o mundo
+        accumulatedRays = [];
+        triangulatedPoints = [];
+        updateTriangCountUI();
+
         // mark world fixed and show message
         worldFixed = true;
         worldMsgEl.hidden = false;
@@ -391,7 +437,8 @@ calibrateBtn.addEventListener("click", () => {
             lockedScale,
             baseOriginScreen,
             initialPose,
-            frames: calibrationFrames
+            frames: calibrationFrames,
+            // opcional: podemos também exportar triangulatedPoints se quiser
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -409,6 +456,61 @@ calibrateBtn.addEventListener("click", () => {
         return;
     }
 });
+
+function updateTriangCountUI() {
+    triagEl.textContent = String(triangulatedPoints.length);
+}
+
+/* tenta triangular newRays contra accumulatedRays, atualiza triangulatedPoints e accumulatedRays.
+   Strategy (simples):
+   - para cada novo ray, compare com cada ray acumulado que venha de frame diferente;
+   - calcule ponto médio da menor aproximação; se distancia <= TRIANG_DIST_THR_MM => candidate point;
+   - se candidate estiver perto de ponto já determinado (MERGE_THR_MM) => não adiciona novo (ou média opcional);
+   - caso contrário adiciona novo ponto.
+*/
+function tryTriangulateAndAccumulate(newRays) {
+    // newRays: array of { origin:{x,y,z}, direction:{dx,dy,dz}, frameTimestamp }
+    for (let i = 0; i < newRays.length; i++) {
+        const nr = newRays[i];
+        for (let j = 0; j < accumulatedRays.length; j++) {
+            const ar = accumulatedRays[j];
+            // só triangula entre raios de frames diferentes (evitar mesmo frame)
+            if (nr.frameTimestamp === ar.frameTimestamp) continue;
+
+            const cp = closestPointsBetweenLines(
+                nr.origin, { x: nr.direction.dx, y: nr.direction.dy, z: nr.direction.dz },
+                ar.origin, { x: ar.direction.dx, y: ar.direction.dy, z: ar.direction.dz }
+            );
+            if (!cp) continue;
+            if (cp.dist <= TRIANG_DIST_THR_MM) {
+                const pt = {
+                    x: Number(cp.midpoint.x.toFixed(4)),
+                    y: Number(cp.midpoint.y.toFixed(4)),
+                    z: Number(cp.midpoint.z.toFixed(4))
+                };
+                // verificar se já existe ponto próximo
+                let merged = false;
+                for (let k = 0; k < triangulatedPoints.length; k++) {
+                    const p = triangulatedPoints[k];
+                    const d = Math.hypot(p.x - pt.x, p.y - pt.y, p.z - pt.z);
+                    if (d <= MERGE_THR_MM) {
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged) {
+                    triangulatedPoints.push(pt);
+                    updateTriangCountUI();
+                }
+            }
+        }
+    }
+
+    // adicionar novos rays ao acumulador (sempre)
+    for (let i = 0; i < newRays.length; i++) {
+        accumulatedRays.push(newRays[i]);
+    }
+}
 
 function processFrame() {
     if (!video || video.readyState < 2) {
@@ -571,7 +673,7 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
-    // If calibragem ativa, transform stored black rays into the world-fixed reference
+    // If calibragem ativa, transform stored black rays into the world-fixed reference and attempt triangulação
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
         const yaw = parseFloat(yawEl.textContent) || 0;
@@ -599,8 +701,9 @@ function processFrame() {
         ];
         const t_world_rel = { x: T_world_rel[0][3], y: T_world_rel[1][3], z: T_world_rel[2][3] };
 
-        // Build rays in world-fixed coordinates; each ray follows EXACTLY the requested format
+        // Build rays in world-fixed coordinates; each ray follows format { origin, direction, frameTimestamp }
         const raysWorld = [];
+        const frameTimestamp = new Date().toISOString();
         for (let k = 0; k < blackRaysTemp.length; k++) {
             const dirCamRot = blackRaysTemp[k].dir_cam_rot;
             const rx = R_world_rel[0][0]*dirCamRot.x + R_world_rel[0][1]*dirCamRot.y + R_world_rel[0][2]*dirCamRot.z;
@@ -609,16 +712,19 @@ function processFrame() {
             const mag = Math.hypot(rx, ry, rz);
             if (!isFinite(mag) || mag === 0) continue;
             const dirWorld = { dx: rx / mag, dy: ry / mag, dz: rz / mag };
-            const originWorld = { x: Number(t_world_rel.x.toFixed(4)), y: Number(t_world_rel.y.toFixed(4)), z: Number(t_world_rel.z.toFixed(4)) };
-            raysWorld.push({ origin: originWorld, direction: dirWorld });
+            const originWorld = { x: t_world_rel.x, y: t_world_rel.y, z: t_world_rel.z };
+            raysWorld.push({ origin: originWorld, direction: dirWorld, frameTimestamp });
         }
 
-        // Push a frame record that contains only timestamp + array of ray records (each ray follows the exact format requested)
+        // Append frame record (keeps previous behavior)
         const frameRecord = {
-            timestamp: new Date().toISOString(),
+            timestamp: frameTimestamp,
             rays: raysWorld
         };
         calibrationFrames.push(frameRecord);
+
+        // TRY TRIANGULATION: compare new rays (raysWorld) against accumulatedRays and update triangulatedPoints
+        tryTriangulateAndAccumulate(raysWorld);
 
         // update rays display (número de raios registrados neste frame)
         raysEl.textContent = String(raysWorld.length);
