@@ -24,13 +24,6 @@ button {
     color: #fff;
 }
 
-/* estilo específico do botão de download para destacá-lo levemente */
-#downloadBtn {
-    background: #0b79d0;
-    color: #fff;
-    display: none; /* exibido apenas em calibragem via JS */
-}
-
 #redCount {
     color: #ff4444;
     font-size: 18px;
@@ -73,7 +66,6 @@ button {
     font-size: 14px;
     margin-bottom: 8px;
     color: #ff88ff;
-    text-align: center;
 }
 
 #calibrators {
@@ -97,43 +89,9 @@ button {
     margin-top: 6px;
 }
 
-#canvasRow {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    width: 100%;
-    max-width: 820px;
-    justify-content: center;
-}
-
-/* main canvas */
-canvas#canvas {
+canvas {
     width: 100%;
     max-width: 480px;
     height: auto;
     background-color: #000;
-    border: 1px solid #333;
-}
-
-/* mini preview panel */
-#miniPanel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    width: 220px;
-}
-
-.miniLabel {
-    font-size: 12px;
-    color: #ddd;
-    font-family: monospace;
-}
-
-canvas#miniCloud {
-    width: 200px;
-    height: 200px;
-    background: #030303;
-    border: 1px solid #444;
-    image-rendering: pixelated;
 }
