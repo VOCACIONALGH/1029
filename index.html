@@ -58,7 +58,14 @@
     </div>
 
     <video id="camera" autoplay playsinline hidden></video>
-    <canvas id="canvas"></canvas>
+
+    <div id="canvasRow">
+        <canvas id="canvas"></canvas>
+        <div id="miniPanel">
+            <div class="miniLabel">Preview nuvem (mini)</div>
+            <canvas id="miniCloud" width="200" height="200"></canvas>
+        </div>
+    </div>
 
     <script src="main.js"></script>
     <script src="export.js"></script>
