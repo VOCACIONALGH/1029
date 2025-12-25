@@ -109,10 +109,60 @@ button {
     color: #cccccc;
 }
 
+/* Scale input area */
+#scaleModelContainer {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    width: 100%;
+    max-width: 480px;
+    justify-content: center;
+}
+
+#modelScaleInput {
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid #333;
+    background: #111;
+    color: #fff;
+    width: 140px;
+}
+
+#applyModelScaleBtn {
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: none;
+    background: #222;
+    color: #fff;
+    cursor: pointer;
+}
+
+.tinyHint {
+    font-size: 12px;
+    color: #999;
+    margin-top: 6px;
+}
+
 /* canvas display */
 canvas {
     width: 100%;
     max-width: 480px;
     height: auto;
     background-color: #000;
+}
+
+/* model-viewer overlay styling:
+   - absolutely positioned over the canvas
+   - pointer-events none so it doesn't interfere with canvas interaction
+*/
+.model-viewer-overlay {
+    position: absolute;
+    pointer-events: none;
+    transform-origin: 50% 100%; /* origin at bottom center so translate(-50%,-100%) anchors base */
+    will-change: transform, left, top;
+    z-index: 40;
+    /* default size; scale will be applied dynamically */
+    width: 200px;
+    height: 200px;
 }
