@@ -24,6 +24,13 @@ button {
     color: #fff;
 }
 
+/* estilo específico do botão de download para destacá-lo levemente */
+#downloadBtn {
+    background: #0b79d0;
+    color: #fff;
+    display: none; /* exibido apenas em calibragem via JS */
+}
+
 #redCount {
     color: #ff4444;
     font-size: 18px;
