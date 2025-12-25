@@ -1,9 +1,11 @@
 /* main.js
-   Atualizado: durante a calibragem, cada pixel preto define um "raio 3D" (um por pixel).
-   Agora o programa usa aproximação pinhole para calcular a direção desse raio (vetor unitário)
-   e conta quantos pixels pretos tiveram direção definida no frame.
-   Adicionado: durante calibragem, o vetor retornado pelo pinhole é rotacionado usando
-   yaw/pitch/roll (graus -> radianos -> matriz 3x3). O vetor resultante é normalizado.
+   Atualizações:
+   - Define um sistema de coordenadas do mundo fixo no instante inicial da calibração.
+   - Exibe "Mundo fixado" quando o mundo é fixado.
+   - Para cada frame da calibragem: converte a pose da câmera em matriz homogênea 4x4,
+     transforma-a para o referencial do mundo fixo (usando a inversa da pose inicial),
+     e exprime cada raio 3D (origem + direção) no referencial do mundo fixo.
+   - As direções são normalizadas; as origens estão em mm no referencial do mundo fixo.
    Nenhuma outra funcionalidade foi alterada.
 */
 
@@ -23,6 +25,7 @@ const zEl = document.getElementById("zValue");
 const xEl = document.getElementById("xValue");
 const yEl = document.getElementById("yValue");
 const raysEl = document.getElementById("raysValue");
+const worldMsgEl = document.getElementById("worldMsg");
 
 const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
@@ -43,6 +46,13 @@ let calibrationFrames = []; // array of frame objects saved durante calibragem
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
+
+// world-fixed reference
+let worldFixed = false;
+let initialPose = null;       // initial pose object captured at the instant of fixation
+let initialPoseMatrix = null; // 4x4
+let initialPoseInv = null;    // inverse 4x4
+let initialInvR = null;       // 3x3 inverse rotation (for directions)
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
@@ -231,6 +241,64 @@ function applyRotationToVec(v, R) {
     return { x: x/mag, y: y/mag, z: z/mag };
 }
 
+/* --- 4x4 pose helpers (R from buildRotationMatrix, t in mm) --- */
+function buildPoseMatrix(tx, ty, tz, yawRad, pitchRad, rollRad) {
+    const R = buildRotationMatrix(yawRad, pitchRad, rollRad);
+    // 4x4: [ R | t ]
+    return [
+        [ R[0][0], R[0][1], R[0][2], tx ],
+        [ R[1][0], R[1][1], R[1][2], ty ],
+        [ R[2][0], R[2][1], R[2][2], tz ],
+        [ 0,       0,       0,       1  ]
+    ];
+}
+
+// inverse of rigid transform [R | t; 0 1] is [R^T | -R^T t; 0 1]
+function invertPoseMatrix(T) {
+    const R = [
+        [T[0][0], T[0][1], T[0][2]],
+        [T[1][0], T[1][1], T[1][2]],
+        [T[2][0], T[2][1], T[2][2]]
+    ];
+    // transpose
+    const Rt = [
+        [R[0][0], R[1][0], R[2][0]],
+        [R[0][1], R[1][1], R[2][1]],
+        [R[0][2], R[1][2], R[2][2]]
+    ];
+    const t = [ T[0][3], T[1][3], T[2][3] ];
+    const negRtT = [
+        -(Rt[0][0]*t[0] + Rt[0][1]*t[1] + Rt[0][2]*t[2]),
+        -(Rt[1][0]*t[0] + Rt[1][1]*t[1] + Rt[1][2]*t[2]),
+        -(Rt[2][0]*t[0] + Rt[2][1]*t[1] + Rt[2][2]*t[2])
+    ];
+    return [
+        [ Rt[0][0], Rt[0][1], Rt[0][2], negRtT[0] ],
+        [ Rt[1][0], Rt[1][1], Rt[1][2], negRtT[1] ],
+        [ Rt[2][0], Rt[2][1], Rt[2][2], negRtT[2] ],
+        [ 0,        0,        0,        1         ]
+    ];
+}
+
+function multiplyMatrix4(A, B) {
+    const C = Array.from({length:4}, () => Array(4).fill(0));
+    for (let i=0;i<4;i++){
+        for (let j=0;j<4;j++){
+            let s = 0;
+            for (let k=0;k<4;k++) s += A[i][k] * B[k][j];
+            C[i][j] = s;
+        }
+    }
+    return C;
+}
+
+function applyPoseToPoint(T, p) { // p: {x,y,z}
+    const x = T[0][0]*p.x + T[0][1]*p.y + T[0][2]*p.z + T[0][3];
+    const y = T[1][0]*p.x + T[1][1]*p.y + T[1][2]*p.z + T[1][3];
+    const z = T[2][0]*p.x + T[2][1]*p.y + T[2][2]*p.z + T[2][3];
+    return { x, y, z };
+}
+
 /* --- Inicialização da câmera / DeviceOrientation --- */
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -264,7 +332,7 @@ scanBtn.addEventListener("click", async () => {
 
 /*
  Calibrar button behavior:
- - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
+ - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true), FIXAR o MUNDO (capturar pose inicial).
  - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
 */
 calibrateBtn.addEventListener("click", () => {
@@ -298,6 +366,43 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrating = true;
         calibrationFrames = [];
 
+        // FIXAR o mundo: capture pose inicial (x,y,z e yaw/pitch/roll)
+        // Use os valores visíveis atualmente (xEl,yEl,zEl podem estar em "0.00" por design no instante de fixação)
+        // Por segurança, use os valores calculados a partir das leitura ao toque: xEl,yEl,zEl exibem mm
+        const initX = parseFloat(xEl.textContent) || 0;
+        const initY = parseFloat(yEl.textContent) || 0;
+        const initZ = parseFloat(zEl.textContent) || 0;
+        const initPitch = parseFloat(pitchEl.textContent) || 0;
+        const initYaw = parseFloat(yawEl.textContent) || 0;
+        const initRoll = parseFloat(rollEl.textContent) || 0;
+
+        initialPose = {
+            x_mm: initX,
+            y_mm: initY,
+            z_mm: initZ,
+            pitch_deg: initPitch,
+            yaw_deg: initYaw,
+            roll_deg: initRoll
+        };
+
+        // build initial pose matrix and its inverse
+        const yawRad0 = degToRad(initYaw);
+        const pitchRad0 = degToRad(initPitch);
+        const rollRad0 = degToRad(initRoll);
+        initialPoseMatrix = buildPoseMatrix(initX, initY, initZ, yawRad0, pitchRad0, rollRad0);
+        initialPoseInv = invertPoseMatrix(initialPoseMatrix);
+        // store inverse rotation (3x3) for quick direction transforms
+        initialInvR = [
+            [ initialPoseInv[0][0], initialPoseInv[0][1], initialPoseInv[0][2] ],
+            [ initialPoseInv[1][0], initialPoseInv[1][1], initialPoseInv[1][2] ],
+            [ initialPoseInv[2][0], initialPoseInv[2][1], initialPoseInv[2][2] ]
+        ];
+
+        // mark world fixed and show message
+        worldFixed = true;
+        worldMsgEl.hidden = false;
+        worldMsgEl.textContent = "Mundo fixado";
+
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
@@ -305,7 +410,7 @@ calibrateBtn.addEventListener("click", () => {
         yEl.textContent = "0.00";
         raysEl.textContent = "0";
 
-        alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
+        alert("Calibragem iniciada e mundo fixado. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
     }
 
@@ -323,6 +428,7 @@ calibrateBtn.addEventListener("click", () => {
             baseZmm,
             lockedScale,
             baseOriginScreen,
+            initialPose,
             frames: calibrationFrames
         };
 
@@ -362,11 +468,11 @@ function processFrame() {
 
     // NEW: count black pixels for ray estimation in this frame
     let blackPixelCount = 0;
-    // NEW: count of black pixels for which we successfully defined a direction via pinhole + rotation
+    // NEW: count of black pixels for which we successfully defined a direction via pinhole + rotation + transform
     let raysDefinedCount = 0;
     const BLACK_THR = 30;
 
-    // Prepare rotation matrix for this frame if calibrating
+    // Prepare rotation matrix for this frame if calibrating (camera orientation -> device/world)
     let rotationMatrix = null;
     if (isCalibrating) {
         const pitchDeg = parseFloat(pitchEl.textContent) || 0;
@@ -379,6 +485,9 @@ function processFrame() {
 
         rotationMatrix = buildRotationMatrix(yawRad, pitchRad, rollRad);
     }
+
+    // TEMP store of black-pixel directions (in camera/device-rotated frame) for later transform to world
+    const blackRaysTemp = []; // { px, py, dir_cam_rotated }
 
     // per-pixel detection + coloring
     for (let i = 0; i < d.length; i += 4) {
@@ -412,14 +521,13 @@ function processFrame() {
             blackPixelCount++;
 
             // compute pinhole direction for this pixel (camera frame)
-            const dir = computePinholeDirection(x, y);
-            if (dir && isFinite(dir.x) && isFinite(dir.y) && isFinite(dir.z)) {
-                // rotate the direction into the fixed pixel-black reference using the rotation matrix
-                const rotated = applyRotationToVec(dir, rotationMatrix);
-                if (rotated && isFinite(rotated.x) && isFinite(rotated.y) && isFinite(rotated.z)) {
-                    // count as "raio definido" (origem continua na câmera, direção agora no referencial fixo dos pixels pretos)
-                    raysDefinedCount++;
-                    // (não armazenamos as direções para economizar memória — apenas as definimos/contamos)
+            const dirCam = computePinholeDirection(x, y);
+            if (dirCam && isFinite(dirCam.x) && isFinite(dirCam.y) && isFinite(dirCam.z)) {
+                // rotate the direction with the device orientation matrix (camera -> device/world-local)
+                const dirRot = applyRotationToVec(dirCam, rotationMatrix);
+                if (dirRot) {
+                    // store temporarily; we'll transform to world-fixed after we compute the camera pose for this frame
+                    blackRaysTemp.push({ px: x, py: y, dir_cam_rot: dirRot });
                 }
             }
         }
@@ -521,24 +629,78 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
-    // If calibragem ativa, save a frame record
+    // Now: if calibragem ativa, transform stored black rays into the world-fixed reference
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
         const yaw = parseFloat(yawEl.textContent) || 0;
         const roll = parseFloat(rollEl.textContent) || 0;
 
+        // Build current camera pose matrix (in mm) using txMm, tyMm, computedZ and yaw/pitch/roll
+        // If txMm/tyMm/computedZ are null (missing), default to 0 to avoid crash (frame will have null pose)
+        const camTx = txMm !== null ? txMm : 0;
+        const camTy = tyMm !== null ? tyMm : 0;
+        const camTz = computedZ !== null ? computedZ : 0;
+
+        const yawRad = degToRad(yaw);
+        const pitchRad = degToRad(pitch);
+        const rollRad = degToRad(roll);
+
+        const T_cam = buildPoseMatrix(camTx, camTy, camTz, yawRad, pitchRad, rollRad);
+
+        // Transform camera pose to world-fixed reference: T_world_rel = initialPoseInv * T_cam
+        // (if worldFixed; otherwise treat world == camera initial and simply use T_cam)
+        let T_world_rel = T_cam;
+        let R_world_rel = [
+            [ T_cam[0][0], T_cam[0][1], T_cam[0][2] ],
+            [ T_cam[1][0], T_cam[1][1], T_cam[1][2] ],
+            [ T_cam[2][0], T_cam[2][1], T_cam[2][2] ]
+        ];
+        let t_world_rel = { x: T_cam[0][3], y: T_cam[1][3], z: T_cam[2][3] };
+
+        if (worldFixed && initialPoseInv) {
+            T_world_rel = multiplyMatrix4(initialPoseInv, T_cam);
+            R_world_rel = [
+                [ T_world_rel[0][0], T_world_rel[0][1], T_world_rel[0][2] ],
+                [ T_world_rel[1][0], T_world_rel[1][1], T_world_rel[1][2] ],
+                [ T_world_rel[2][0], T_world_rel[2][1], T_world_rel[2][2] ]
+            ];
+            t_world_rel = { x: T_world_rel[0][3], y: T_world_rel[1][3], z: T_world_rel[2][3] };
+        }
+
+        // For each stored rotated camera-direction, compute world direction: dir_world = R_world_rel * dir_cam_rot
+        const raysWorld = [];
+        for (let k = 0; k < blackRaysTemp.length; k++) {
+            const entry = blackRaysTemp[k];
+            const dirCamRot = entry.dir_cam_rot; // already rotated by current rotationMatrix earlier
+            // apply R_world_rel (3x3)
+            const rx = R_world_rel[0][0]*dirCamRot.x + R_world_rel[0][1]*dirCamRot.y + R_world_rel[0][2]*dirCamRot.z;
+            const ry = R_world_rel[1][0]*dirCamRot.x + R_world_rel[1][1]*dirCamRot.y + R_world_rel[1][2]*dirCamRot.z;
+            const rz = R_world_rel[2][0]*dirCamRot.x + R_world_rel[2][1]*dirCamRot.y + R_world_rel[2][2]*dirCamRot.z;
+            const mag = Math.hypot(rx, ry, rz);
+            if (!isFinite(mag) || mag === 0) continue;
+            const dirWorld = { dx: rx / mag, dy: ry / mag, dz: rz / mag };
+            // origin of ray in world-fixed coordinates is the camera origin transformed: that's t_world_rel (in mm)
+            const originWorld = { x: t_world_rel.x, y: t_world_rel.y, z: t_world_rel.z };
+            raysWorld.push({ origin: originWorld, direction: dirWorld });
+        }
+
+        // push frame record (pose + rays expressed in world-fixed coordinates)
         const record = {
             timestamp: new Date().toISOString(),
-            x_mm: txMm !== null ? Number(txMm.toFixed(4)) : null,
-            y_mm: tyMm !== null ? Number(tyMm.toFixed(4)) : null,
-            z_mm: computedZ !== null ? Number(computedZ.toFixed(4)) : null,
+            // camera pose in world-fixed coordinates (translation & rotation as displayed)
+            x_mm: camTx !== null ? Number(camTx.toFixed(4)) : null,
+            y_mm: camTy !== null ? Number(camTy.toFixed(4)) : null,
+            z_mm: camTz !== null ? Number(camTz.toFixed(4)) : null,
             pitch_deg: Number(pitch.toFixed(3)),
             yaw_deg: Number(yaw.toFixed(3)),
-            roll_deg: Number(roll.toFixed(3))
+            roll_deg: Number(roll.toFixed(3)),
+            // rays: array of { origin: {x,y,z}, direction: {dx,dy,dz} } all in world-fixed coordinates
+            rays: raysWorld
         };
         calibrationFrames.push(record);
 
-        // update rays display (número de pixels pretos que tiveram direção definida)
+        // update rays display (número de pixels pretos que tiveram direção definida e transformada para o mundo)
+        raysDefinedCount = raysWorld.length;
         raysEl.textContent = String(raysDefinedCount);
     } else {
         // quando não calibrando, contador deve mostrar 0
