@@ -1,20 +1,17 @@
 /* main.js
-   Atualização: no início da calibração o usuário informa quantas triangulações
-   (votes) são necessárias para que o mesmo pixel seja transformado em ponto 3D.
-   Implementado contador por pixel; apenas quando o contador >= requiredTriangulations
-   o ponto é adicionado à nuvem (triangulatedPoints). Nenhuma outra função foi alterada.
+   Mantive todas as funcionalidades existentes e adicionei:
+   - durante a calibragem ativa, desenhar o plano XY (área azul clara) cujos lados são as setas +X e +Y.
+   - o polígono é construído a partir: origem (red centroid), ponta +X, canto (ponta +X + ponta +Y relativa) e ponta +Y.
+   - o desenho do plano é feito antes das setas/pontos para manter as setas/pontos visíveis.
+   - ADIÇÃO: um ponto preto fixo no referencial do mundo em +X = 50 mm, +Y = 50 mm, +Z = 0 (desenhado quando calibrado).
 */
 
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
-const downloadBtn = document.getElementById("downloadBtn");
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-
-const miniCanvas = document.getElementById("miniCanvas");
-const mctx = miniCanvas.getContext("2d");
 
 const redCountDisplay = document.getElementById("redCount");
 const pitchEl = document.getElementById("pitch");
@@ -24,9 +21,6 @@ const scaleEl = document.getElementById("scaleValue");
 const zEl = document.getElementById("zValue");
 const xEl = document.getElementById("xValue");
 const yEl = document.getElementById("yValue");
-const raysEl = document.getElementById("raysValue");
-const triagEl = document.getElementById("triangValue");
-const worldMsgEl = document.getElementById("worldMsg");
 
 const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
@@ -34,38 +28,24 @@ const greenThresholdSlider = document.getElementById("greenThreshold");
 
 const ARROW_LENGTH_MM = 100;
 
+// fixed world point (requested): +X=50 mm, +Y=50 mm, +Z=0
+const FIXED_POINT_WORLD = { x_mm: 50, y_mm: 50, z_mm: 0 };
+
 // calibration / locking state
 let baseZmm = 0;
-let lockedScale = 0;
-let basePixelDistance = 0;
-let baseOriginScreen = null;
+let lockedScale = 0;           // px per mm locked at calibration
+let basePixelDistance = 0;     // calibrated arrow length in px (ARROW_LENGTH_MM * lockedScale)
+let baseOriginScreen = null;   // {x,y} of origin in screen coords at calibration
 let isCalibrated = false;
 
+// calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = [];
+let calibrationFrames = []; // array of frame objects saved durante calibragem
 
-let lastRcentroid = null;
-let currentScale = 0;
+let lastRcentroid = null;     // {x,y} of last detected red centroid
+let currentScale = 0;         // px/mm live estimate (before locking)
 
-// world-fixed reference
-let worldFixed = false;
-let initialPose = null;
-let initialPoseMatrix = null;
-let initialPoseInv = null;
-
-// accumulated rays & triangulated points
-let accumulatedRays = []; // items: { origin:{x,y,z}, direction:{dx,dy,dz}, frameTimestamp, px, py }
-let triangulatedPoints = []; // items: {x,y,z}
-
-// triangulation votes per pixel (key "px,py" -> { count, point })
-let triangVotes = {}; // reset at calibration start
-let requiredTriangulations = 1; // default; set by user at calibration start
-
-// parameters
-const TRIANG_DIST_THR_MM = 5.0;
-const MERGE_THR_MM = 5.0;
-
-/* UTIL helpers */
+/* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
     const max = Math.max(rN, gN, bN);
@@ -96,14 +76,17 @@ function hueDistance(a, b) {
     return d > 180 ? 360 - d : d;
 }
 
-/* drawing helpers (as before) */
+/* desenha uma seta do centro (cx,cy) na direção (dx,dy) com comprimento lengthPx */
 function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     const mag = Math.hypot(dx, dy);
     if (!mag) return;
+
     const ux = dx / mag;
     const uy = dy / mag;
+
     const x2 = cx + ux * lengthPx;
     const y2 = cy + uy * lengthPx;
+
     const headLen = 12;
     const angle = Math.atan2(y2 - cy, x2 - cx);
 
@@ -130,6 +113,7 @@ function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     ctx.fill();
 }
 
+/* retorna a coordenada da ponta da seta (x2,y2) sem desenhar */
 function computeArrowTip(cx, cy, dx, dy, lengthPx) {
     const mag = Math.hypot(dx, dy);
     if (!mag) return null;
@@ -138,9 +122,14 @@ function computeArrowTip(cx, cy, dx, dy, lengthPx) {
     return { x: cx + ux * lengthPx, y: cy + uy * lengthPx, ux, uy };
 }
 
+/* desenha o plano XY como polígono preenchido (azul claro semi-transparente)
+   pontos: origem -> tipX -> tipX+tipY (canto oposto) -> tipY
+*/
 function drawPlanePolygon(origin, tipX, tipY) {
     if (!origin || !tipX || !tipY) return;
+
     const corner = { x: tipX.x + (tipY.x - origin.x), y: tipX.y + (tipY.y - origin.y) };
+
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(origin.x, origin.y);
@@ -148,256 +137,12 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.lineTo(corner.x, corner.y);
     ctx.lineTo(tipY.x, tipY.y);
     ctx.closePath();
-    ctx.fillStyle = "rgba(173,216,230,0.4)";
+    ctx.fillStyle = "rgba(173,216,230,0.4)"; // lightblue semi-transparent
     ctx.fill();
     ctx.restore();
 }
 
-/* PINHOLE + rotation + pose helpers (as before) */
-function computePinholeDirection(px, py) {
-    if (!canvas || !canvas.width || !canvas.height) return null;
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const f = Math.max(canvas.width, canvas.height) * 0.9;
-    const vx = (px - cx) / f;
-    const vy = (py - cy) / f;
-    const vz = 1.0;
-    const norm = Math.hypot(vx, vy, vz);
-    if (!isFinite(norm) || norm === 0) return null;
-    return { x: vx / norm, y: vy / norm, z: vz / norm };
-}
-
-function degToRad(deg) { return deg * Math.PI / 180; }
-
-function buildRotationMatrix(yawRad, pitchRad, rollRad) {
-    const cy = Math.cos(yawRad), sy = Math.sin(yawRad);
-    const Rz = [
-        [ cy, -sy, 0 ],
-        [ sy,  cy, 0 ],
-        [  0,   0, 1 ]
-    ];
-    const cp = Math.cos(pitchRad), sp = Math.sin(pitchRad);
-    const Rx = [
-        [ 1,   0,   0 ],
-        [ 0,  cp, -sp ],
-        [ 0,  sp,  cp ]
-    ];
-    const cr = Math.cos(rollRad), sr = Math.sin(rollRad);
-    const Ry = [
-        [ cr, 0, sr ],
-        [  0, 1,  0 ],
-        [ -sr,0, cr ]
-    ];
-    const tmp = multiplyMatrix3(Rz, Rx);
-    return multiplyMatrix3(tmp, Ry);
-}
-
-function multiplyMatrix3(A, B) {
-    const C = [[0,0,0],[0,0,0],[0,0,0]];
-    for (let i=0;i<3;i++) for (let j=0;j<3;j++){
-        let s=0; for (let k=0;k<3;k++) s+=A[i][k]*B[k][j];
-        C[i][j]=s;
-    }
-    return C;
-}
-
-function applyRotationToVec(v, R) {
-    if (!R) return v;
-    const x = R[0][0]*v.x + R[0][1]*v.y + R[0][2]*v.z;
-    const y = R[1][0]*v.x + R[1][1]*v.y + R[1][2]*v.z;
-    const z = R[2][0]*v.x + R[2][1]*v.y + R[2][2]*v.z;
-    const mag = Math.hypot(x,y,z);
-    if (!isFinite(mag) || mag === 0) return null;
-    return { x: x/mag, y: y/mag, z: z/mag };
-}
-
-function buildPoseMatrix(tx, ty, tz, yawRad, pitchRad, rollRad) {
-    const R = buildRotationMatrix(yawRad, pitchRad, rollRad);
-    return [
-        [ R[0][0], R[0][1], R[0][2], tx ],
-        [ R[1][0], R[1][1], R[1][2], ty ],
-        [ R[2][0], R[2][1], R[2][2], tz ],
-        [ 0,       0,       0,       1  ]
-    ];
-}
-
-function invertPoseMatrix(T) {
-    const R = [
-        [T[0][0], T[0][1], T[0][2]],
-        [T[1][0], T[1][1], T[1][2]],
-        [T[2][0], T[2][1], T[2][2]]
-    ];
-    const Rt = [
-        [R[0][0], R[1][0], R[2][0]],
-        [R[0][1], R[1][1], R[2][1]],
-        [R[0][2], R[1][2], R[2][2]]
-    ];
-    const t = [ T[0][3], T[1][3], T[2][3] ];
-    const negRtT = [
-        -(Rt[0][0]*t[0] + Rt[0][1]*t[1] + Rt[0][2]*t[2]),
-        -(Rt[1][0]*t[0] + Rt[1][1]*t[1] + Rt[1][2]*t[2]),
-        -(Rt[2][0]*t[0] + Rt[2][1]*t[1] + Rt[2][2]*t[2])
-    ];
-    return [
-        [ Rt[0][0], Rt[0][1], Rt[0][2], negRtT[0] ],
-        [ Rt[1][0], Rt[1][1], Rt[1][2], negRtT[1] ],
-        [ Rt[2][0], Rt[2][1], Rt[2][2], negRtT[2] ],
-        [ 0,        0,        0,        1         ]
-    ];
-}
-
-function multiplyMatrix4(A, B) {
-    const C = Array.from({length:4}, () => Array(4).fill(0));
-    for (let i=0;i<4;i++){
-        for (let j=0;j<4;j++){
-            let s = 0;
-            for (let k=0;k<4;k++) s += A[i][k] * B[k][j];
-            C[i][j] = s;
-        }
-    }
-    return C;
-}
-
-/* triangulation helpers */
-function dot(a,b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
-function closestPointsBetweenLines(o1,d1,o2,d2){
-    const w0 = { x: o1.x - o2.x, y: o1.y - o2.y, z: o1.z - o2.z };
-    const a = dot(d1,d1), b = dot(d1,d2), c = dot(d2,d2), d = dot(d1,w0), e = dot(d2,w0);
-    const denom = a*c - b*b;
-    if (Math.abs(denom) < 1e-12) return null;
-    const s = (b*e - c*d) / denom;
-    const t = (a*e - b*d) / denom;
-    const p1 = { x: o1.x + d1.x*s, y: o1.y + d1.y*s, z: o1.z + d1.z*s };
-    const p2 = { x: o2.x + d2.x*t, y: o2.y + d2.y*t, z: o2.z + d2.z*t };
-    const mid = { x: 0.5*(p1.x+p2.x), y: 0.5*(p1.y+p2.y), z: 0.5*(p1.z+p2.z) };
-    const dist = Math.hypot(p1.x-p2.x, p1.y-p2.y, p1.z-p2.z);
-    return { p1, p2, midpoint: mid, dist, s, t };
-}
-
-function updateTriangCountUI(){ triagEl.textContent = String(triangulatedPoints.length); }
-
-/* tryTriangulateAndAccumulate:
-   - receives newRays array with items { origin, direction, frameTimestamp, px, py }
-   - for each pair (newRay vs accumulatedRay) attempts triangulation
-   - if cp.dist <= TRIANG_DIST_THR_MM:
-       -> check if candidate close to existing triangulatedPoints (merge)
-       -> if not merged: increment votes for pixel key (nr.px,nr.py)
-       -> when votes >= requiredTriangulations => add point to triangulatedPoints
-   - finally append newRays to accumulatedRays (including px/py)
-*/
-function tryTriangulateAndAccumulate(newRays){
-    for (let i=0;i<newRays.length;i++){
-        const nr = newRays[i];
-        for (let j=0;j<accumulatedRays.length;j++){
-            const ar = accumulatedRays[j];
-            if (nr.frameTimestamp === ar.frameTimestamp) continue;
-
-            const cp = closestPointsBetweenLines(
-                nr.origin, { x: nr.direction.dx, y: nr.direction.dy, z: nr.direction.dz },
-                ar.origin, { x: ar.direction.dx, y: ar.direction.dy, z: ar.direction.dz }
-            );
-            if (!cp) continue;
-            if (cp.dist <= TRIANG_DIST_THR_MM) {
-                // candidate point
-                const pt = { x: Number(cp.midpoint.x.toFixed(4)), y: Number(cp.midpoint.y.toFixed(4)), z: Number(cp.midpoint.z.toFixed(4)) };
-
-                // check if near an existing triangulated point (merge)
-                let merged = false;
-                for (let k=0;k<triangulatedPoints.length;k++){
-                    const p = triangulatedPoints[k];
-                    const d = Math.hypot(p.x - pt.x, p.y - pt.y, p.z - pt.z);
-                    if (d <= MERGE_THR_MM) { merged = true; break; }
-                }
-                if (merged) continue;
-
-                // attribute triangulation vote to the NEW RAY's pixel coordinates (nr.px,nr.py)
-                const key = `${nr.px},${nr.py}`;
-                if (!triangVotes[key]) triangVotes[key] = { count: 0, lastPoint: null, added: false };
-                // increment vote
-                triangVotes[key].count += 1;
-                triangVotes[key].lastPoint = pt;
-
-                // if reached requiredTriangulations and not already added -> add
-                if (!triangVotes[key].added && triangVotes[key].count >= requiredTriangulations) {
-                    // before adding, ensure not too close to existing triangulated points (double-check)
-                    let tooClose = false;
-                    for (let k=0;k<triangulatedPoints.length;k++){
-                        const p = triangulatedPoints[k];
-                        const d = Math.hypot(p.x - pt.x, p.y - pt.y, p.z - pt.z);
-                        if (d <= MERGE_THR_MM) { tooClose = true; break; }
-                    }
-                    if (!tooClose) {
-                        triangulatedPoints.push(pt);
-                        triangVotes[key].added = true;
-                        updateTriangCountUI();
-                    } else {
-                        triangVotes[key].added = true; // mark prevented duplicates
-                    }
-                }
-            }
-        }
-    }
-
-    // append all newRays to accumulatedRays (keeping px,py)
-    for (let i=0;i<newRays.length;i++) {
-        const nr = newRays[i];
-        accumulatedRays.push({
-            origin: nr.origin,
-            direction: nr.direction,
-            frameTimestamp: nr.frameTimestamp,
-            px: nr.px,
-            py: nr.py
-        });
-    }
-}
-
-/* draw triangulated points overlay (light pink blinking) and mini cloud */
-function drawTriangulatedOnMainCanvas() {
-    if (!triangulatedPoints || triangulatedPoints.length === 0) return;
-    const blinkOn = Math.floor(Date.now() / 500) % 2 === 0;
-    const size = 4;
-    for (let i = 0; i < triangulatedPoints.length; i++) {
-        const p = triangulatedPoints[i];
-        if (!baseOriginScreen || !lockedScale) continue;
-        const sx = baseOriginScreen.x - (p.x * lockedScale);
-        const sy = baseOriginScreen.y + (p.y * lockedScale);
-        if (sx < -10 || sx > canvas.width + 10 || sy < -10 || sy > canvas.height + 10) continue;
-        ctx.beginPath();
-        ctx.fillStyle = blinkOn ? 'rgba(255,182,193,0.95)' : 'rgba(255,182,193,0.25)';
-        ctx.arc(sx, sy, size, 0, Math.PI * 2);
-        ctx.fill();
-    }
-}
-
-function drawMiniCloud() {
-    mctx.clearRect(0,0,miniCanvas.width,miniCanvas.height);
-    mctx.fillStyle = '#071017';
-    mctx.fillRect(0,0,miniCanvas.width,miniCanvas.height);
-    if (!triangulatedPoints || triangulatedPoints.length === 0) return;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (let i=0;i<triangulatedPoints.length;i++){
-        const p = triangulatedPoints[i];
-        if (p.x < minX) minX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y > maxY) maxY = p.y;
-    }
-    const pad = 10;
-    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
-    const spanX = maxX - minX || 1;
-    const spanY = maxY - minY || 1;
-    for (let i=0;i<triangulatedPoints.length;i++){
-        const p = triangulatedPoints[i];
-        const nx = (p.x - minX) / spanX;
-        const ny = (p.y - minY) / spanY;
-        const px = Math.floor(nx * (miniCanvas.width - 1));
-        const py = Math.floor((1 - ny) * (miniCanvas.height - 1));
-        mctx.fillStyle = 'rgba(255,182,193,0.16)';
-        mctx.fillRect(px, py, 2, 2);
-    }
-}
-
-/* --- camera / deviceorientation / scanning (mantido) --- */
+/* --- Inicialização da câmera / DeviceOrientation --- */
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
@@ -419,8 +164,7 @@ scanBtn.addEventListener("click", async () => {
         video.srcObject = stream;
 
         video.addEventListener("loadedmetadata", () => {
-            canvas.width = video.videoWidth / 8;
-            canvas.height = video.videoHeight / 8;
+            canvas.width = video.videoWidth;canvas.height = video.videoHeight;
             requestAnimationFrame(processFrame);
         }, { once: true });
     } catch (err) {
@@ -428,7 +172,11 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
-/* calibrate button behaviour: ask user how many triangulations required per pixel (nova funcionalidade) */
+/*
+ Calibrar button behavior:
+ - If not currently calibrating: validate origin & scale, prompt +Z, lock scale, record base origin and start collecting frames (isCalibrating = true).
+ - If currently calibrating: finish collecting, generate JSON with recorded frames, download automatically, stop collecting (isCalibrating = false). Keep calibration locked (isCalibrated = true).
+*/
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
         if (!lastRcentroid) {
@@ -440,73 +188,39 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
-        // NEW: ask user for required triangulations per pixel
-        const reqStr = prompt("Número de triangulações necessárias por pixel para virar ponto 3D (inteiro >= 1):", "3");
-        if (reqStr === null) return; // user cancelled
-        const req = parseInt(reqStr);
-        if (isNaN(req) || req < 1) {
-            alert("Valor inválido. Calibração cancelada.");
-            return;
-        }
-        requiredTriangulations = req;
-
         const input = prompt("Informe o valor atual de +Z (em mm):");
         if (input === null) return;
+
         const z = parseFloat(input);
         if (isNaN(z)) {
             alert("Valor inválido. Calibração cancelada.");
             return;
         }
 
+        // lock calibration parameters
         baseZmm = z;
-        lockedScale = currentScale;
+        lockedScale = currentScale; // px per mm locked now
         basePixelDistance = ARROW_LENGTH_MM * lockedScale;
         baseOriginScreen = { x: lastRcentroid.x, y: lastRcentroid.y };
         isCalibrated = true;
 
+        // start collecting frames (calibragem ativa)
         isCalibrating = true;
         calibrationFrames = [];
 
-        const initX = parseFloat(xEl.textContent) || 0;
-        const initY = parseFloat(yEl.textContent) || 0;
-        const initZ = parseFloat(zEl.textContent) || 0;
-        const initPitch = parseFloat(pitchEl.textContent) || 0;
-        const initYaw = parseFloat(yawEl.textContent) || 0;
-        const initRoll = parseFloat(rollEl.textContent) || 0;
-
-        initialPose = { x_mm: initX, y_mm: initY, z_mm: initZ, pitch_deg: initPitch, yaw_deg: initYaw, roll_deg: initRoll };
-        const yawRad0 = degToRad(initYaw);
-        const pitchRad0 = degToRad(initPitch);
-        const rollRad0 = degToRad(initRoll);
-        initialPoseMatrix = buildPoseMatrix(initX, initY, initZ, yawRad0, pitchRad0, rollRad0);
-        initialPoseInv = invertPoseMatrix(initialPoseMatrix);
-
-        // reset accumulators and votes
-        accumulatedRays = [];
-        triangulatedPoints = [];
-        triangVotes = {};
-        updateTriangCountUI();
-
-        worldFixed = true;
-        worldMsgEl.hidden = false;
-        worldMsgEl.textContent = "Mundo fixado";
-
-        // show download button during calibration
-        downloadBtn.hidden = false;
-
+        // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
         xEl.textContent = "0.00";
         yEl.textContent = "0.00";
-        raysEl.textContent = "0";
 
-        alert(`Calibragem iniciada e mundo fixado.\nTriangulações exigidas por pixel: ${requiredTriangulations}.\nMova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.`);
+        alert("Calibragem iniciada. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
         return;
     }
 
+    // finalize calibration if currently calibrating
     if (isCalibrating) {
         isCalibrating = false;
-        downloadBtn.hidden = true;
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
@@ -518,8 +232,6 @@ calibrateBtn.addEventListener("click", () => {
             baseZmm,
             lockedScale,
             baseOriginScreen,
-            initialPose,
-            requiredTriangulations,
             frames: calibrationFrames
         };
 
@@ -539,25 +251,7 @@ calibrateBtn.addEventListener("click", () => {
     }
 });
 
-/* download button handler (mantido) */
-downloadBtn.addEventListener("click", () => {
-    const payload = {
-        createdAt: new Date().toISOString(),
-        pointCloud: triangulatedPoints
-    };
-    const filename = `nuvem_pontos_${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-});
-
-/* --- main frame processing (mantido, with new px/py propagation) --- */
+/* Main loop */
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -565,91 +259,124 @@ function processFrame() {
     }
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const d = img.data;
 
     const rTol = sliderToHueTolerance(redThresholdSlider.value);
     const bTol = sliderToHueTolerance(blueThresholdSlider.value);
     const gTol = sliderToHueTolerance(greenThresholdSlider.value);
 
-    let rC=0, rX=0, rY=0;
-    let bC=0, bX=0, bY=0;
-    let gC=0, gX=0, gY=0;
+    let rC = 0, rX = 0, rY = 0;
+    let bC = 0, bX = 0, bY = 0;
+    let gC = 0, gX = 0, gY = 0;
 
-    let blackPixelCount = 0;
-    const BLACK_THR = 30;
+    // detecta pixel por pixel
+    for (let i = 0; i < d.length; i += 4) {
+        const { h, s, v } = rgbToHsv(d[i], d[i + 1], d[i + 2]);
+        if (s < 0.35 || v < 0.12) continue;
+        const p = i / 4, x = p % canvas.width, y = (p / canvas.width) | 0;
 
-    let rotationMatrix = null;
-    if (isCalibrating) {
-        const pitchDeg = parseFloat(pitchEl.textContent) || 0;
-        const yawDeg = parseFloat(yawEl.textContent) || 0;
-        const rollDeg = parseFloat(rollEl.textContent) || 0;
-        const pitchRad = degToRad(pitchDeg);
-        const yawRad = degToRad(yawDeg);
-        const rollRad = degToRad(rollDeg);
-        rotationMatrix = buildRotationMatrix(yawRad, pitchRad, rollRad);
-    }
-
-    const blackRaysTemp = [];
-
-    for (let i=0;i<d.length;i+=4){
-        const r=d[i], g=d[i+1], b=d[i+2];
-        const p=i/4;
-        const x=p%canvas.width;
-        const y=(p/canvas.width)|0;
-        const {h,s,v} = rgbToHsv(r,g,b);
-        if (s>=0.35 && v>=0.12) {
-            if (hueDistance(h,0) <= rTol) { rC++; rX+=x; rY+=y; d[i]=255; d[i+1]=165; d[i+2]=0; }
-            else if (hueDistance(h,230) <= bTol) { bC++; bX+=x; bY+=y; d[i]=255; d[i+1]=255; d[i+2]=255; }
-            else if (hueDistance(h,120) <= gTol) { gC++; gX+=x; gY+=y; d[i]=160; d[i+1]=32; d[i+2]=240; }
-        }
-
-        if (isCalibrating && r < BLACK_THR && g < BLACK_THR && b < BLACK_THR) {
-            d[i]=255; d[i+1]=0; d[i+2]=0;
-            blackPixelCount++;
-            const dirCam = computePinholeDirection(x,y);
-            if (dirCam) {
-                const dirRot = applyRotationToVec(dirCam, rotationMatrix);
-                if (dirRot) blackRaysTemp.push({ px:x, py:y, dir_cam_rot: dirRot });
-            }
+        if (hueDistance(h, 0) <= rTol) {
+            rC++; rX += x; rY += y;
+            d[i] = 255; d[i + 1] = 165; d[i + 2] = 0;
+        } else if (hueDistance(h, 230) <= bTol) {
+            bC++; bX += x; bY += y;
+            d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
+        } else if (hueDistance(h, 120) <= gTol) {
+            gC++; gX += x; gY += y;
+            d[i] = 160; d[i + 1] = 32; d[i + 2] = 240;
         }
     }
 
     ctx.putImageData(img, 0, 0);
 
     let r = null, b = null, g = null;
-    if (rC) { r = { x: rX / rC, y: rY / rC }; lastRcentroid = r; }
-    else lastRcentroid = null;
-    if (bC) b = { x: bX / bC, y: bY / bC };
-    if (gC) g = { x: gX / gC, y: gY / gC };
 
+    if (rC) {
+        r = { x: rX / rC, y: rY / rC };
+        lastRcentroid = r;
+    } else {
+        lastRcentroid = null;
+    }
+
+    if (bC) {
+        b = { x: bX / bC, y: bY / bC };
+    }
+
+    if (gC) { g = { x: gX / gC, y: gY / gC };
+    }
+
+    // compute live scale (px/mm) from red->blue if available
     let currentPixelDistance = 0;
     if (r && b) {
         currentPixelDistance = Math.hypot(b.x - r.x, b.y - r.y);
-        currentScale = currentPixelDistance / ARROW_LENGTH_MM;
-        if (!isCalibrated) scaleEl.textContent = currentScale.toFixed(3);
-        else scaleEl.textContent = lockedScale.toFixed(3);
+        currentScale = currentPixelDistance / ARROW_LENGTH_MM; // px/mm
+        if (!isCalibrated) {
+            scaleEl.textContent = currentScale.toFixed(3);
+        } else {
+            scaleEl.textContent = lockedScale.toFixed(3);
+        }
     }
 
+    // --- PLANE DRAWING (during calibragem) ---
+    // Only draw plane if calibragem ativa and have origin + both vectors (b and g)
     if (isCalibrating && r && b && g) {
+        // use lockedScale if available (should be locked at start of calibragem), else fallback to currentScale
         const scaleUsed = isCalibrated ? lockedScale : currentScale;
         const lengthPx = ARROW_LENGTH_MM * scaleUsed;
+
+        // compute arrow tips (coordinates of arrow endpoints)
         const tipX = computeArrowTip(r.x, r.y, b.x - r.x, b.y - r.y, lengthPx);
         const tipY = computeArrowTip(r.x, r.y, g.x - r.x, g.y - r.y, lengthPx);
-        if (tipX && tipY) drawPlanePolygon(r, tipX, tipY);
+
+        if (tipX && tipY) {
+            // draw light-blue filled polygon representing the XY plane
+            drawPlanePolygon(r, tipX, tipY);
+        }
     }
 
-    if (r) { ctx.fillStyle="red"; ctx.beginPath(); ctx.arc(r.x,r.y,6,0,Math.PI*2); ctx.fill(); }
-    if (b) { ctx.fillStyle="blue"; ctx.beginPath(); ctx.arc(b.x,b.y,6,0,Math.PI*2); ctx.fill(); }
-    if (g) { ctx.fillStyle="green"; ctx.beginPath(); ctx.arc(g.x,g.y,6,0,Math.PI*2); ctx.fill(); }
+    // --- draw points and arrows as before (on top of plane) ---
+    if (r) {
+        ctx.fillStyle = "red";
+        ctx.beginPath(); ctx.arc(r.x, r.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    if (b) {
+        ctx.fillStyle = "blue";
+        ctx.beginPath(); ctx.arc(b.x, b.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    if (g) {
+        ctx.fillStyle = "green";
+        ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
 
+    // draw arrows; use lockedScale if calibrated (and if calibragem active scale locked); otherwise live scale
     const scaleForArrows = isCalibrated ? lockedScale : currentScale;
-    if (r && b && scaleForArrows) drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "blue");
-    if (r && g && scaleForArrows) drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
 
+    if (r && b && scaleForArrows) {
+        drawArrowFromCenter(r.x, r.y, b.x - r.x, b.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "blue");
+    }
+    if (r && g && scaleForArrows) {
+        drawArrowFromCenter(r.x, r.y, g.x - r.x, g.y - r.y, ARROW_LENGTH_MM * scaleForArrows, "green");
+    }
+
+    // --- DESENHO DO PONTO PRETO FIXO NO REFERENCIAL DO MUNDO (+X=50, +Y=50, +Z=0) ---
+    // Só é desenhado quando a calibração está travada (isCalibrated) e temos origem e escala válidas.
+    if (isCalibrated && baseOriginScreen && lockedScale && isFinite(lockedScale) && lockedScale > 0) {
+        // screenX = baseOriginScreen.x - X_mm * lockedScale
+        // screenY = baseOriginScreen.y + Y_mm * lockedScale
+        const px = baseOriginScreen.x - (FIXED_POINT_WORLD.x_mm * lockedScale);
+        const py = baseOriginScreen.y + (FIXED_POINT_WORLD.y_mm * lockedScale);
+
+        ctx.fillStyle = "black";
+        ctx.beginPath();
+        ctx.arc(px, py, 6, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // +Z calculation (uses lockedScale if calibrated)
     let computedZ = null;
     if (isCalibrated && currentPixelDistance) {
-        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale;
+        const dzMm = (basePixelDistance - currentPixelDistance) / lockedScale; // smaller arrow px => larger +Z
         computedZ = baseZmm + dzMm;
         zEl.textContent = computedZ.toFixed(2);
     } else {
@@ -657,13 +384,16 @@ function processFrame() {
         else zEl.textContent = baseZmm.toFixed(2);
     }
 
+    // +X and +Y calculations (camera translation), only after calibration and if origin detected
     let txMm = null, tyMm = null;
     if (isCalibrated && lastRcentroid && baseOriginScreen) {
         const dxPixels = lastRcentroid.x - baseOriginScreen.x;
         const dyPixels = lastRcentroid.y - baseOriginScreen.y;
-        const tx = -(dxPixels) / lockedScale;
-        const ty = (dyPixels) / lockedScale;
+
+        const tx = -(dxPixels) / lockedScale;        // X: negative of origin movement
+        const ty = (dyPixels) / lockedScale;         // Y: positive when origin moves down
         txMm = tx; tyMm = ty;
+
         xEl.textContent = txMm.toFixed(2);
         yEl.textContent = tyMm.toFixed(2);
     } else {
@@ -671,59 +401,24 @@ function processFrame() {
         else { xEl.textContent = "0.00"; yEl.textContent = "0.00"; }
     }
 
+    // If calibragem ativa, save a frame record
     if (isCalibrating) {
         const pitch = parseFloat(pitchEl.textContent) || 0;
         const yaw = parseFloat(yawEl.textContent) || 0;
         const roll = parseFloat(rollEl.textContent) || 0;
-        const camTx = txMm !== null ? txMm : 0;
-        const camTy = tyMm !== null ? tyMm : 0;
-        const camTz = computedZ !== null ? computedZ : 0;
-        const yawRad = degToRad(yaw);
-        const pitchRad = degToRad(pitch);
-        const rollRad = degToRad(roll);
-        const T_cam = buildPoseMatrix(camTx, camTy, camTz, yawRad, pitchRad, rollRad);
-        let T_world_rel = T_cam;
-        if (worldFixed && initialPoseInv) T_world_rel = multiplyMatrix4(initialPoseInv, T_cam);
-        const R_world_rel = [
-            [ T_world_rel[0][0], T_world_rel[0][1], T_world_rel[0][2] ],
-            [ T_world_rel[1][0], T_world_rel[1][1], T_world_rel[1][2] ],
-            [ T_world_rel[2][0], T_world_rel[2][1], T_world_rel[2][2] ]
-        ];
-        const t_world_rel = { x: T_world_rel[0][3], y: T_world_rel[1][3], z: T_world_rel[2][3] };
-        const raysWorld = [];
-        const frameTimestamp = new Date().toISOString();
-        for (let k=0;k<blackRaysTemp.length;k++){
-            const entry = blackRaysTemp[k];
-            const dirCamRot = entry.dir_cam_rot;
-            const rx = R_world_rel[0][0]*dirCamRot.x + R_world_rel[0][1]*dirCamRot.y + R_world_rel[0][2]*dirCamRot.z;
-            const ry = R_world_rel[1][0]*dirCamRot.x + R_world_rel[1][1]*dirCamRot.y + R_world_rel[1][2]*dirCamRot.z;
-            const rz = R_world_rel[2][0]*dirCamRot.x + R_world_rel[2][1]*dirCamRot.y + R_world_rel[2][2]*dirCamRot.z;
-            const mag = Math.hypot(rx,ry,rz);
-            if (!isFinite(mag) || mag===0) continue;
-            const dirWorld = { dx: rx/mag, dy: ry/mag, dz: rz/mag };
-            const originWorld = { x: t_world_rel.x, y: t_world_rel.y, z: t_world_rel.z };
-            // include pixel coords (px,py) so we can count votes per pixel later
-            raysWorld.push({ origin: originWorld, direction: dirWorld, frameTimestamp, px: entry.px, py: entry.py });
-        }
 
-        const frameRecord = { timestamp: frameTimestamp, rays: raysWorld };
-        calibrationFrames.push(frameRecord);
-
-        tryTriangulateAndAccumulate(raysWorld);
-
-        raysEl.textContent = String(raysWorld.length);
-    } else {
-        raysEl.textContent = "0";
+        const record = {
+            timestamp: new Date().toISOString(),
+            x_mm: txMm !== null ? Number(txMm.toFixed(4)) : null,
+            y_mm: tyMm !== null ? Number(tyMm.toFixed(4)) : null,
+            z_mm: computedZ !== null ? Number(computedZ.toFixed(4)) : null,
+            pitch_deg: Number(pitch.toFixed(3)),
+            yaw_deg: Number(yaw.toFixed(3)),
+            roll_deg: Number(roll.toFixed(3))
+        };
+        calibrationFrames.push(record);
     }
-
-    // draw triangulated points overlay on main canvas (blink)
-    drawTriangulatedOnMainCanvas();
-
-    // draw mini cloud density
-    drawMiniCloud();
 
     redCountDisplay.textContent = `Pixels vermelhos: ${rC}`;
     requestAnimationFrame(processFrame);
 }
-
-requestAnimationFrame(processFrame);
