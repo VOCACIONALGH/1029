@@ -8,7 +8,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="layout.css">
 
-    <!-- model-viewer (Google) -->
+    <!-- model-viewer (web component) -->
     <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 </head>
 <body>
@@ -63,17 +63,15 @@
     <video id="camera" autoplay playsinline hidden></video>
     <canvas id="canvas"></canvas>
 
-    <!-- model-viewer container: posicionado sobre o canvas; hidden por padrão -->
-    <div id="modelViewerContainer" hidden>
-        <model-viewer id="mv"
-                      style="width:240px;height:240px;"
-                      camera-controls
-                      exposure="1"
-                      auto-rotate="false"
-                      alt="Modelo GLB carregado"
-                      reveal="interaction">
-        </model-viewer>
-    </div>
+    <!-- model-viewer element: ficará visível após upload do GLB -->
+    <model-viewer id="modelViewer"
+                  style="display:none"
+                  camera-controls
+                  exposure="1"
+                  interaction-prompt="none"
+                  background-color="#000000"
+                  alt="Modelo GLB carregado">
+    </model-viewer>
 
     <script src="main.js"></script>
     <script src="export.js"></script>
