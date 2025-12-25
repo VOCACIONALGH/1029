@@ -12,8 +12,6 @@
 
     <button id="scanBtn">ESCÂNER</button>
     <button id="calibrateBtn">Calibrar</button>
-    <!-- Botão de download da nuvem aparece apenas durante a calibragem -->
-    <button id="downloadBtn" style="display:none;">Download Nuvem (.json)</button>
 
     <div id="redCount">Pixels vermelhos: 0</div>
 
@@ -36,8 +34,7 @@
     </div>
 
     <div id="raysInfo">
-        Raios 3D (pixels pretos neste frame): <span id="raysValue">0</span><br/>
-        Pontos triangulados (acumulado): <span id="triCount">0</span>
+        Raios 3D (pixels pretos): <span id="raysValue">0</span>
     </div>
 
     <div id="calibrators">
@@ -58,14 +55,7 @@
     </div>
 
     <video id="camera" autoplay playsinline hidden></video>
-
-    <div id="canvasRow">
-        <canvas id="canvas"></canvas>
-        <div id="miniPanel">
-            <div class="miniLabel">Preview nuvem (mini)</div>
-            <canvas id="miniCloud" width="200" height="200"></canvas>
-        </div>
-    </div>
+    <canvas id="canvas"></canvas>
 
     <script src="main.js"></script>
     <script src="export.js"></script>
