@@ -1,7 +1,8 @@
 /* main.js
-   Atualização mínima: durante a calibragem cada ponto triangulado é pintado de rosa claro (pisca)
-   e adicionada uma mini visualização rápida (miniCanvas) mostrando a densidade da nuvem.
-   Nenhuma outra funcionalidade foi alterada.
+   Atualização: no início da calibração o usuário informa quantas triangulações
+   (votes) são necessárias para que o mesmo pixel seja transformado em ponto 3D.
+   Implementado contador por pixel; apenas quando o contador >= requiredTriangulations
+   o ponto é adicionado à nuvem (triangulatedPoints). Nenhuma outra função foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -52,15 +53,19 @@ let initialPose = null;
 let initialPoseMatrix = null;
 let initialPoseInv = null;
 
-let accumulatedRays = [];
-let triangulatedPoints = [];
+// accumulated rays & triangulated points
+let accumulatedRays = []; // items: { origin:{x,y,z}, direction:{dx,dy,dz}, frameTimestamp, px, py }
+let triangulatedPoints = []; // items: {x,y,z}
 
+// triangulation votes per pixel (key "px,py" -> { count, point })
+let triangVotes = {}; // reset at calibration start
+let requiredTriangulations = 1; // default; set by user at calibration start
+
+// parameters
 const TRIANG_DIST_THR_MM = 5.0;
 const MERGE_THR_MM = 5.0;
 
-/* UTIL helpers (rgbToHsv, sliderToHueTolerance, hueDistance, etc.) */
-/* ... (mantive as antes) ... */
-
+/* UTIL helpers */
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
     const max = Math.max(rN, gN, bN);
@@ -91,17 +96,14 @@ function hueDistance(a, b) {
     return d > 180 ? 360 - d : d;
 }
 
-/* drawing helpers (arrows, plane, etc.) - mantidos como antes */
+/* drawing helpers (as before) */
 function drawArrowFromCenter(cx, cy, dx, dy, lengthPx, color) {
     const mag = Math.hypot(dx, dy);
     if (!mag) return;
-
     const ux = dx / mag;
     const uy = dy / mag;
-
     const x2 = cx + ux * lengthPx;
     const y2 = cy + uy * lengthPx;
-
     const headLen = 12;
     const angle = Math.atan2(y2 - cy, x2 - cx);
 
@@ -139,7 +141,6 @@ function computeArrowTip(cx, cy, dx, dy, lengthPx) {
 function drawPlanePolygon(origin, tipX, tipY) {
     if (!origin || !tipX || !tipY) return;
     const corner = { x: tipX.x + (tipY.x - origin.x), y: tipX.y + (tipY.y - origin.y) };
-
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(origin.x, origin.y);
@@ -152,7 +153,7 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.restore();
 }
 
-/* PINHOLE + rotation + pose helpers (mantidos) */
+/* PINHOLE + rotation + pose helpers (as before) */
 function computePinholeDirection(px, py) {
     if (!canvas || !canvas.width || !canvas.height) return null;
     const cx = canvas.width / 2;
@@ -193,8 +194,8 @@ function buildRotationMatrix(yawRad, pitchRad, rollRad) {
 
 function multiplyMatrix3(A, B) {
     const C = [[0,0,0],[0,0,0],[0,0,0]];
-    for (let i=0;i<3;i++) for (let j=0;j<3;j++) {
-        let s=0; for (let k=0;k<3;k++) s += A[i][k]*B[k][j];
+    for (let i=0;i<3;i++) for (let j=0;j<3;j++){
+        let s=0; for (let k=0;k<3;k++) s+=A[i][k]*B[k][j];
         C[i][j]=s;
     }
     return C;
@@ -275,73 +276,104 @@ function closestPointsBetweenLines(o1,d1,o2,d2){
 
 function updateTriangCountUI(){ triagEl.textContent = String(triangulatedPoints.length); }
 
+/* tryTriangulateAndAccumulate:
+   - receives newRays array with items { origin, direction, frameTimestamp, px, py }
+   - for each pair (newRay vs accumulatedRay) attempts triangulation
+   - if cp.dist <= TRIANG_DIST_THR_MM:
+       -> check if candidate close to existing triangulatedPoints (merge)
+       -> if not merged: increment votes for pixel key (nr.px,nr.py)
+       -> when votes >= requiredTriangulations => add point to triangulatedPoints
+   - finally append newRays to accumulatedRays (including px/py)
+*/
 function tryTriangulateAndAccumulate(newRays){
     for (let i=0;i<newRays.length;i++){
         const nr = newRays[i];
         for (let j=0;j<accumulatedRays.length;j++){
             const ar = accumulatedRays[j];
             if (nr.frameTimestamp === ar.frameTimestamp) continue;
+
             const cp = closestPointsBetweenLines(
                 nr.origin, { x: nr.direction.dx, y: nr.direction.dy, z: nr.direction.dz },
                 ar.origin, { x: ar.direction.dx, y: ar.direction.dy, z: ar.direction.dz }
             );
             if (!cp) continue;
             if (cp.dist <= TRIANG_DIST_THR_MM) {
+                // candidate point
                 const pt = { x: Number(cp.midpoint.x.toFixed(4)), y: Number(cp.midpoint.y.toFixed(4)), z: Number(cp.midpoint.z.toFixed(4)) };
-                let merged=false;
+
+                // check if near an existing triangulated point (merge)
+                let merged = false;
                 for (let k=0;k<triangulatedPoints.length;k++){
-                    const p=triangulatedPoints[k];
-                    const d=Math.hypot(p.x-pt.x,p.y-pt.y,p.z-pt.z);
-                    if (d<=MERGE_THR_MM){ merged=true; break; }
+                    const p = triangulatedPoints[k];
+                    const d = Math.hypot(p.x - pt.x, p.y - pt.y, p.z - pt.z);
+                    if (d <= MERGE_THR_MM) { merged = true; break; }
                 }
-                if (!merged){
-                    triangulatedPoints.push(pt);
-                    updateTriangCountUI();
+                if (merged) continue;
+
+                // attribute triangulation vote to the NEW RAY's pixel coordinates (nr.px,nr.py)
+                const key = `${nr.px},${nr.py}`;
+                if (!triangVotes[key]) triangVotes[key] = { count: 0, lastPoint: null, added: false };
+                // increment vote
+                triangVotes[key].count += 1;
+                triangVotes[key].lastPoint = pt;
+
+                // if reached requiredTriangulations and not already added -> add
+                if (!triangVotes[key].added && triangVotes[key].count >= requiredTriangulations) {
+                    // before adding, ensure not too close to existing triangulated points (double-check)
+                    let tooClose = false;
+                    for (let k=0;k<triangulatedPoints.length;k++){
+                        const p = triangulatedPoints[k];
+                        const d = Math.hypot(p.x - pt.x, p.y - pt.y, p.z - pt.z);
+                        if (d <= MERGE_THR_MM) { tooClose = true; break; }
+                    }
+                    if (!tooClose) {
+                        triangulatedPoints.push(pt);
+                        triangVotes[key].added = true;
+                        updateTriangCountUI();
+                    } else {
+                        triangVotes[key].added = true; // mark prevented duplicates
+                    }
                 }
             }
         }
     }
-    for (let i=0;i<newRays.length;i++) accumulatedRays.push(newRays[i]);
+
+    // append all newRays to accumulatedRays (keeping px,py)
+    for (let i=0;i<newRays.length;i++) {
+        const nr = newRays[i];
+        accumulatedRays.push({
+            origin: nr.origin,
+            direction: nr.direction,
+            frameTimestamp: nr.frameTimestamp,
+            px: nr.px,
+            py: nr.py
+        });
+    }
 }
 
-/* --- draw triangulated points on main canvas (light pink blinking) --- */
+/* draw triangulated points overlay (light pink blinking) and mini cloud */
 function drawTriangulatedOnMainCanvas() {
     if (!triangulatedPoints || triangulatedPoints.length === 0) return;
-    // blink state (toggle every 500ms)
     const blinkOn = Math.floor(Date.now() / 500) % 2 === 0;
     const size = 4;
     for (let i = 0; i < triangulatedPoints.length; i++) {
         const p = triangulatedPoints[i];
-        // project world point to screen is not available here (we don't have full projection) —
-        // user asked to paint triangulated points: we'll overlay them in screen by approximate mapping:
-        // Simple heuristic: map X,Y (mm) into pixel offsets relative to baseOriginScreen if available.
-        // If baseOriginScreen missing, skip drawing on main canvas.
         if (!baseOriginScreen || !lockedScale) continue;
-        // screenX = baseOriginScreen.x + (-p.x * lockedScale)  (because tx previously used negative of pixel movement)
-        // screenY = baseOriginScreen.y + (p.y * lockedScale)
         const sx = baseOriginScreen.x - (p.x * lockedScale);
         const sy = baseOriginScreen.y + (p.y * lockedScale);
-        // draw only if inside canvas
         if (sx < -10 || sx > canvas.width + 10 || sy < -10 || sy > canvas.height + 10) continue;
         ctx.beginPath();
-        if (blinkOn) ctx.fillStyle = 'rgba(255,182,193,0.95)'; // lightpink strong
-        else ctx.fillStyle = 'rgba(255,182,193,0.25)'; // faint
+        ctx.fillStyle = blinkOn ? 'rgba(255,182,193,0.95)' : 'rgba(255,182,193,0.25)';
         ctx.arc(sx, sy, size, 0, Math.PI * 2);
         ctx.fill();
     }
 }
 
-/* --- draw mini cloud density --- */
 function drawMiniCloud() {
-    // clear mini canvas
     mctx.clearRect(0,0,miniCanvas.width,miniCanvas.height);
-    // background
     mctx.fillStyle = '#071017';
     mctx.fillRect(0,0,miniCanvas.width,miniCanvas.height);
-
     if (!triangulatedPoints || triangulatedPoints.length === 0) return;
-
-    // compute bounding box of points (X,Y)
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (let i=0;i<triangulatedPoints.length;i++){
         const p = triangulatedPoints[i];
@@ -350,22 +382,17 @@ function drawMiniCloud() {
         if (p.x > maxX) maxX = p.x;
         if (p.y > maxY) maxY = p.y;
     }
-    // add small padding
-    if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return;
-    const pad = 10; // mm
+    const pad = 10;
     minX -= pad; minY -= pad; maxX += pad; maxY += pad;
     const spanX = maxX - minX || 1;
     const spanY = maxY - minY || 1;
-
-    // plot each point as semi-transparent pixel; density will accumulate visually
     for (let i=0;i<triangulatedPoints.length;i++){
         const p = triangulatedPoints[i];
         const nx = (p.x - minX) / spanX;
         const ny = (p.y - minY) / spanY;
         const px = Math.floor(nx * (miniCanvas.width - 1));
-        const py = Math.floor((1 - ny) * (miniCanvas.height - 1)); // invert Y for display
-        // draw small rectangle to produce density
-        mctx.fillStyle = 'rgba(255,182,193,0.16)'; // light pink translucent
+        const py = Math.floor((1 - ny) * (miniCanvas.height - 1));
+        mctx.fillStyle = 'rgba(255,182,193,0.16)';
         mctx.fillRect(px, py, 2, 2);
     }
 }
@@ -401,7 +428,7 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
-/* calibrate button behavior (mantido, com ativação de downloadBtn e reset de arrays) */
+/* calibrate button behaviour: ask user how many triangulations required per pixel (nova funcionalidade) */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
         if (!lastRcentroid) {
@@ -413,9 +440,18 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
+        // NEW: ask user for required triangulations per pixel
+        const reqStr = prompt("Número de triangulações necessárias por pixel para virar ponto 3D (inteiro >= 1):", "3");
+        if (reqStr === null) return; // user cancelled
+        const req = parseInt(reqStr);
+        if (isNaN(req) || req < 1) {
+            alert("Valor inválido. Calibração cancelada.");
+            return;
+        }
+        requiredTriangulations = req;
+
         const input = prompt("Informe o valor atual de +Z (em mm):");
         if (input === null) return;
-
         const z = parseFloat(input);
         if (isNaN(z)) {
             alert("Valor inválido. Calibração cancelada.");
@@ -439,16 +475,16 @@ calibrateBtn.addEventListener("click", () => {
         const initRoll = parseFloat(rollEl.textContent) || 0;
 
         initialPose = { x_mm: initX, y_mm: initY, z_mm: initZ, pitch_deg: initPitch, yaw_deg: initYaw, roll_deg: initRoll };
-
         const yawRad0 = degToRad(initYaw);
         const pitchRad0 = degToRad(initPitch);
         const rollRad0 = degToRad(initRoll);
         initialPoseMatrix = buildPoseMatrix(initX, initY, initZ, yawRad0, pitchRad0, rollRad0);
         initialPoseInv = invertPoseMatrix(initialPoseMatrix);
 
-        // reset accumulators
+        // reset accumulators and votes
         accumulatedRays = [];
         triangulatedPoints = [];
+        triangVotes = {};
         updateTriangCountUI();
 
         worldFixed = true;
@@ -464,7 +500,7 @@ calibrateBtn.addEventListener("click", () => {
         yEl.textContent = "0.00";
         raysEl.textContent = "0";
 
-        alert("Calibragem iniciada e mundo fixado. Mova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.");
+        alert(`Calibragem iniciada e mundo fixado.\nTriangulações exigidas por pixel: ${requiredTriangulations}.\nMova a câmera para coletar dados e clique em 'Calibrar' novamente para finalizar e baixar o arquivo .json.`);
         return;
     }
 
@@ -483,6 +519,7 @@ calibrateBtn.addEventListener("click", () => {
             lockedScale,
             baseOriginScreen,
             initialPose,
+            requiredTriangulations,
             frames: calibrationFrames
         };
 
@@ -520,7 +557,7 @@ downloadBtn.addEventListener("click", () => {
     URL.revokeObjectURL(url);
 });
 
-/* --- main frame processing (mantido, com chamadas para desenhar triangulados e mini cloud) --- */
+/* --- main frame processing (mantido, with new px/py propagation) --- */
 function processFrame() {
     if (!video || video.readyState < 2) {
         requestAnimationFrame(processFrame);
@@ -656,7 +693,8 @@ function processFrame() {
         const raysWorld = [];
         const frameTimestamp = new Date().toISOString();
         for (let k=0;k<blackRaysTemp.length;k++){
-            const dirCamRot = blackRaysTemp[k].dir_cam_rot;
+            const entry = blackRaysTemp[k];
+            const dirCamRot = entry.dir_cam_rot;
             const rx = R_world_rel[0][0]*dirCamRot.x + R_world_rel[0][1]*dirCamRot.y + R_world_rel[0][2]*dirCamRot.z;
             const ry = R_world_rel[1][0]*dirCamRot.x + R_world_rel[1][1]*dirCamRot.y + R_world_rel[1][2]*dirCamRot.z;
             const rz = R_world_rel[2][0]*dirCamRot.x + R_world_rel[2][1]*dirCamRot.y + R_world_rel[2][2]*dirCamRot.z;
@@ -664,7 +702,8 @@ function processFrame() {
             if (!isFinite(mag) || mag===0) continue;
             const dirWorld = { dx: rx/mag, dy: ry/mag, dz: rz/mag };
             const originWorld = { x: t_world_rel.x, y: t_world_rel.y, z: t_world_rel.z };
-            raysWorld.push({ origin: originWorld, direction: dirWorld, frameTimestamp });
+            // include pixel coords (px,py) so we can count votes per pixel later
+            raysWorld.push({ origin: originWorld, direction: dirWorld, frameTimestamp, px: entry.px, py: entry.py });
         }
 
         const frameRecord = { timestamp: frameTimestamp, rays: raysWorld };
