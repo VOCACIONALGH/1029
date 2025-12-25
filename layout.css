@@ -68,6 +68,13 @@ button {
     color: #ff88ff;
 }
 
+#triangInfo {
+    font-family: monospace;
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: #88ff88;
+}
+
 #calibrators {
     display: flex;
     gap: 12px;
