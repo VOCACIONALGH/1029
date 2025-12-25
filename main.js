@@ -1,7 +1,9 @@
 /* main.js
    Mantive todas as funcionalidades existentes e adicionei:
-   - durante a calibragem ativa: exibir um botão "Upload GLB" que abre um input file para subir um .glb.
-   - nenhuma outra função extra foi adicionada.
+   - Upload GLB UI (já existente antes) e agora permite o usuário digitar a escala (m/mm).
+   - Após o upload e aplicação da escala, o .glb é exibido de pé sob o plano XY, ancorado no ponto preto.
+   - O modelo é posicionado dinamicamente enquanto a calibração estiver ativa (ancorado no ponto preto).
+   Nenhuma outra função extra foi adicionada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -29,6 +31,10 @@ const uploadBtn = document.getElementById("uploadBtn");
 const glbInput = document.getElementById("glbInput");
 const glbName = document.getElementById("glbName");
 
+const scaleModelContainer = document.getElementById("scaleModelContainer");
+const modelScaleInput = document.getElementById("modelScaleInput");
+const applyModelScaleBtn = document.getElementById("applyModelScaleBtn");
+
 const ARROW_LENGTH_MM = 100;
 
 // calibration / locking state
@@ -40,12 +46,16 @@ let isCalibrated = false;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved during calibragem
+let calibrationFrames = []; // array of frame objects saved durante calibragem
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
 
-let glbFile = null; // referência ao arquivo GLB carregado (não processado aqui)
+let glbFile = null;           // arquivo GLB carregado
+let glbObjectURL = null;      // URL.createObjectURL(glbFile)
+let modelViewerEl = null;     // referência ao <model-viewer> criado
+let blackPointScreen = null;  // {x,y} do ponto preto em coordenadas de tela (atualizado cada frame)
+let appliedModelScale_m_per_mm = null; // escala aplicada pelo usuário (m/mm)
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
@@ -144,7 +154,7 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.restore();
 }
 
-/* Upload UI helpers */
+/* Upload UI helpers (mostrar/ocultar upload e scale UI) */
 function showUploadUI() {
     if (uploadContainer) uploadContainer.hidden = false;
 }
@@ -153,6 +163,77 @@ function hideUploadUI() {
     if (glbInput) glbInput.value = "";
     if (glbName) glbName.textContent = "";
     glbFile = null;
+    if (glbObjectURL) { URL.revokeObjectURL(glbObjectURL); glbObjectURL = null; }
+}
+function showScaleModelUI() {
+    if (scaleModelContainer) scaleModelContainer.hidden = false;
+}
+function hideScaleModelUI() {
+    if (scaleModelContainer) scaleModelContainer.hidden = true;
+    if (modelScaleInput) modelScaleInput.value = "";
+    appliedModelScale_m_per_mm = null;
+}
+
+/* cria / remove model-viewer sobre o canvas */
+function createModelViewer(objectURL) {
+    removeModelViewer();
+
+    const mv = document.createElement('model-viewer');
+    mv.setAttribute('src', objectURL);
+    mv.setAttribute('camera-controls', '');
+    mv.setAttribute('autoplay', '');
+    mv.setAttribute('interaction-prompt', 'none');
+    mv.className = 'model-viewer-overlay';
+    mv.style.position = 'absolute';
+    mv.style.left = '0px';
+    mv.style.top = '0px';
+    mv.style.transform = 'translate(-50%,-100%) scale(1)';
+    mv.style.pointerEvents = 'none';
+    // evita foco indesejado
+    mv.tabIndex = -1;
+
+    document.body.appendChild(mv);
+    modelViewerEl = mv;
+    return mv;
+}
+
+function removeModelViewer() {
+    if (modelViewerEl) {
+        try { modelViewerEl.remove(); } catch (e) {}
+        modelViewerEl = null;
+    }
+}
+
+/* atualiza a posição e escala do model-viewer se ele existir e tivermos ponto preto conhecido */
+function updateModelViewerTransform() {
+    if (!modelViewerEl || !blackPointScreen) return;
+    // precisamos de uma escala em m/mm aplicada pelo usuário
+    if (!appliedModelScale_m_per_mm) return;
+
+    // escolha da escala de tela em px/mm (usar lockedScale se possível)
+    const scaleUsed_px_per_mm = (isFinite(lockedScale) && lockedScale > 0) ? lockedScale : currentScale;
+    if (!scaleUsed_px_per_mm) return;
+
+    // Interpretação: user provided s = meters per millimeter (m/mm).
+    //  - model_length_meters = s * real_mm
+    // Para mapear 1 model-meter para pixels:
+    //  real_mm_per_model_meter = 1 / s  (mm of real world corresponding to 1 model-meter)
+    //  px_per_model_meter = px_per_mm * real_mm_per_model_meter = px_per_mm * (1/s)
+    const s = appliedModelScale_m_per_mm;
+    if (s <= 0) return;
+
+    const px_per_model_meter = scaleUsed_px_per_mm * (1.0 / s);
+
+    // definimos um tamanho base de referência (200 px corresponde a "1 unidade base" do viewer)
+    // e aplicamos scale css para aproximar px_per_model_meter.
+    // scaleFactor = px_per_model_meter / basePixelsPerMeter
+    const basePixelsPerMeter = 100; // tamanho base (pode ser ajustado caso queira outra referência)
+    const scaleFactor = px_per_model_meter / basePixelsPerMeter;
+
+    // posiciona o elemento de forma que sua base fique no ponto preto:
+    modelViewerEl.style.left = `${blackPointScreen.x}px`;
+    modelViewerEl.style.top = `${blackPointScreen.y}px`;
+    modelViewerEl.style.transform = `translate(-50%,-100%) scale(${scaleFactor})`;
 }
 
 /* event listeners for upload */
@@ -166,11 +247,39 @@ if (uploadBtn && glbInput) {
         if (f) {
             glbFile = f;
             if (glbName) glbName.textContent = f.name;
-            // Nota: não há processamento do GLB aqui (nenhuma função extra solicitada).
+
+            // revelar o input para o usuário escrever a escala do modelo (m/mm)
+            showScaleModelUI();
         } else {
             glbFile = null;
             if (glbName) glbName.textContent = "";
+            hideScaleModelUI();
+            removeModelViewer();
+            if (glbObjectURL) { URL.revokeObjectURL(glbObjectURL); glbObjectURL = null; }
         }
+        // Nota: NÃO processamos o GLB além de exibir; nenhum processamento extra solicitado.
+    });
+}
+
+/* aplicar escala do modelo (m/mm) quando o usuário clicar "Aplicar" */
+if (applyModelScaleBtn) {
+    applyModelScaleBtn.addEventListener("click", () => {
+        const txt = (modelScaleInput && modelScaleInput.value) ? modelScaleInput.value.trim() : "";
+        if (!txt) { alert("Informe a escala (m/mm) do modelo."); return; }
+        const s = parseFloat(txt);
+        if (!isFinite(s) || s <= 0) { alert("Escala inválida. Use um número positivo (ex: 0.001)."); return; }
+
+        appliedModelScale_m_per_mm = s;
+
+        if (!glbFile) { alert("Nenhum arquivo GLB carregado."); return; }
+
+        // criar URL do arquivo e criar o model-viewer se necessário
+        if (glbObjectURL) { URL.revokeObjectURL(glbObjectURL); glbObjectURL = null; }
+        glbObjectURL = URL.createObjectURL(glbFile);
+
+        createModelViewer(glbObjectURL);
+        // a posição/escala será atualizada a cada frame por updateModelViewerTransform
+        updateModelViewerTransform();
     });
 }
 
@@ -258,8 +367,9 @@ calibrateBtn.addEventListener("click", () => {
         // stop collecting frames
         isCalibrating = false;
 
-        // hide upload UI as calibration ended
+        // hide upload UI and scale UI as calibration ended
         hideUploadUI();
+        hideScaleModelUI();
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
@@ -284,6 +394,9 @@ calibrateBtn.addEventListener("click", () => {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
+
+        // remove viewer when calibration ends (keeps UI clean)
+        removeModelViewer();
 
         alert(`Calibragem finalizada. Arquivo "${filename}" baixado.`);
         return;
@@ -386,8 +499,17 @@ function processFrame() {
                 ctx.arc(blackX, blackY, 6, 0, Math.PI * 2);
                 ctx.fill();
                 // -----------------------------------------------------------
+
+                // guarda coordenadas do ponto preto para posicionar o model-viewer
+                blackPointScreen = { x: blackX, y: blackY };
+
+                // atualiza posição do model-viewer (se existir e se escala já aplicada)
+                updateModelViewerTransform();
             }
         }
+    } else {
+        // se não estiver desenhando o plano, não temos ponto preto atualizado agora
+        // mas preferimos manter blackPointScreen até nova detecção (não o limpamos para estabilidade)
     }
 
     // --- draw points and arrows as before (on top of plane) ---
