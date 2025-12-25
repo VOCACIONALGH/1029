@@ -1,12 +1,12 @@
 /* main.js
-   Atualização: durante a calibragem o programa tenta triangular posições 3D reais
-   a partir de múltiplos raios (de diferentes poses). O número cumulativo de pontos
-   3D determinados é mostrado em #triangValue.
+   Atualização: durante a calibração a nuvem de pontos triangulados é salva em um arquivo .json.
+   O botão "Download" aparece durante a calibração para baixar a nuvem de pontos.
    Nenhuma outra funcionalidade foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
+const downloadBtn = document.getElementById("downloadBtn");
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
@@ -284,7 +284,6 @@ function multiplyMatrix4(A, B) {
    Retorna { p1, p2, midpoint, dist } onde p1 e p2 são os pontos de menor aproximação
 */
 function closestPointsBetweenLines(o1, d1, o2, d2) {
-    // vector between origins
     const w0 = { x: o1.x - o2.x, y: o1.y - o2.y, z: o1.z - o2.z };
     const a = dot(d1, d1);
     const b = dot(d1, d2);
@@ -294,7 +293,6 @@ function closestPointsBetweenLines(o1, d1, o2, d2) {
 
     const denom = a * c - b * b;
     if (Math.abs(denom) < 1e-12) {
-        // quase paralelas -> não triangulamos
         return null;
     }
     const s = (b * e - c * d) / denom;
@@ -310,6 +308,69 @@ function closestPointsBetweenLines(o1, d1, o2, d2) {
 function dot(a, b) {
     return a.x*b.x + a.y*b.y + a.z*b.z;
 }
+
+function updateTriangCountUI() {
+    triagEl.textContent = String(triangulatedPoints.length);
+}
+
+/* tenta triangular newRays contra accumulatedRays, atualiza triangulatedPoints e accumulatedRays. */
+function tryTriangulateAndAccumulate(newRays) {
+    for (let i = 0; i < newRays.length; i++) {
+        const nr = newRays[i];
+        for (let j = 0; j < accumulatedRays.length; j++) {
+            const ar = accumulatedRays[j];
+            if (nr.frameTimestamp === ar.frameTimestamp) continue;
+
+            const cp = closestPointsBetweenLines(
+                nr.origin, { x: nr.direction.dx, y: nr.direction.dy, z: nr.direction.dz },
+                ar.origin, { x: ar.direction.dx, y: ar.direction.dy, z: ar.direction.dz }
+            );
+            if (!cp) continue;
+            if (cp.dist <= TRIANG_DIST_THR_MM) {
+                const pt = {
+                    x: Number(cp.midpoint.x.toFixed(4)),
+                    y: Number(cp.midpoint.y.toFixed(4)),
+                    z: Number(cp.midpoint.z.toFixed(4))
+                };
+                let merged = false;
+                for (let k = 0; k < triangulatedPoints.length; k++) {
+                    const p = triangulatedPoints[k];
+                    const d = Math.hypot(p.x - pt.x, p.y - pt.y, p.z - pt.z);
+                    if (d <= MERGE_THR_MM) {
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged) {
+                    triangulatedPoints.push(pt);
+                    updateTriangCountUI();
+                }
+            }
+        }
+    }
+
+    for (let i = 0; i < newRays.length; i++) {
+        accumulatedRays.push(newRays[i]);
+    }
+}
+
+/* handler do botão de download: baixa a nuvem de pontos triangulados em .json */
+downloadBtn.addEventListener("click", () => {
+    const payload = {
+        createdAt: new Date().toISOString(),
+        pointCloud: triangulatedPoints
+    };
+    const filename = `nuvem_pontos_${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+});
 
 /* --- Inicialização da câmera / DeviceOrientation --- */
 scanBtn.addEventListener("click", async () => {
@@ -411,6 +472,9 @@ calibrateBtn.addEventListener("click", () => {
         worldMsgEl.hidden = false;
         worldMsgEl.textContent = "Mundo fixado";
 
+        // show download button during calibration
+        downloadBtn.hidden = false;
+
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
@@ -426,6 +490,9 @@ calibrateBtn.addEventListener("click", () => {
     if (isCalibrating) {
         isCalibrating = false;
 
+        // hide download button when calibration ends
+        downloadBtn.hidden = true;
+
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
             return;
@@ -437,8 +504,7 @@ calibrateBtn.addEventListener("click", () => {
             lockedScale,
             baseOriginScreen,
             initialPose,
-            frames: calibrationFrames,
-            // opcional: podemos também exportar triangulatedPoints se quiser
+            frames: calibrationFrames
         };
 
         const filename = `calibragem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -456,61 +522,6 @@ calibrateBtn.addEventListener("click", () => {
         return;
     }
 });
-
-function updateTriangCountUI() {
-    triagEl.textContent = String(triangulatedPoints.length);
-}
-
-/* tenta triangular newRays contra accumulatedRays, atualiza triangulatedPoints e accumulatedRays.
-   Strategy (simples):
-   - para cada novo ray, compare com cada ray acumulado que venha de frame diferente;
-   - calcule ponto médio da menor aproximação; se distancia <= TRIANG_DIST_THR_MM => candidate point;
-   - se candidate estiver perto de ponto já determinado (MERGE_THR_MM) => não adiciona novo (ou média opcional);
-   - caso contrário adiciona novo ponto.
-*/
-function tryTriangulateAndAccumulate(newRays) {
-    // newRays: array of { origin:{x,y,z}, direction:{dx,dy,dz}, frameTimestamp }
-    for (let i = 0; i < newRays.length; i++) {
-        const nr = newRays[i];
-        for (let j = 0; j < accumulatedRays.length; j++) {
-            const ar = accumulatedRays[j];
-            // só triangula entre raios de frames diferentes (evitar mesmo frame)
-            if (nr.frameTimestamp === ar.frameTimestamp) continue;
-
-            const cp = closestPointsBetweenLines(
-                nr.origin, { x: nr.direction.dx, y: nr.direction.dy, z: nr.direction.dz },
-                ar.origin, { x: ar.direction.dx, y: ar.direction.dy, z: ar.direction.dz }
-            );
-            if (!cp) continue;
-            if (cp.dist <= TRIANG_DIST_THR_MM) {
-                const pt = {
-                    x: Number(cp.midpoint.x.toFixed(4)),
-                    y: Number(cp.midpoint.y.toFixed(4)),
-                    z: Number(cp.midpoint.z.toFixed(4))
-                };
-                // verificar se já existe ponto próximo
-                let merged = false;
-                for (let k = 0; k < triangulatedPoints.length; k++) {
-                    const p = triangulatedPoints[k];
-                    const d = Math.hypot(p.x - pt.x, p.y - pt.y, p.z - pt.z);
-                    if (d <= MERGE_THR_MM) {
-                        merged = true;
-                        break;
-                    }
-                }
-                if (!merged) {
-                    triangulatedPoints.push(pt);
-                    updateTriangCountUI();
-                }
-            }
-        }
-    }
-
-    // adicionar novos rays ao acumulador (sempre)
-    for (let i = 0; i < newRays.length; i++) {
-        accumulatedRays.push(newRays[i]);
-    }
-}
 
 function processFrame() {
     if (!video || video.readyState < 2) {
