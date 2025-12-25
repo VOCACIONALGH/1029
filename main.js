@@ -1,9 +1,7 @@
 /* main.js
    Mantive todas as funcionalidades existentes e adicionei:
-   - durante a calibragem ativa, desenhar o plano XY (área azul clara) cujos lados são as setas +X e +Y.
-   - o polígono é construído a partir: origem (red centroid), ponta +X, canto (ponta +X + ponta +Y relativa) e ponta +Y.
-   - o desenho do plano é feito antes das setas/pontos para manter as setas/pontos visíveis.
-   - adicionado: durante a calibragem ativa, criar um ponto preto no plano azul em +X=50mm, +Y=50mm, +Z=0.
+   - durante a calibragem ativa: exibir um botão "Upload GLB" que abre um input file para subir um .glb.
+   - nenhuma outra função extra foi adicionada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
@@ -26,6 +24,11 @@ const redThresholdSlider = document.getElementById("redThreshold");
 const blueThresholdSlider = document.getElementById("blueThreshold");
 const greenThresholdSlider = document.getElementById("greenThreshold");
 
+const uploadContainer = document.getElementById("uploadContainer");
+const uploadBtn = document.getElementById("uploadBtn");
+const glbInput = document.getElementById("glbInput");
+const glbName = document.getElementById("glbName");
+
 const ARROW_LENGTH_MM = 100;
 
 // calibration / locking state
@@ -37,10 +40,12 @@ let isCalibrated = false;
 
 // calibragem ativa (coleta de frames)
 let isCalibrating = false;
-let calibrationFrames = []; // array of frame objects saved durante calibragem
+let calibrationFrames = []; // array of frame objects saved during calibragem
 
 let lastRcentroid = null;     // {x,y} of last detected red centroid
 let currentScale = 0;         // px/mm live estimate (before locking)
+
+let glbFile = null; // referência ao arquivo GLB carregado (não processado aqui)
 
 /* UTIL: converte RGB -> HSV (h:0..360, s:0..1, v:0..1) */
 function rgbToHsv(r, g, b) {
@@ -139,6 +144,36 @@ function drawPlanePolygon(origin, tipX, tipY) {
     ctx.restore();
 }
 
+/* Upload UI helpers */
+function showUploadUI() {
+    if (uploadContainer) uploadContainer.hidden = false;
+}
+function hideUploadUI() {
+    if (uploadContainer) uploadContainer.hidden = true;
+    if (glbInput) glbInput.value = "";
+    if (glbName) glbName.textContent = "";
+    glbFile = null;
+}
+
+/* event listeners for upload */
+if (uploadBtn && glbInput) {
+    uploadBtn.addEventListener("click", () => {
+        glbInput.click();
+    });
+
+    glbInput.addEventListener("change", (ev) => {
+        const f = ev.target.files && ev.target.files[0];
+        if (f) {
+            glbFile = f;
+            if (glbName) glbName.textContent = f.name;
+            // Nota: não há processamento do GLB aqui (nenhuma função extra solicitada).
+        } else {
+            glbFile = null;
+            if (glbName) glbName.textContent = "";
+        }
+    });
+}
+
 /* --- Inicialização da câmera / DeviceOrientation --- */
 scanBtn.addEventListener("click", async () => {
     if (typeof DeviceOrientationEvent !== "undefined" &&
@@ -205,6 +240,9 @@ calibrateBtn.addEventListener("click", () => {
         isCalibrating = true;
         calibrationFrames = [];
 
+        // show upload UI during calibration
+        showUploadUI();
+
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
@@ -217,7 +255,11 @@ calibrateBtn.addEventListener("click", () => {
 
     // finalize calibration if currently calibrating
     if (isCalibrating) {
+        // stop collecting frames
         isCalibrating = false;
+
+        // hide upload UI as calibration ended
+        hideUploadUI();
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
