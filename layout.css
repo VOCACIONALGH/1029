@@ -115,19 +115,19 @@ canvas {
     max-width: 480px;
     height: auto;
     background-color: #000;
-    position: relative;
-    z-index: 2; /* keep canvas above model-viewer */
 }
 
-/* model-viewer styling: positioned absolutely and under the canvas */
-model-viewer#modelViewer {
+/* model-viewer overlay: absolutely positioned over the canvas */
+#modelViewerContainer {
     position: absolute;
-    width: 220px;
-    height: 220px;
-    transform: translate(-50%, -50%);
-    pointer-events: none; /* do not block canvas interaction */
-    z-index: 1; /* below canvas so model appears "under" the plane drawing */
-    display: block;
-    border-radius: 6px;
+    pointer-events: auto; /* allow interactions with model-viewer */
+    transform-origin: center center;
+    /* initially hidden, shown when GLB loaded during calibration */
+}
+
+#mv {
+    border-radius: 8px;
     background: rgba(0,0,0,0.0);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+    touch-action: none;
 }
