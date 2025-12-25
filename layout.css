@@ -117,17 +117,13 @@ canvas {
     background-color: #000;
 }
 
-/* model-viewer overlay: absolutely positioned over the canvas */
-#modelViewerContainer {
-    position: absolute;
-    pointer-events: auto; /* allow interactions with model-viewer */
-    transform-origin: center center;
-    /* initially hidden, shown when GLB loaded during calibration */
-}
-
-#mv {
-    border-radius: 8px;
-    background: rgba(0,0,0,0.0);
+/* model-viewer styling (appears after upload). keep it same max width as canvas */
+model-viewer#modelViewer {
+    width: 100%;
+    max-width: 480px;
+    height: auto;
+    margin-top: 8px;
+    border-radius: 6px;
     box-shadow: 0 6px 18px rgba(0,0,0,0.6);
-    touch-action: none;
+    background: #000;
 }
