@@ -50,6 +50,13 @@
         </label>
     </div>
 
+    <!-- Upload GLB: aparece apenas durante a calibração -->
+    <div id="uploadContainer" hidden>
+        <button id="uploadBtn" type="button">Upload GLB</button>
+        <input id="glbInput" type="file" accept=".glb" style="display:none">
+        <div id="glbName" aria-live="polite"></div>
+    </div>
+
     <video id="camera" autoplay playsinline hidden></video>
     <canvas id="canvas"></canvas>
 
