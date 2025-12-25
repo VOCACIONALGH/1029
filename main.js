@@ -419,8 +419,8 @@ scanBtn.addEventListener("click", async () => {
         video.srcObject = stream;
 
         video.addEventListener("loadedmetadata", () => {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+            canvas.width = video.videoWidth / 4;
+            canvas.height = video.videoHeight / 4;
             requestAnimationFrame(processFrame);
         }, { once: true });
     } catch (err) {
