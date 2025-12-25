@@ -82,6 +82,34 @@ button {
     margin-top: 6px;
 }
 
+/* Upload UI styles (aparece apenas durante calibração) */
+#uploadContainer {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    width: 100%;
+    max-width: 480px;
+    justify-content: center;
+}
+
+#uploadBtn {
+    padding: 10px 18px;
+    font-size: 16px;
+    border-radius: 8px;
+    border: none;
+    background: #222;
+    color: #fff;
+    cursor: pointer;
+}
+
+#glbName {
+    font-size: 13px;
+    font-family: monospace;
+    color: #cccccc;
+}
+
+/* canvas display */
 canvas {
     width: 100%;
     max-width: 480px;
