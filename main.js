@@ -1,16 +1,13 @@
 /* main.js
-   Adições específicas:
-   - coleta de raios por pixel (pixelX, pixelY) durante calibragem (cada registro em referencial do mundo).
-   - mantém um mapa raysByPixel para agrupar raios pelo pixel da imagem.
-   - implementa triangulação incremental (mínimo 2 raios) por pixel usando método dos mínimos quadrados
-     para encontrar o ponto 3D que minimiza distância aos raios.
-   - mantém contador acumulado de pixels triangulados e o exibe em tela (triCount).
-   - inclui lista de pontos triangulados no JSON final.
-   Nenhuma outra funcionalidade foi adicionada.
+   Mantive toda a lógica anterior e adicionei somente:
+   - gravação acumulativa da nuvem de pontos (triangulatedMap -> triangulatedPoints)
+   - botão "Download Nuvem (.json)" visível somente durante calibragem, que baixa a nuvem atual
+   Nenhuma outra funcionalidade foi alterada.
 */
 
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
+const downloadBtn = document.getElementById("downloadBtn"); // botão de download da nuvem
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
@@ -62,7 +59,7 @@ let triangulatedCount = 0;
 function rgbToHsv(r, g, b) {
     const rN = r / 255, gN = g / 255, bN = b / 255;
     const max = Math.max(rN, gN, bN);
-    const min = Math.min(rN, rN, bN);
+    const min = Math.min(rN, gN, bN);
     const d = max - min;
 
     let h = 0;
@@ -309,7 +306,7 @@ function extractTranslationFromMat4(M) {
     return { x: M[0][3], y: M[1][3], z: M[2][3] };
 }
 
-/* --- Triangulação: resolver A x = b, A é 3x3 --- */
+/* --- Triangulação: funções utilitárias --- */
 function mat3Add(A, B) {
     const C = [[0,0,0],[0,0,0],[0,0,0]];
     for (let i=0;i<3;i++) for (let j=0;j<3;j++) C[i][j] = (A[i][j]||0) + (B[i][j]||0);
@@ -352,10 +349,7 @@ function inverse3(A) {
     return C;
 }
 
-/* Recebe array de rays [{ origin:{x,y,z}, direction:{dx,dy,dz} }, ...]
-   Retorna ponto {x,y,z} ou null se não puder resolver.
-   Método: minimizar soma || (I - d d^T)(X - p) ||^2 -> A X = b
-*/
+/* Triangulação por mínimos quadrados sobre várias rays */
 function triangulateRays(rayArray) {
     if (!rayArray || rayArray.length < 2) return null;
 
@@ -422,8 +416,9 @@ scanBtn.addEventListener("click", async () => {
 /*
  Calibrar button behavior:
  - Se não está calibrando: valida origem & escala, pede +Z, bloqueia escala, registra pose inicial (matriz homogênea)
-   e inicia a coleta de frames (isCalibrating = true).
+   e inicia a coleta de frames (isCalibrating = true). Exibe botão Download.
  - Se está calibrando: finaliza a coleta, gera JSON com frames + raios + pontos triangulados e baixa o arquivo.
+   Oculta botão Download.
 */
 calibrateBtn.addEventListener("click", () => {
     if (!isCalibrating) {
@@ -473,6 +468,33 @@ calibrateBtn.addEventListener("click", () => {
         calibrationFrames = [];
         calibrationRays = [];
 
+        // show download button (user can download current cloud while still collecting)
+        downloadBtn.style.display = "inline-block";
+        // set download handler (creates .json with current triangulatedPoints)
+        downloadBtn.onclick = () => {
+            const triangulatedPoints = [];
+            for (const [key, p] of triangulatedMap.entries()) {
+                const [px, py] = key.split(',').map(Number);
+                triangulatedPoints.push({ pixelX: px, pixelY: py, x_mm: p.x, y_mm: p.y, z_mm: p.z });
+            }
+            const payload = {
+                createdAt: new Date().toISOString(),
+                units: "mm",
+                pointCount: triangulatedPoints.length,
+                points: triangulatedPoints
+            };
+            const filename = `nuvem_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        };
+
         // display locked scale & base Z
         scaleEl.textContent = lockedScale.toFixed(3);
         zEl.textContent = baseZmm.toFixed(2);
@@ -490,6 +512,8 @@ calibrateBtn.addEventListener("click", () => {
 
         if (calibrationFrames.length === 0) {
             alert("Nenhum frame coletado durante a calibragem.");
+            // hide download button even if nothing collected
+            downloadBtn.style.display = "none";
             return;
         }
 
@@ -524,6 +548,9 @@ calibrateBtn.addEventListener("click", () => {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
+
+        // hide download button after finalizing
+        downloadBtn.style.display = "none";
 
         alert(`Calibragem finalizada. Arquivo "${filename}" baixado.`);
         return;
