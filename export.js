@@ -1,9 +1,7 @@
 // export.js
-// Mantido mínimo — a funcionalidade de download da nuvem foi implementada em main.js
-// (porém deixo aqui um utilitário público caso queira reutilizar).
-//
-// Função utilitária exposta (opcional) para formatar uma nuvem de pontos em JSON.
-// Não é necessária para o funcionamento atual porque main.js faz o download diretamente.
+// Mantido mínimo — a funcionalidade de download da nuvem foi implementada em main.js.
+// Deixei um utilitário para formatar a nuvem caso queira reutilizar externamente.
+
 window.formatPointCloudPayload = function(triangulatedMap) {
     const triangulatedPoints = [];
     for (const [key, p] of triangulatedMap.entries()) {
