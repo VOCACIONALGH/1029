@@ -88,6 +88,8 @@ input[type="range"] {
 
 #container {
     position: relative;
+    width: 100%;
+    max-width: 480px;
 }
 
 video,
@@ -102,4 +104,27 @@ canvas {
     position: absolute;
     top: 0;
     left: 0;
+}
+
+/* mini canvas container */
+#miniContainer {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    color: #fff;
+    font-size: 12px;
+}
+
+#miniTitle {
+    margin-bottom: 6px;
+    color: #ddd;
+}
+
+#miniCanvas {
+    width: 220px;
+    height: 220px;
+    background: #000;
+    border: 1px solid rgba(255,255,255,0.08);
+    image-rendering: pixelated;
 }
