@@ -66,11 +66,15 @@ let rotatedCount = 0;
 // triangulação
 let nRaysRequired = null; // número de raios por triangulação (definido pelo usuário no início da calibração)
 let pendingRaysForTriang = []; // raios acumulados (world-fixed) para próxima triangulação
-let triangulatedPoints = []; // array de pontos triangulados { x, y, z }
+let triangulatedPoints = []; // array de pontos triangulados { x, y, z } (AGORA: armazenados RELATIVOS ao primeiro ponto triangulado)
 let triangulatedCount = 0;
 
 // Nuvem de pontos (registrada durante calibração; conteúdo salvo em JSON quando o usuário clicar em Download)
+// AGORA: os pontos em pointCloud também são armazenados relativos ao primeiro ponto triangulado.
 let pointCloud = []; // cada item: { x, y, z }
+
+// Primeiro ponto triangulado que será usado como origem (marker fixo). Null até o primeiro tri.
+let firstTriPoint = null; // { x, y, z } expressed in the same coords as triTranslated
 
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
@@ -259,6 +263,9 @@ calibrateBtn.addEventListener("click", () => {
         // reset da nuvem de pontos
         pointCloud = [];
 
+        // reset firstTriPoint (novo comportamento)
+        firstTriPoint = null;
+
         // reset lastAcceptedCameraPos
         lastAcceptedCameraPos = null;
 
@@ -338,7 +345,7 @@ downloadBtn.addEventListener("click", () => {
             generatedAt: Date.now(),
             points: pointCloud.length
         },
-        points: pointCloud // array de { x, y, z }
+        points: pointCloud // array de { x, y, z } RELATIVOS ao primeiro ponto triangulado
     };
     const jsonStr = JSON.stringify(obj, null, 2);
     const blob = new Blob([jsonStr], { type: "application/json" });
@@ -830,16 +837,29 @@ function processFrame() {
                                         };
                                     }
 
-                                    triangulatedPoints.push(triTranslated);
-                                    triangulatedCount++;
-                                    triangulatedCountEl.textContent = triangulatedCount.toString();
-
-                                    // registrar na nuvem de pontos durante a calibração
-                                    if (isRecording) {
-                                        pointCloud.push({ x: triTranslated.x, y: triTranslated.y, z: triTranslated.z });
+                                    // === NOVO: se este for o primeiro ponto triangulado, registrá-lo como origem fixa ===
+                                    if (!firstTriPoint) {
+                                        // armazenar cópia exata do triTranslated como referência
+                                        firstTriPoint = { x: triTranslated.x, y: triTranslated.y, z: triTranslated.z };
+                                        // armazenar origem como (0,0,0)
+                                        triangulatedPoints.push({ x: 0, y: 0, z: 0 });
+                                        triangulatedCount++;
+                                        triangulatedCountEl.textContent = triangulatedCount.toString();
+                                        if (isRecording) pointCloud.push({ x: 0, y: 0, z: 0 });
+                                    } else {
+                                        // calcular coordenadas relativas ao primeiro ponto triangulado
+                                        const rel = {
+                                            x: triTranslated.x - firstTriPoint.x,
+                                            y: triTranslated.y - firstTriPoint.y,
+                                            z: triTranslated.z - firstTriPoint.z
+                                        };
+                                        triangulatedPoints.push(rel);
+                                        triangulatedCount++;
+                                        triangulatedCountEl.textContent = triangulatedCount.toString();
+                                        if (isRecording) pointCloud.push({ x: rel.x, y: rel.y, z: rel.z });
                                     }
 
-                                    // --- NOVO: destacar temporariamente o ponto triangulado no canvas (usar coordenadas do centroid vermelho atual, se disponível) ---
+                                    // --- destacar temporariamente o ponto triangulado no canvas (usar coordenadas do centroid vermelho atual, se disponível) ---
                                     if (typeof redCx === "number" && typeof redCy === "number") {
                                         highlights.push({ x: redCx, y: redCy, expiry: Date.now() + 500 }); // 500 ms
                                     }
@@ -1021,7 +1041,7 @@ function processFrame() {
     requestAnimationFrame(processFrame);
 }
 
-// desenha mini-visualização a partir de pointCloud (usa x,y em mm)
+// desenha mini-visualização a partir de pointCloud (usa x,y em mm — já relativos ao primeiro ponto triangulado quando presente)
 function drawMiniPointCloud() {
     const w = miniCanvas.width;
     const h = miniCanvas.height;
@@ -1039,7 +1059,7 @@ function drawMiniPointCloud() {
         return;
     }
 
-    // calcular bounding box em X e Y
+    // calcular bounding box em X e Y (pointCloud já em coords relativas ao primeiro ponto)
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const p of pointCloud) {
         if (typeof p.x !== "number" || typeof p.y !== "number") continue;
