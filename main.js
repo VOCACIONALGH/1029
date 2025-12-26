@@ -1,5 +1,6 @@
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
+const downloadBtn = document.getElementById("downloadBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -65,6 +66,10 @@ let pendingRaysForTriang = []; // raios acumulados (world-fixed) para próxima t
 let triangulatedPoints = []; // array de pontos triangulados { x, y, z }
 let triangulatedCount = 0;
 
+// Nuvem de pontos (registrada durante calibração; conteúdo salvo em JSON quando o usuário clicar em Download)
+let pointCloud = []; // cada item: { x, y, z }
+
+
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
 let initialCamHInv = null; // inverse(H0)
@@ -106,21 +111,25 @@ calibrateBtn.addEventListener("click", () => {
         const nrInput = prompt("Informe a quantidade de raios necessários para triangular cada ponto rosa (inteiro >= 2):", "3");
         if (!nrInput) {
             alert("Calibração cancelada: número de raios não fornecido.");
+            downloadBtn.style.display = "none";
             return;
         }
         const nr = parseInt(nrInput, 10);
         if (isNaN(nr) || nr < 2) {
             alert("Valor inválido para número de raios. Calibração cancelada.");
+            downloadBtn.style.display = "none";
             return;
         }
         nRaysRequired = nr;
 
         if (!lastAvgPx || lastAvgPx <= 0) {
             alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
+            downloadBtn.style.display = "none";
             return;
         }
         if (currentOriginX === null || currentOriginY === null) {
             alert("Impossível calibrar: origem (ponto branco) não detectada no momento.");
+            downloadBtn.style.display = "none";
             return;
         }
         // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
@@ -141,6 +150,7 @@ calibrateBtn.addEventListener("click", () => {
             originCalY = null;
             isCalibrated = false;
             scaleLockEl.textContent = "aberta";
+            downloadBtn.style.display = "none";
             return;
         }
 
@@ -153,6 +163,7 @@ calibrateBtn.addEventListener("click", () => {
             originCalY = null;
             isCalibrated = false;
             scaleLockEl.textContent = "aberta";
+            downloadBtn.style.display = "none";
             return;
         }
 
@@ -189,6 +200,12 @@ calibrateBtn.addEventListener("click", () => {
         triangulatedPoints = [];
         triangulatedCount = 0;
         triangulatedCountEl.textContent = triangulatedCount.toString();
+
+        // reset da nuvem de pontos
+        pointCloud = [];
+
+        // mostrar botão Download durante a calibração
+        downloadBtn.style.display = "inline-block";
 
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
@@ -235,9 +252,42 @@ calibrateBtn.addEventListener("click", () => {
         a.remove();
         URL.revokeObjectURL(url);
 
+        // esconder o botão de download da nuvem (aparecia só durante gravação)
+        downloadBtn.style.display = "none";
+
         alert("Calibração finalizada. Arquivo JSON baixado.");
         return;
     }
+});
+
+// botão para baixar a nuvem de pontos (.json) durante a calibração
+downloadBtn.addEventListener("click", () => {
+    if (!pointCloud || pointCloud.length === 0) {
+        alert("Nenhum ponto triangulado registrado ainda.");
+        return;
+    }
+    const obj = {
+        meta: {
+            originCalX: originCalX,
+            originCalY: originCalY,
+            calibrationZ_mm: calibrationZ_mm,
+            pixelPerMM_locked: pixelPerMM_locked,
+            generatedAt: Date.now(),
+            points: pointCloud.length
+        },
+        points: pointCloud // array de { x, y, z }
+    };
+    const jsonStr = JSON.stringify(obj, null, 2);
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = (new Date()).toISOString().replace(/[:.]/g, "-");
+    a.href = url;
+    a.download = `pointcloud_${ts}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
 });
 
 // lê orientações do dispositivo
@@ -668,10 +718,7 @@ function processFrame() {
                             const tri = triangulateRaysWorld(subset);
                             // se triangulação bem-sucedida, armazenar e atualizar contador
                             if (tri) {
-                                // === AQUI: aplicar translação para que a origem calibrada seja (0,0,0) ===
-                                // Calculamos a posição do marcador de origem (registrado em originCalX/originCalY durante calibração)
-                                // em coordenadas de câmera (mm) usando o modelo pinhole com Z = calibrationZ_mm,
-                                // e então subtraímos essa posição do ponto triangulado (que está no referencial world-fixed).
+                                // === aplicar translação para que a origem calibrada seja (0,0,0) ===
                                 let triTranslated = tri;
 
                                 if (isCalibrated && originCalX !== null && originCalY !== null && calibrationZ_mm && pixelPerMM_locked) {
@@ -696,6 +743,11 @@ function processFrame() {
                                 triangulatedPoints.push(triTranslated);
                                 triangulatedCount++;
                                 triangulatedCountEl.textContent = triangulatedCount.toString();
+
+                                // registrar na nuvem de pontos durante a calibração
+                                if (isRecording) {
+                                    pointCloud.push({ x: triTranslated.x, y: triTranslated.y, z: triTranslated.z });
+                                }
                             }
                             // remover os raios usados (consumir a janela)
                             pendingRaysForTriang = pendingRaysForTriang.slice(nRaysRequired);
