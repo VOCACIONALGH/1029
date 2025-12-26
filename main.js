@@ -10,6 +10,7 @@ const greenSlider = document.getElementById("greenThreshold");
 const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
+const scaleEl = document.getElementById("scale");
 
 let pitch = 0;
 let yaw = 0;
@@ -81,8 +82,8 @@ function rgbToHsv(r, g, b) {
 }
 
 function drawArrow(x1, y1, x2, y2, color) {
-    const head = 10;
-    const a = Math.atan2(y2 - y1, x2 - x1);
+    const headLength = 10;
+    const angle = Math.atan2(y2 - y1, x2 - x1);
 
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -95,8 +96,14 @@ function drawArrow(x1, y1, x2, y2, color) {
 
     ctx.beginPath();
     ctx.moveTo(x2, y2);
-    ctx.lineTo(x2 - head * Math.cos(a - Math.PI / 6), y2 - head * Math.sin(a - Math.PI / 6));
-    ctx.lineTo(x2 - head * Math.cos(a + Math.PI / 6), y2 - head * Math.sin(a + Math.PI / 6));
+    ctx.lineTo(
+        x2 - headLength * Math.cos(angle - Math.PI / 6),
+        y2 - headLength * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.lineTo(
+        x2 - headLength * Math.cos(angle + Math.PI / 6),
+        y2 - headLength * Math.sin(angle + Math.PI / 6)
+    );
     ctx.closePath();
     ctx.fill();
 }
@@ -137,6 +144,7 @@ function processFrame() {
     ctx.putImageData(frame, 0, 0);
 
     let ox, oy, bx, by, gx, gy;
+    let distBlue = 0, distGreen = 0, nDist = 0;
 
     if (cb) {
         ox = sbx / cb; oy = sby / cb;
@@ -147,15 +155,60 @@ function processFrame() {
         bx = blx / cbl; by = bly / cbl;
         ctx.fillStyle = "blue";
         ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
+        if (cb) {
+            distBlue = Math.hypot(bx - ox, by - oy);
+            nDist++;
+        }
     }
     if (cgr) {
         gx = grx / cgr; gy = gry / cgr;
         ctx.fillStyle = "green";
         ctx.beginPath(); ctx.arc(gx, gy, 4, 0, Math.PI * 2); ctx.fill();
+        if (cb) {
+            distGreen = Math.hypot(gx - ox, gy - oy);
+            nDist++;
+        }
     }
 
-    if (cb && cbl) drawArrow(ox, oy, bx, by, "blue");
-    if (cb && cgr) drawArrow(ox, oy, gx, gy, "green");
+    // Calcular escala px/mm usando a(s) distância(s) detectada(s) entre origem e pontos.
+    // Assumimos que a(s) distância(s) medidas representam 100 mm (conforme solicitado).
+    let pixelPerMM = 0;
+    if (nDist > 0) {
+        const avgPx = (distBlue + distGreen) / nDist; // média das distâncias em pixels
+        pixelPerMM = avgPx / 100; // px por mm
+        scaleEl.textContent = pixelPerMM.toFixed(3);
+    } else {
+        scaleEl.textContent = "-";
+    }
+
+    // Desenhar setas com comprimento correspondente a 100 mm (em pixels = pixelPerMM * 100)
+    if (cb && pixelPerMM > 0) {
+        const desiredPx = pixelPerMM * 100; // comprimento em pixels para 100 mm
+
+        if (cbl) {
+            // direção do azul
+            let dx = bx - ox;
+            let dy = by - oy;
+            let norm = Math.hypot(dx, dy);
+            if (norm > 0) {
+                const ex = ox + (dx / norm) * desiredPx;
+                const ey = oy + (dy / norm) * desiredPx;
+                drawArrow(ox, oy, ex, ey, "blue");
+            }
+        }
+
+        if (cgr) {
+            // direção do verde
+            let dx2 = gx - ox;
+            let dy2 = gy - oy;
+            let norm2 = Math.hypot(dx2, dy2);
+            if (norm2 > 0) {
+                const ex2 = ox + (dx2 / norm2) * desiredPx;
+                const ey2 = oy + (dy2 / norm2) * desiredPx;
+                drawArrow(ox, oy, ex2, ey2, "green");
+            }
+        }
+    }
 
     requestAnimationFrame(processFrame);
 }
