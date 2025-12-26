@@ -42,6 +42,62 @@ let lastPixelPerMM = 0;
 let calibrating = false;
 let recordedFrames = [];
 
+// --- utilitários de rotação (Euler -> matriz) ---
+function deg2rad(d) { return d * Math.PI / 180; }
+
+// Monta matriz de rotação R = Rz(yaw) * Rx(pitch) * Ry(roll)
+// Notas: usamos convensão similar ao deviceorientation: pitch = beta (rot X), yaw = alpha (rot Z), roll = gamma (rot Y)
+function eulerToRotationMatrix(pitchDeg, yawDeg, rollDeg) {
+    const p = deg2rad(pitchDeg);
+    const y = deg2rad(yawDeg);
+    const r = deg2rad(rollDeg);
+
+    const Rx = [
+        [1, 0, 0],
+        [0, Math.cos(p), -Math.sin(p)],
+        [0, Math.sin(p),  Math.cos(p)]
+    ];
+
+    const Ry = [
+        [ Math.cos(r), 0, Math.sin(r)],
+        [ 0,          1, 0],
+        [-Math.sin(r), 0, Math.cos(r)]
+    ];
+
+    const Rz = [
+        [Math.cos(y), -Math.sin(y), 0],
+        [Math.sin(y),  Math.cos(y), 0],
+        [0, 0, 1]
+    ];
+
+    // multiply Rz * Rx * Ry  (matrix multiplication)
+    function mul(A, B) {
+        const C = Array(A.length).fill(0).map(()=>Array(B[0].length).fill(0));
+        for (let i=0;i<A.length;i++){
+            for (let j=0;j<B[0].length;j++){
+                for (let k=0;k<A[0].length;k++){
+                    C[i][j] += A[i][k]*B[k][j];
+                }
+            }
+        }
+        return C;
+    }
+
+    const Rzx = mul(Rz, Rx);
+    const R = mul(Rzx, Ry);
+    return R; // 3x3
+}
+
+function matMulVec(M, v) {
+    return [
+        M[0][0]*v[0] + M[0][1]*v[1] + M[0][2]*v[2],
+        M[1][0]*v[0] + M[1][1]*v[1] + M[1][2]*v[2],
+        M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2],
+    ];
+}
+
+// ------------------------------------------------------------------
+
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -73,18 +129,16 @@ scanBtn.addEventListener("click", async () => {
 
 calibrateBtn.addEventListener("click", () => {
     if (!calibrating) {
-        // --- iniciar calibragem (comportamento existente) ---
+        // iniciar calibragem (comportamento existente) + iniciar gravação
         if (!lastPixelPerMM || lastPixelPerMM <= 0) {
             alert("Escala inválida no momento. Não é possível calibrar. Certifique-se de que há pontos detectados.");
             return;
         }
 
-        // trava a escala
         lockedPixelPerMM = lastPixelPerMM;
         scaleLocked = true;
         scaleStatusEl.textContent = "(travada)";
 
-        // calcula L_calib (média das distâncias origem→azul e origem→verde atuais)
         if (lastDistBlue > 0 && lastDistGreen > 0) {
             L_calib_px = (lastDistBlue + lastDistGreen) / 2;
         } else if (lastDistBlue > 0) {
@@ -93,14 +147,12 @@ calibrateBtn.addEventListener("click", () => {
             L_calib_px = lastDistGreen;
         } else {
             alert("Não há distâncias válidas (azul/verde) para calibração. Posicione os marcadores corretamente antes de calibrar.");
-            // desfaz lock se nada válido
             scaleLocked = false;
             lockedPixelPerMM = 0;
             scaleStatusEl.textContent = "";
             return;
         }
 
-        // registra a origem atual como referência (X=0,Y=0) — câmera está em cima da origem no momento
         if (lastOriginX == null || lastOriginY == null) {
             alert("Origem não detectada no momento. Posicione a origem antes de calibrar.");
             scaleLocked = false;
@@ -113,7 +165,6 @@ calibrateBtn.addEventListener("click", () => {
 
         const input = prompt("Informe o valor atual de +Z em mm (ex.: 200):", "200");
         if (input === null) {
-            // usuário cancelou -> desfazer trava de escala
             scaleLocked = false;
             lockedPixelPerMM = 0;
             scaleStatusEl.textContent = "";
@@ -133,23 +184,21 @@ calibrateBtn.addEventListener("click", () => {
         }
 
         Z_calib_mm = zVal;
-        calibK = Z_calib_mm * L_calib_px; // K = Z_calib * L_calib
+        calibK = Z_calib_mm * L_calib_px;
 
-        // iniciar gravação
+        // iniciar processo de gravação
         recordedFrames = [];
         calibrating = true;
         calibrateBtn.textContent = "FINALIZAR CALIBRAGEM";
 
-        // mostra valores gravados na UI
         zEl.textContent = Z_calib_mm.toFixed(2);
         scaleEl.textContent = lockedPixelPerMM.toFixed(3);
 
     } else {
-        // --- finalizar calibragem: gerar JSON e download automático ---
+        // finalizar calibragem e disparar download JSON (comportamento existente)
         calibrating = false;
         calibrateBtn.textContent = "CALIBRAR";
 
-        // construir JSON e baixar
         const now = new Date();
         const pad = (n) => n.toString().padStart(2, "0");
         const fname = `calibragem-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`;
@@ -166,8 +215,6 @@ calibrateBtn.addEventListener("click", () => {
             document.body.removeChild(a);
         }, 500);
 
-        // deixar a escala travada como antes (não desfaço lock)
-        // limpa buffer de gravação
         recordedFrames = [];
         alert("Calibração finalizada. Arquivo JSON gerado.");
     }
@@ -333,7 +380,10 @@ function processFrame() {
     // Determinar pixelPerMM usado para desenhar setas (travado ou atual)
     const usedPixelPerMM = (scaleLocked && lockedPixelPerMM > 0) ? lockedPixelPerMM : pixelPerMM;
 
-    // Desenhar setas com comprimento correspondente a 100 mm (em pixels = usedPixelPerMM * 100)
+    // calcular e desenhar setas originais (direções). Guardar endpoints para pintura do plano.
+    let blueEnd = null;
+    let greenEnd = null;
+
     if (cb && usedPixelPerMM > 0) {
         const desiredPx = usedPixelPerMM * 100; // comprimento em pixels para 100 mm
 
@@ -346,6 +396,7 @@ function processFrame() {
                 const ex = ox + (dx / norm) * desiredPx;
                 const ey = oy + (dy / norm) * desiredPx;
                 drawArrow(ox, oy, ex, ey, "blue");
+                blueEnd = { x: ex, y: ey };
             }
         }
 
@@ -358,14 +409,83 @@ function processFrame() {
                 const ex2 = ox + (dx2 / norm2) * desiredPx;
                 const ey2 = oy + (dy2 / norm2) * desiredPx;
                 drawArrow(ox, oy, ex2, ey2, "green");
+                greenEnd = { x: ex2, y: ey2 };
             }
         }
     }
 
-    // Calcular +Z atual a partir da calibração, se houver (Z = K / L)
+    // --- NOVO: durante a calibragem, calcular o plano XY usando pose, origem e vetores,
+    // e pintar o plano como um polígono azul-claro com lados sendo as setas ---
+    if (calibrating && cb && blueEnd && greenEnd) {
+        // canto 1: origem (ox,oy)
+        // canto 2: azulEnd (blueEnd.x, blueEnd.y)
+        // canto 3: blueEnd + (greenEnd - origin) = blueEnd + (gx-ox, gy-oy)
+        const corner3x = blueEnd.x + (greenEnd.x - ox);
+        const corner3y = blueEnd.y + (greenEnd.y - oy);
+        // canto 4: greenEnd
+        const corner4x = greenEnd.x;
+        const corner4y = greenEnd.y;
+
+        // desenhar polígono preenchido (azul claro)
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = 'lightblue';
+        ctx.beginPath();
+        ctx.moveTo(ox, oy);
+        ctx.lineTo(blueEnd.x, blueEnd.y);
+        ctx.lineTo(corner3x, corner3y);
+        ctx.lineTo(greenEnd.x, greenEnd.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // --- calcular o plano em coordenadas do mundo usando pose e vetores ---
+        // Converter vetores de tela (px) para mm usando a escala travada (lockedPixelPerMM)
+        // vx_cam_mm = (blueEnd - origin) / px_per_mm
+        const vx_mm = {
+            x: (blueEnd.x - ox) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
+            y: (blueEnd.y - oy) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
+            z: 0
+        };
+        const vy_mm = {
+            x: (greenEnd.x - ox) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
+            y: (greenEnd.y - oy) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
+            z: 0
+        };
+
+        // Interpretamos o vetor (x positive → para a direita da tela, y positive → para baixo da tela)
+        // como vetores no sistema de coordenadas da câmera (em mm). Agora aplicamos a rotação da câmera
+        // (Euler pitch, yaw, roll) para obter vetores no sistema de coordenadas do mundo.
+        const R = eulerToRotationMatrix(pitch, yaw, roll);
+
+        // vetor mundo = R * vetor_camera
+        const vx_world = matMulVec(R, [vx_mm.x, vx_mm.y, vx_mm.z]);
+        const vy_world = matMulVec(R, [vy_mm.x, vy_mm.y, vy_mm.z]);
+
+        // normal do plano = vx_world × vy_world
+        const nx = vx_world[1]*vy_world[2] - vx_world[2]*vy_world[1];
+        const ny = vx_world[2]*vy_world[0] - vx_world[0]*vy_world[2];
+        const nz = vx_world[0]*vy_world[1] - vx_world[1]*vy_world[0];
+
+        // normal unitário:
+        const nnorm = Math.hypot(nx, ny, nz) || 1;
+        const normalWorld = { x: nx/nnorm, y: ny/nnorm, z: nz/nnorm };
+
+        // ponto no plano (world) — assumimos origem do plano como (0,0,0) no sistema de referência do objeto
+        // (essa convenção segue a calibração onde a câmera estava acima da origem)
+        const planePointWorld = { x: 0, y: 0, z: 0 };
+        // plano em forma ax + by + cz + d = 0 -> d = -normal ⋅ point
+        const planeD = -(normalWorld.x*planePointWorld.x + normalWorld.y*planePointWorld.y + normalWorld.z*planePointWorld.z);
+
+        // note: os valores world acima são calculados conforme solicitado (pose + origem + vetores).
+        // não alteram a UI; ficam disponíveis aqui caso queira exportar ou salvar depois.
+
+        // (opcional) -- nada a mais salvo; continuamos a gravação como antes
+    }
+
+    // --- Calcular +Z atual a partir da calibração, se houver (Z = K / L) ---
     let Zcur = null;
     if (calibK !== null) {
-        // calcular L atual (média das distâncias observadas)
         let Lcur = 0;
         let countL = 0;
         if (distBlue > 0) { Lcur += distBlue; countL++; }
@@ -373,7 +493,7 @@ function processFrame() {
 
         if (countL > 0 && Lcur > 0) {
             Lcur = Lcur / countL;
-            Zcur = calibK / Lcur; // Z proporcional a 1/L, com K definido em calibração
+            Zcur = calibK / Lcur;
             zEl.textContent = Zcur.toFixed(2);
         } else {
             zEl.textContent = "-";
@@ -384,9 +504,6 @@ function processFrame() {
     let Xmm = null;
     let Ymm = null;
     if (calibK !== null && refOriginX !== null && refOriginY !== null && lastOriginX !== null && lastOriginY !== null && lockedPixelPerMM > 0) {
-        // Convenções:
-        // delta_px_x = refX - curX  -> se origin se moveu para a esquerda (curX < refX), delta_px_x > 0 => +X positivo
-        // delta_px_y = curY - refY  -> se origin se moveu para baixo (curY > refY), delta_px_y > 0 => +Y positivo
         const delta_px_x = refOriginX - lastOriginX;
         const delta_px_y = lastOriginY - refOriginY;
 
@@ -396,7 +513,6 @@ function processFrame() {
         xEl.textContent = Xmm.toFixed(2);
         yEl.textContent = Ymm.toFixed(2);
     } else {
-        // manter valores - se calibragem não iniciou ou referência não disponível
         if (calibK === null) {
             xEl.textContent = "-";
             yEl.textContent = "-";
