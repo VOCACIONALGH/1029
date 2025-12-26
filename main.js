@@ -70,6 +70,7 @@ let triangulatedPoints = []; // array de pontos triangulados { x, y, z }
 let triangulatedCount = 0;
 
 // telas/visualizações relacionadas à triangulação (persistir marcações na tela principal)
+// agora guardamos coordenadas de projeção corretas (pixels) calculadas a partir do ponto 3D e da pose atual
 let triangulatedScreenPoints = []; // { x, y } em pixels para desenhar rosa claro
 
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
@@ -646,9 +647,12 @@ function processFrame() {
             ctx.save();
             ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
             for (const sp of triangulatedScreenPoints) {
-                ctx.beginPath();
-                ctx.arc(sp.x, sp.y, 6, 0, Math.PI*2);
-                ctx.fill();
+                // se coordenadas forem válidas, desenhar
+                if (typeof sp.x === "number" && typeof sp.y === "number" && isFinite(sp.x) && isFinite(sp.y)) {
+                    ctx.beginPath();
+                    ctx.arc(sp.x, sp.y, 6, 0, Math.PI*2);
+                    ctx.fill();
+                }
             }
             ctx.restore();
         }
@@ -782,9 +786,27 @@ function processFrame() {
                                 triangulatedCount++;
                                 triangulatedCountEl.textContent = triangulatedCount.toString();
 
-                                // registrar ponto de tela (origem atual) para desenhar rosa claro persistente
-                                if (currentOriginX !== null && currentOriginY !== null) {
-                                    triangulatedScreenPoints.push({ x: currentOriginX, y: currentOriginY });
+                                // PROJEÇÃO CORRETA: projetar o ponto 3D recém-triangulado para o sistema de imagem da câmera atual
+                                // (usar world->camera via inversa de Hc)
+                                try {
+                                    const Hc_now = buildHomogeneous(yaw, pitch, roll, cameraX_mm, cameraY_mm, cameraZ_mm);
+                                    const worldToCam = invertHomogeneous(Hc_now); // world -> camera
+                                    const Pc4 = mul4Vec(worldToCam, [tri.x, tri.y, tri.z, 1]);
+                                    const Xc = Pc4[0], Yc = Pc4[1], Zc = Pc4[2];
+
+                                    if (Zc > 0 && pixelPerMM_locked && cameraZ_mm) {
+                                        const fproj = pixelPerMM_locked * cameraZ_mm;
+                                        const sx = (canvas.width / 2) + (Xc / Zc) * fproj;
+                                        const sy = (canvas.height / 2) + (Yc / Zc) * fproj;
+
+                                        // guardar coordenadas de tela projetadas (evita colar na origem)
+                                        triangulatedScreenPoints.push({ x: sx, y: sy });
+                                    } else {
+                                        // se projeção inválida (ponto atrás da câmera), não usar currentOrigin — apenas pular a marcação
+                                        // não adicionar nada ao triangulatedScreenPoints
+                                    }
+                                } catch (e) {
+                                    // em caso de erro numérico, não usar currentOrigin — ignorar marcação de tela
                                 }
 
                                 // habilitar botão de download se houver pelo menos 1 ponto
