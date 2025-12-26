@@ -11,7 +11,7 @@
 <body>
 
     <button id="scanBtn">ESCÂNER</button>
-    <button id="calibrateBtn">CALIBRAR</button>
+    <button id="calibrateBtn">Calibrar</button>
 
     <label class="sliderLabel">
         Sensibilidade do Preto
@@ -36,17 +36,12 @@
 
     <div id="scaleContainer">
         Escala: <span id="scale">-</span> px/mm
-        <span id="scaleStatus"></span>
+        <span id="scaleStatus" style="margin-left:8px;color:#ddd">(<span id="scaleLock">aberta</span>)</span>
     </div>
 
     <div id="zContainer">
-        +Z: <span id="zValue">-</span> mm
-    </div>
-
-    <div id="transContainer">
-        +X: <span id="xValue">-</span> mm
-        &nbsp;&nbsp;
-        +Y: <span id="yValue">-</span> mm
+        +Z (camera): <span id="zCamera">-</span> mm
+        <span style="margin-left:12px">+Z (transformado): <span id="zWorld">-</span> mm</span>
     </div>
 
     <div id="container">
