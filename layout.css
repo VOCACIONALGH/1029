@@ -9,11 +9,11 @@ body {
 }
 
 button {
-    padding: 16px 32px;
-    font-size: 20px;
+    padding: 12px 20px;
+    font-size: 16px;
     font-weight: bold;
     cursor: pointer;
-    margin-bottom: 12px;
+    margin: 6px;
 }
 
 .sliderLabel {
@@ -39,6 +39,19 @@ input[type="range"] {
 #scaleContainer {
     color: #fff;
     font-size: 14px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+#scaleStatus {
+    margin-left: 8px;
+    font-weight: bold;
+    color: #0f9d58;
+}
+
+#zContainer {
+    color: #fff;
+    font-size: 16px;
     margin-bottom: 12px;
     text-align: center;
 }
