@@ -5,6 +5,9 @@ const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
+const miniCanvas = document.getElementById("miniCanvas");
+const miniCtx = miniCanvas.getContext("2d");
+
 const blackSlider = document.getElementById("blackThreshold");
 const blueSlider = document.getElementById("blueThreshold");
 const greenSlider = document.getElementById("greenThreshold");
@@ -69,15 +72,49 @@ let triangulatedCount = 0;
 // Nuvem de pontos (registrada durante calibração; conteúdo salvo em JSON quando o usuário clicar em Download)
 let pointCloud = []; // cada item: { x, y, z }
 
-// Threshold de movimento mínimo para aceitar um novo raio para triangulação (mm)
-const MIN_CAMERA_MOVE_MM = 5;
-
-// guarda a última origem (world-fixed) que foi aceita para triangulação
-let lastAcceptedOrigin = null;
-
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
 let initialCamHInv = null; // inverse(H0)
+
+// --- NOVO: controle de distância mínima entre raios aceitos ---
+let MIN_CAMERA_MOVE_MM = 5; // default
+let lastAcceptedCameraPos = null; // {x,y,z} em mm da última origem de raio aceita para triangulação
+
+// --- NOVO: ângulo mínimo entre raios para aceitar triangulação (graus) ---
+const MIN_PARALLEL_ANGLE_DEG = 5; // se dois raios tiverem ângulo menor que isso, consideramos "quase paralelos"
+
+// --- NOVO: highlights temporários para desenho (cada entrada {x,y,expiry}) ---
+let highlights = []; // desenha círculos rosa claros temporários no canvas quando um ponto é triangulado
+
+// utilitários novos
+function distance3(a, b) {
+    if (!a || !b) return Infinity;
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = a.z - b.z;
+    return Math.hypot(dx, dy, dz);
+}
+function raysSufficientlyAngular(rays, minAngleDeg) {
+    if (!rays || rays.length < 2) return true;
+    const minCos = Math.cos(minAngleDeg * Math.PI / 180);
+    // extrair direções normalizadas
+    const dirs = rays.map(r => {
+        const d = [r.direction.dx, r.direction.dy, r.direction.dz];
+        const n = Math.hypot(d[0], d[1], d[2]) || 1;
+        return [d[0]/n, d[1]/n, d[2]/n];
+    });
+    for (let i=0;i<dirs.length;i++){
+        for (let j=i+1;j<dirs.length;j++){
+            const a = dirs[i], b = dirs[j];
+            const dot = Math.abs(a[0]*b[0] + a[1]*b[1] + a[2]*b[2]);
+            if (dot >= minCos) {
+                // ângulo menor que minAngleDeg (quase paralelos)
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -126,6 +163,20 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
         nRaysRequired = nr;
+
+        // --- pedir ao usuário MIN_CAMERA_MOVE_MM assim que iniciar a calibração ---
+        const minMoveInput = prompt("Informe MIN_CAMERA_MOVE_MM em milímetros (distância mínima da câmera entre raios aceitos). Padrão 5 mm:", "5");
+        if (minMoveInput !== null && minMoveInput !== "") {
+            const mm = parseFloat(minMoveInput.replace(",", "."));
+            if (!isNaN(mm) && mm >= 0) {
+                MIN_CAMERA_MOVE_MM = mm;
+            } else {
+                // se inválido, manter padrão 5
+                MIN_CAMERA_MOVE_MM = 5;
+            }
+        } else {
+            MIN_CAMERA_MOVE_MM = 5;
+        }
 
         if (!lastAvgPx || lastAvgPx <= 0) {
             alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
@@ -200,7 +251,6 @@ calibrateBtn.addEventListener("click", () => {
 
         rotatedCount = 0;
         rotatedCountEl.textContent = rotatedCount.toString();
-
         pendingRaysForTriang = [];
         triangulatedPoints = [];
         triangulatedCount = 0;
@@ -209,8 +259,11 @@ calibrateBtn.addEventListener("click", () => {
         // reset da nuvem de pontos
         pointCloud = [];
 
-        // reset do último raio aceito para triangulação
-        lastAcceptedOrigin = null;
+        // reset lastAcceptedCameraPos
+        lastAcceptedCameraPos = null;
+
+        // reset highlights
+        highlights = [];
 
         // mostrar botão Download durante a calibração
         downloadBtn.style.display = "inline-block";
@@ -235,6 +288,7 @@ calibrateBtn.addEventListener("click", () => {
                 originCalX: originCalX,
                 originCalY: originCalY,
                 nRaysRequired: nRaysRequired,
+                MIN_CAMERA_MOVE_MM: MIN_CAMERA_MOVE_MM,
                 calibrationStart: calibrationStartTime,
                 calibrationEnd: Date.now(),
                 frames: calibrationLog.length,
@@ -280,6 +334,7 @@ downloadBtn.addEventListener("click", () => {
             originCalY: originCalY,
             calibrationZ_mm: calibrationZ_mm,
             pixelPerMM_locked: pixelPerMM_locked,
+            MIN_CAMERA_MOVE_MM: MIN_CAMERA_MOVE_MM,
             generatedAt: Date.now(),
             points: pointCloud.length
         },
@@ -372,7 +427,6 @@ function mul4Vec(M, v) {
     }
     return out;
 }
-
 // converter RGB para HSV (mantive a mesma função)
 function rgbToHsv(r, g, b) {
     r /= 255; g /= 255; b /= 255;
@@ -637,8 +691,7 @@ function processFrame() {
                 distGreen = Math.hypot(gx - ox, gy - oy);
                 nDist++;
             }
-        }
-
+        } 
         // calcular centroid dos VERMELHOS (ponto rosa)
         let redCx = null, redCy = null;
         if (cr > 0) {
@@ -700,85 +753,124 @@ function processFrame() {
                         const normW = Math.hypot(dir_world[0], dir_world[1], dir_world[2]) || 1;
                         dir_world = [dir_world[0]/normW, dir_world[1]/normW, dir_world[2]/normW];
 
-                        // contabilizar vetor rotacionado (no referencial world fixed)
-                        rotatedCount++;
-                        rotatedCountEl.textContent = rotatedCount.toString();
+                        // verificar se posição atual da câmera está disponível
+                        const camPosCurrent = (typeof cameraX_mm === "number" && typeof cameraY_mm === "number" && typeof cameraZ_mm === "number")
+                            ? { x: cameraX_mm, y: cameraY_mm, z: cameraZ_mm }
+                            : null;
 
-                        // registrar no log: origem e direção no referencial fixo do mundo (formato solicitado anteriormente)
-                        const rayWorld = {
-                            origin: originWF,
-                            direction: { dx: dir_world[0], dy: dir_world[1], dz: dir_world[2] }
-                        };
-
-                        // push ray (registramos TODOS os raios no log)
-                        raysLog.push(rayWorld);
-
-                        // atualizar contador cumulativo de raios 3D registrados
-                        raysCount++;
-                        raysCountEl.textContent = raysCount.toString();
-
-                        // ---- aceitar raios para triangulação somente se a câmera se moveu o suficiente ----
-                        let acceptForTriang = false;
-                        if (lastAcceptedOrigin === null) {
-                            // primeiro raio aceito
-                            acceptForTriang = true;
-                        } else {
-                            const dxA = originWF.x - lastAcceptedOrigin.x;
-                            const dyA = originWF.y - lastAcceptedOrigin.y;
-                            const dzA = originWF.z - lastAcceptedOrigin.z;
-                            const distA = Math.hypot(dxA, dyA, dzA);
-                            if (distA >= MIN_CAMERA_MOVE_MM) acceptForTriang = true;
+                        // determinar se aceitamos este raio para triangulação (move suficiente)
+                        let acceptRay = true;
+                        if (camPosCurrent && lastAcceptedCameraPos) {
+                            const distSinceLast = distance3(camPosCurrent, lastAcceptedCameraPos);
+                            if (distSinceLast < MIN_CAMERA_MOVE_MM) {
+                                acceptRay = false;
+                            }
                         }
+                        // se não há posição anterior, aceitamos (primeiro raio)
 
-                        if (acceptForTriang) {
+                        if (acceptRay && camPosCurrent) {
+                            // contabilizar vetor rotacionado (no referencial world fixed)
+                            rotatedCount++;
+                            rotatedCountEl.textContent = rotatedCount.toString();
+
+                            // registrar no log: origem e direção no referencial fixo do mundo (formato solicitado anteriormente)
+                            const rayWorld = {
+                                origin: originWF,
+                                direction: { dx: dir_world[0], dy: dir_world[1], dz: dir_world[2] }
+                            };
+
+                            // push ray
+                            raysLog.push(rayWorld);
+
+                            // atualizar contador cumulativo de raios 3D registrados
+                            raysCount++;
+                            raysCountEl.textContent = raysCount.toString();
+
+                            // também acumular para triangulação
                             pendingRaysForTriang.push(rayWorld);
-                            // atualizar último aceito
-                            lastAcceptedOrigin = { x: originWF.x, y: originWF.y, z: originWF.z };
-                        } // caso não aceite, o raio é ignorado só para triangulação (continua no raysLog)
+
+                            // atualizar lastAcceptedCameraPos
+                            lastAcceptedCameraPos = camPosCurrent;
+                        } else {
+                            // se não aceito: não empilha nos raios para triangulação nem incrementa raysCount/rotatedCount
+                            // (a detecção do ponto rosa e contagem de pinkDirCount já foi incrementada)
+                        }
 
                         // quando tivermos número suficiente de raios (definido pelo usuário), triangular
                         if (nRaysRequired && pendingRaysForTriang.length >= nRaysRequired) {
                             const subset = pendingRaysForTriang.slice(0, nRaysRequired);
-                            const tri = triangulateRaysWorld(subset);
-                            // se triangulação bem-sucedida, armazenar e atualizar contador
-                            if (tri) {
-                                // === aplicar translação para que a origem calibrada seja (0,0,0) ===
-                                let triTranslated = tri;
 
-                                if (isCalibrated && originCalX !== null && originCalY !== null && calibrationZ_mm && pixelPerMM_locked) {
-                                    // focal length (pixels) at calibration
-                                    const f_cal = pixelPerMM_locked * calibrationZ_mm;
-                                    const cx_cal = canvas.width / 2;
-                                    const cy_cal = canvas.height / 2;
+                            // evitar triangulações com raios quase paralelos
+                            if (!raysSufficientlyAngular(subset, MIN_PARALLEL_ANGLE_DEG)) {
+                                // Se os raios são quase paralelos, descartamos o primeiro da fila e aguardamos mais raios
+                                pendingRaysForTriang = pendingRaysForTriang.slice(1);
+                            } else {
+                                const tri = triangulateRaysWorld(subset);
+                                // se triangulação bem-sucedida, armazenar e atualizar contador
+                                if (tri) {
+                                    // === aplicar translação para que a origem calibrada seja (0,0,0) ===
+                                    let triTranslated = tri;
 
-                                    // origem em coordenadas de câmera (mm) no instante da calibração
-                                    const originCamX = (originCalX - cx_cal) / f_cal * calibrationZ_mm;
-                                    const originCamY = (originCalY - cy_cal) / f_cal * calibrationZ_mm;
-                                    const originCamZ = calibrationZ_mm;
+                                    if (isCalibrated && originCalX !== null && originCalY !== null && calibrationZ_mm && pixelPerMM_locked) {
+                                        // focal length (pixels) at calibration
+                                        const f_cal = pixelPerMM_locked * calibrationZ_mm;
+                                        const cx_cal = canvas.width / 2;
+                                        const cy_cal = canvas.height / 2;
 
-                                    // subtrair para que a origem calibrada vire (0,0,0)
-                                    triTranslated = {
-                                        x: tri.x - originCamX,
-                                        y: tri.y - originCamY,
-                                        z: tri.z - originCamZ
-                                    };
+                                        // origem em coordenadas de câmera (mm) no instante da calibração
+                                        const originCamX = (originCalX - cx_cal) / f_cal * calibrationZ_mm;
+                                        const originCamY = (originCalY - cy_cal) / f_cal * calibrationZ_mm;
+                                        const originCamZ = calibrationZ_mm;
+
+                                        // subtrair para que a origem calibrada vire (0,0,0)
+                                        triTranslated = {
+                                            x: tri.x - originCamX,
+                                            y: tri.y - originCamY,
+                                            z: tri.z - originCamZ
+                                        };
+                                    }
+
+                                    triangulatedPoints.push(triTranslated);
+                                    triangulatedCount++;
+                                    triangulatedCountEl.textContent = triangulatedCount.toString();
+
+                                    // registrar na nuvem de pontos durante a calibração
+                                    if (isRecording) {
+                                        pointCloud.push({ x: triTranslated.x, y: triTranslated.y, z: triTranslated.z });
+                                    }
+
+                                    // --- NOVO: destacar temporariamente o ponto triangulado no canvas (usar coordenadas do centroid vermelho atual, se disponível) ---
+                                    if (typeof redCx === "number" && typeof redCy === "number") {
+                                        highlights.push({ x: redCx, y: redCy, expiry: Date.now() + 500 }); // 500 ms
+                                    }
                                 }
-
-                                triangulatedPoints.push(triTranslated);
-                                triangulatedCount++;
-                                triangulatedCountEl.textContent = triangulatedCount.toString();
-
-                                // registrar na nuvem de pontos durante a calibração
-                                if (isRecording) {
-                                    pointCloud.push({ x: triTranslated.x, y: triTranslated.y, z: triTranslated.z });
-                                }
+                                // remover os raios usados (consumir a janela)
+                                pendingRaysForTriang = pendingRaysForTriang.slice(nRaysRequired);
                             }
-                            // remover os raios usados (consumir a janela)
-                            pendingRaysForTriang = pendingRaysForTriang.slice(nRaysRequired);
                         }
                     }
                 }
             }
+        }
+
+        // desenhar highlights temporários (rosa claro) sobre o frame
+        const now = Date.now();
+        if (highlights.length > 0) {
+            // filtrar expirados e desenhar
+            const remaining = [];
+            for (const h of highlights) {
+                if (h.expiry > now) {
+                    ctx.save();
+                    ctx.globalAlpha = 0.9;
+                    ctx.fillStyle = "rgba(255,182,193,0.85)"; // lightpink
+                    ctx.beginPath();
+                    ctx.arc(h.x, h.y, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                    remaining.push(h);
+                }
+            }
+            highlights = remaining;
         }
 
         // média das distâncias observadas (em pixels)
@@ -837,8 +929,7 @@ function processFrame() {
                     exY = oy + (dy / norm) * desiredPx;
                     drawArrow(ox, oy, exX, exY, "blue");
                 }
-            }
-
+            } 
             if (cgr) {
                 let dx2 = gx - ox;
                 let dy2 = gy - oy;
@@ -922,7 +1013,68 @@ function processFrame() {
             };
             calibrationLog.push(record);
         }
+
+        // --- NOVO: desenhar mini visualização da nuvem (densidade) ---
+        drawMiniPointCloud();
     }
 
     requestAnimationFrame(processFrame);
+}
+
+// desenha mini-visualização a partir de pointCloud (usa x,y em mm)
+function drawMiniPointCloud() {
+    const w = miniCanvas.width;
+    const h = miniCanvas.height;
+    // limpar
+    miniCtx.clearRect(0, 0, w, h);
+    // fundo escuro
+    miniCtx.fillStyle = "#000";
+    miniCtx.fillRect(0, 0, w, h);
+
+    if (!pointCloud || pointCloud.length === 0) {
+        // texto de ajuda
+        miniCtx.fillStyle = "#666";
+        miniCtx.font = "12px Arial";
+        miniCtx.fillText("nenhum ponto", 8, 18);
+        return;
+    }
+
+    // calcular bounding box em X e Y
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pointCloud) {
+        if (typeof p.x !== "number" || typeof p.y !== "number") continue;
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    if (!isFinite(minX) || !isFinite(minY)) {
+        miniCtx.fillStyle = "#666";
+        miniCtx.fillText("dados insuf.", 8, 18);
+        return;
+    }
+
+    // pad small margin
+    const pad = 8;
+    let dx = maxX - minX;
+    let dy = maxY - minY;
+    if (dx < 1e-6) dx = 1;
+    if (dy < 1e-6) dy = 1;
+
+    // map point -> mini canvas coordinates (centered)
+    for (const p of pointCloud) {
+        if (typeof p.x !== "number" || typeof p.y !== "number") continue;
+        const nx = (p.x - minX) / dx;
+        const ny = (p.y - minY) / dy;
+        // invert y so smaller y is top (optional)
+        const sx = pad + nx * (w - pad * 2);
+        const sy = pad + (1 - ny) * (h - pad * 2);
+        // draw small rectangle for density
+        miniCtx.fillStyle = "rgba(255,182,193,0.9)"; // lightpink-ish for visibility
+        miniCtx.fillRect(Math.round(sx) - 1, Math.round(sy) - 1, 2, 2);
+    }
+
+    // optional border
+    miniCtx.strokeStyle = "rgba(255,255,255,0.04)";
+    miniCtx.strokeRect(0.5, 0.5, w-1, h-1);
 }
