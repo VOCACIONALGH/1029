@@ -40,6 +40,10 @@ let cameraX_mm = 0; // posição atual da câmera no referencial (mm)
 let cameraY_mm = 0;
 let cameraZ_mm = null;
 
+let isRecording = false; // true enquanto a calibração está registrando frames
+let calibrationLog = []; // array para armazenar os frames durante calibração
+let calibrationStartTime = null;
+
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -71,62 +75,111 @@ scanBtn.addEventListener("click", async () => {
 });
 
 calibrateBtn.addEventListener("click", () => {
-    // ao calibrar: trava a escala atual e pede +Z ao usuário
-    if (!lastAvgPx || lastAvgPx <= 0) {
-        alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
+    // Se ainda não calibrado, tenta iniciar a calibração (travar escala e pedir +Z)
+    if (!isCalibrated) {
+        if (!lastAvgPx || lastAvgPx <= 0) {
+            alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
+            return;
+        }
+        if (currentOriginX === null || currentOriginY === null) {
+            alert("Impossível calibrar: origem (ponto branco) não detectada no momento.");
+            return;
+        }
+
+        // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
+        const currentPixelPerMM = lastAvgPx / 100; // px por mm para 100 mm
+        pixelPerMM_locked = currentPixelPerMM;
+        calibration_px = lastAvgPx;
+
+        // registrar posição da origem na tela no momento da calibração
+        originCalX = currentOriginX;
+        originCalY = currentOriginY;
+
+        const input = prompt("Informe o valor atual de +Z em milímetros (por exemplo: 250):");
+        if (!input) {
+            // desfazer travamento se usuário cancelar
+            pixelPerMM_locked = null;
+            calibration_px = null;
+            originCalX = null;
+            originCalY = null;
+            isCalibrated = false;
+            scaleLockEl.textContent = "aberta";
+            return;
+        }
+
+        const zVal = parseFloat(input.replace(",", "."));
+        if (isNaN(zVal) || zVal <= 0) {
+            alert("Valor de +Z inválido. Calibração cancelada.");
+            pixelPerMM_locked = null;
+            calibration_px = null;
+            originCalX = null;
+            originCalY = null;
+            isCalibrated = false;
+            scaleLockEl.textContent = "aberta";
+            return;
+        }
+
+        calibrationZ_mm = zVal;
+        isCalibrated = true;
+        scaleLockEl.textContent = "travada";
+
+        // inicializar câmera: considerada sob a origem no momento da calibração
+        cameraX_mm = 0;
+        cameraY_mm = 0;
+        cameraZ_mm = calibrationZ_mm;
+
+        // iniciar gravação dos frames de calibração
+        isRecording = true;
+        calibrationLog = [];
+        calibrationStartTime = Date.now();
+
+        // atualizar UI
+        zCameraEl.textContent = cameraZ_mm.toFixed(2);
+        xCameraEl.textContent = cameraX_mm.toFixed(2);
+        yCameraEl.textContent = cameraY_mm.toFixed(2);
+
         return;
     }
-    if (currentOriginX === null || currentOriginY === null) {
-        alert("Impossível calibrar: origem (ponto branco) não detectada no momento.");
+
+    // Se já estava calibrado e a gravação está ativa, ao clicar novamente finalizamos e baixamos o JSON
+    if (isCalibrated && isRecording) {
+        isRecording = false;
+
+        // preparar objeto para exportar
+        const exportObj = {
+            meta: {
+                calibration_px: calibration_px,
+                calibrationZ_mm: calibrationZ_mm,
+                pixelPerMM_locked: pixelPerMM_locked,
+                originCalX: originCalX,
+                originCalY: originCalY,
+                calibrationStart: calibrationStartTime,
+                calibrationEnd: Date.now(),
+                frames: calibrationLog.length
+            },
+            frames: calibrationLog
+        };
+
+        const jsonStr = JSON.stringify(exportObj, null, 2);
+        const blob = new Blob([jsonStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const ts = (new Date()).toISOString().replace(/[:.]/g, "-");
+        a.href = url;
+        a.download = `calibration_log_${ts}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        alert("Calibração finalizada. Arquivo JSON baixado.");
+
+        // manter isCalibrated = true (escala travada) mas gravação parada
         return;
     }
 
-    // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
-    const currentPixelPerMM = lastAvgPx / 100; // px por mm para 100 mm
-    pixelPerMM_locked = currentPixelPerMM;
-    calibration_px = lastAvgPx;
-
-    // registrar posição da origem na tela no momento da calibração
-    originCalX = currentOriginX;
-    originCalY = currentOriginY;
-
-    const input = prompt("Informe o valor atual de +Z em milímetros (por exemplo: 250):");
-    if (!input) {
-        // desfazer travamento se usuário cancelar
-        pixelPerMM_locked = null;
-        calibration_px = null;
-        originCalX = null;
-        originCalY = null;
-        isCalibrated = false;
-        scaleLockEl.textContent = "aberta";
-        return;
-    }
-
-    const zVal = parseFloat(input.replace(",", "."));
-    if (isNaN(zVal) || zVal <= 0) {
-        alert("Valor de +Z inválido. Calibração cancelada.");
-        pixelPerMM_locked = null;
-        calibration_px = null;
-        originCalX = null;
-        originCalY = null;
-        isCalibrated = false;
-        scaleLockEl.textContent = "aberta";
-        return;
-    }
-
-    calibrationZ_mm = zVal;
-    isCalibrated = true;
-    scaleLockEl.textContent = "travada";
-
-    // inicializar câmera: considerada sob a origem no momento da calibração
-    cameraX_mm = 0;
-    cameraY_mm = 0;
-    cameraZ_mm = calibrationZ_mm;
-
-    // atualizar UI
-    zCameraEl.textContent = cameraZ_mm.toFixed(2);
-    xCameraEl.textContent = cameraX_mm.toFixed(2);
-    yCameraEl.textContent = cameraY_mm.toFixed(2);
+    // Se isCalibrated true mas isRecording false (calibração já finalizada), re-click poderá re-iniciar gravação?
+    // Por solicitação: apenas finalize e baixe. Não re-iniciamos automaticamente.
 });
 
 // lê orientações do dispositivo
@@ -389,15 +442,14 @@ function processFrame() {
             // - mais para baixo => maior +Y positivo -> use (currentY - originCalY)
             // - mais para a esquerda => maior +X positivo -> use (originCalX - currentX)
             const delta_px_x = originCalX - currentOriginX; // positivo quando origem foi para a esquerda
-            const delta_px_y = currentOriginY - originCalY; // positive when origin moved down
+            const delta_px_y = currentOriginY - originCalY; // positivo quando origem moved down
 
             // converter para mm usando escala travada
             const dx_mm_image = delta_px_x / pixelPerMM_locked;
             const dy_mm_image = delta_px_y / pixelPerMM_locked;
-            const dz_mm_image = cameraZ_mm !== null ? cameraZ_mm : 0; // depth at current frame
 
             // vetor em coordenadas da câmera/imagem (x right, y down, z forward)
-            const camVec = [dx_mm_image, dy_mm_image, 0]; // we are computing XY translation, Z handled separately
+            const camVec = [dx_mm_image, dy_mm_image, 0]; // XY translation
 
             // transformar pelo R (Yaw,Pitch,Roll)
             const R = getRotationMatrix(yaw, pitch, roll);
@@ -410,23 +462,32 @@ function processFrame() {
             xCameraEl.textContent = cameraX_mm.toFixed(2);
             yCameraEl.textContent = cameraY_mm.toFixed(2);
         } else {
-            // sem calibração mostrar hífen
             xCameraEl.textContent = "-";
             yCameraEl.textContent = "-";
         }
 
-        // mostrar +Z transformado (se disponível) — já calculado antes
+        // mostrar +Z transformado (se disponível)
         if (isCalibrated && cameraZ_mm !== null) {
-            // transformar (0,0,Z) da câmera para mundo: o Z transformado já é mostrado em zWorld no bloco anterior
-            // aqui apenas mantemos o zWorld calculado anteriormente (quando se usou getRotationMatrix sobre camVec)
-            // (o cálculo de zWorld foi feito antes com camVec contendo dz_mm; repetimos de forma simples)
-            // Para consistência, vamos calcular a transformação do vetor (0,0,cameraZ_mm)
             const camVecZ = [0, 0, cameraZ_mm];
             const R2 = getRotationMatrix(yaw, pitch, roll);
             const worldZVec = matMulVec(R2, camVecZ);
             zWorldEl.textContent = worldZVec[2].toFixed(2);
         } else {
             zWorldEl.textContent = "-";
+        }
+
+        // se em gravação de calibração, adicionar registro do frame atual no log
+        if (isRecording) {
+            const record = {
+                t: Date.now(),
+                x_mm: (typeof cameraX_mm === "number") ? cameraX_mm : null,
+                y_mm: (typeof cameraY_mm === "number") ? cameraY_mm : null,
+                z_mm: (typeof cameraZ_mm === "number") ? cameraZ_mm : null,
+                pitch: pitch,
+                yaw: yaw,
+                roll: roll
+            };
+            calibrationLog.push(record);
         }
     }
 
