@@ -1,5 +1,6 @@
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
+const downloadBtn = document.getElementById("downloadBtn"); // novo botão
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -99,6 +100,31 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
+// Evento do botão download: gera arquivo JSON da nuvem triangulada no formato { points: [...], meta: {...} }
+downloadBtn.addEventListener("click", () => {
+    // gerar arquivo apenas com os pontos triangulados atuais
+    const payload = {
+        meta: {
+            generatedAt: Date.now(),
+            pointCount: triangulatedPoints.length,
+            nRaysRequired: nRaysRequired
+        },
+        points: triangulatedPoints
+    };
+
+    const jsonStr = JSON.stringify(payload, null, 2);
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = (new Date()).toISOString().replace(/[:.]/g, "-");
+    a.href = url;
+    a.download = `pointcloud_${ts}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+});
+
 calibrateBtn.addEventListener("click", () => {
     // Inicia calibração quando ainda não calibrado
     if (!isCalibrated) {
@@ -190,6 +216,10 @@ calibrateBtn.addEventListener("click", () => {
         triangulatedCount = 0;
         triangulatedCountEl.textContent = triangulatedCount.toString();
 
+        // mostrar botão de download durante calibração
+        downloadBtn.style.display = "inline-block";
+        downloadBtn.disabled = true; // inicialmente desabilitado enquanto não houver pontos
+
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
         xCameraEl.textContent = cameraX_mm.toFixed(2);
@@ -201,6 +231,9 @@ calibrateBtn.addEventListener("click", () => {
     // Finaliza calibração (se estava gravando) e baixa JSON
     if (isCalibrated && isRecording) {
         isRecording = false;
+
+        // esconder botão de download após finalização (mas permitir download final via export JSON já existente)
+        downloadBtn.style.display = "none";
 
         const exportObj = {
             meta: {
@@ -671,6 +704,11 @@ function processFrame() {
                                 triangulatedPoints.push(tri);
                                 triangulatedCount++;
                                 triangulatedCountEl.textContent = triangulatedCount.toString();
+
+                                // habilitar botão de download se houver pelo menos 1 ponto
+                                if (triangulatedPoints.length > 0) {
+                                    downloadBtn.disabled = false;
+                                }
                             }
                             // remover os raios usados (consumir a janela)
                             pendingRaysForTriang = pendingRaysForTriang.slice(nRaysRequired);
