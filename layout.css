@@ -68,6 +68,13 @@ input[type="range"] {
 #pinkDirContainer {
     color: #fff;
     font-size: 14px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+#rotatedContainer {
+    color: #fff;
+    font-size: 14px;
     margin-bottom: 12px;
     text-align: center;
 }
