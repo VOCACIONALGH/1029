@@ -178,8 +178,7 @@ calibrateBtn.addEventListener("click", () => {
         return;
     }
 
-    // Se isCalibrated true mas isRecording false (calibração já finalizada), re-click poderá re-iniciar gravação?
-    // Por solicitação: apenas finalize e baixe. Não re-iniciamos automaticamente.
+    // Se isCalibrated true mas isRecording false (calibração já finalizada), re-click não re-inicia automaticamente
 });
 
 // lê orientações do dispositivo
@@ -409,6 +408,10 @@ function processFrame() {
 
         // desenhar setas com comprimento correspondente a 100 mm usando escala atual/travada
         const effectivePixelPerMM = (isCalibrated && pixelPerMM_locked !== null) ? pixelPerMM_locked : pixelPerMM_current;
+
+        // vars para endpoints em pixels (usadas para desenhar o plano)
+        let exX = null, exY = null, eyX = null, eyY = null, cornerX = null, cornerY = null;
+
         if (cb && effectivePixelPerMM > 0) {
             const desiredPx = effectivePixelPerMM * 100;
 
@@ -417,9 +420,9 @@ function processFrame() {
                 let dy = by - oy;
                 let norm = Math.hypot(dx, dy);
                 if (norm > 0) {
-                    const ex = ox + (dx / norm) * desiredPx;
-                    const ey = oy + (dy / norm) * desiredPx;
-                    drawArrow(ox, oy, ex, ey, "blue");
+                    exX = ox + (dx / norm) * desiredPx;
+                    exY = oy + (dy / norm) * desiredPx;
+                    drawArrow(ox, oy, exX, exY, "blue");
                 }
             }
 
@@ -428,11 +431,42 @@ function processFrame() {
                 let dy2 = gy - oy;
                 let norm2 = Math.hypot(dx2, dy2);
                 if (norm2 > 0) {
-                    const ex2 = ox + (dx2 / norm2) * desiredPx;
-                    const ey2 = oy + (dy2 / norm2) * desiredPx;
-                    drawArrow(ox, oy, ex2, ey2, "green");
+                    eyX = ox + (dx2 / norm2) * desiredPx;
+                    eyY = oy + (dy2 / norm2) * desiredPx;
+                    drawArrow(ox, oy, eyX, eyY, "green");
                 }
             }
+        }
+
+        // desenhar o plano XY durante a calibragem (área azul claro cujos lados são as setas)
+        // condição: estamos gravando (isRecording) e temos origem + ambos vetores calculados
+        if (isRecording && cb && exX !== null && eyX !== null) {
+            // corner = ex + ey - origin  (pixel coordinates)
+            cornerX = exX + eyX - ox;
+            cornerY = exY + eyY - oy;
+
+            // preencher o paralelogramo origin -> ex -> corner -> ey
+            ctx.save();
+            ctx.fillStyle = 'rgba(173,216,230,0.35)'; // lightblue com transparência
+            ctx.beginPath();
+            ctx.moveTo(ox, oy);
+            ctx.lineTo(exX, exY);
+            ctx.lineTo(cornerX, cornerY);
+            ctx.lineTo(eyX, eyY);
+            ctx.closePath();
+            ctx.fill();
+
+            // opcional: borda leve
+            ctx.strokeStyle = 'rgba(173,216,230,0.9)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(ox, oy);
+            ctx.lineTo(exX, exY);
+            ctx.lineTo(cornerX, cornerY);
+            ctx.lineTo(eyX, eyY);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
         }
 
         // calcular translação da câmera em +X e +Y após calibração
