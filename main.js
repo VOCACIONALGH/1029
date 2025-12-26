@@ -11,92 +11,23 @@ const greenSlider = document.getElementById("greenThreshold");
 const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
+
 const scaleEl = document.getElementById("scale");
-const scaleStatusEl = document.getElementById("scaleStatus");
-const zEl = document.getElementById("zValue");
-const xEl = document.getElementById("xValue");
-const yEl = document.getElementById("yValue");
+const scaleLockEl = document.getElementById("scaleLock");
+const scaleStatus = document.getElementById("scaleStatus");
 
-let pitch = 0;
-let yaw = 0;
-let roll = 0;
+const zCameraEl = document.getElementById("zCamera");
+const zWorldEl = document.getElementById("zWorld");
 
-let scaleLocked = false;
-let lockedPixelPerMM = 0; // valor travado de px/mm
-let calibK = null; // constante de calibração K = Z_calib * L_calib (mm * px)
-let L_calib_px = 0;
-let Z_calib_mm = 0;
+let pitch = 0, yaw = 0, roll = 0;
 
-// referência da origem na tela no momento da calibração (em pixels)
-let refOriginX = null;
-let refOriginY = null;
+let pixelPerMM_current = 0;   // atualizado dinamicamente
+let pixelPerMM_locked = null; // valor travado após calibrar
+let calibration_px = null;    // px observado quando calibrado (média)
+let calibrationZ_mm = null;   // +Z informado pelo usuário durante calibração
+let isCalibrated = false;
 
-// últimos valores detectados por frame (para calibração & translação)
-let lastOriginX = null;
-let lastOriginY = null;
-let lastDistBlue = 0;
-let lastDistGreen = 0;
-let lastPixelPerMM = 0;
-
-// gravação durante a calibragem
-let calibrating = false;
-let recordedFrames = [];
-
-// --- utilitários de rotação (Euler -> matriz) ---
-function deg2rad(d) { return d * Math.PI / 180; }
-
-// Monta matriz de rotação R = Rz(yaw) * Rx(pitch) * Ry(roll)
-// Notas: usamos convensão similar ao deviceorientation: pitch = beta (rot X), yaw = alpha (rot Z), roll = gamma (rot Y)
-function eulerToRotationMatrix(pitchDeg, yawDeg, rollDeg) {
-    const p = deg2rad(pitchDeg);
-    const y = deg2rad(yawDeg);
-    const r = deg2rad(rollDeg);
-
-    const Rx = [
-        [1, 0, 0],
-        [0, Math.cos(p), -Math.sin(p)],
-        [0, Math.sin(p),  Math.cos(p)]
-    ];
-
-    const Ry = [
-        [ Math.cos(r), 0, Math.sin(r)],
-        [ 0,          1, 0],
-        [-Math.sin(r), 0, Math.cos(r)]
-    ];
-
-    const Rz = [
-        [Math.cos(y), -Math.sin(y), 0],
-        [Math.sin(y),  Math.cos(y), 0],
-        [0, 0, 1]
-    ];
-
-    // multiply Rz * Rx * Ry  (matrix multiplication)
-    function mul(A, B) {
-        const C = Array(A.length).fill(0).map(()=>Array(B[0].length).fill(0));
-        for (let i=0;i<A.length;i++){
-            for (let j=0;j<B[0].length;j++){
-                for (let k=0;k<A[0].length;k++){
-                    C[i][j] += A[i][k]*B[k][j];
-                }
-            }
-        }
-        return C;
-    }
-
-    const Rzx = mul(Rz, Rx);
-    const R = mul(Rzx, Ry);
-    return R; // 3x3
-}
-
-function matMulVec(M, v) {
-    return [
-        M[0][0]*v[0] + M[0][1]*v[1] + M[0][2]*v[2],
-        M[1][0]*v[0] + M[1][1]*v[1] + M[1][2]*v[2],
-        M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2],
-    ];
-}
-
-// ------------------------------------------------------------------
+let lastAvgPx = null; // último avg px calculado (entre origem e pontos)
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -114,6 +45,7 @@ scanBtn.addEventListener("click", async () => {
         processFrame();
     };
 
+    // solicitar permissão para deviceorientation em iOS se necessário
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
         try {
@@ -128,122 +60,64 @@ scanBtn.addEventListener("click", async () => {
 });
 
 calibrateBtn.addEventListener("click", () => {
-    if (!calibrating) {
-        // iniciar calibragem (comportamento existente) + iniciar gravação
-        if (!lastPixelPerMM || lastPixelPerMM <= 0) {
-            alert("Escala inválida no momento. Não é possível calibrar. Certifique-se de que há pontos detectados.");
-            return;
-        }
-
-        lockedPixelPerMM = lastPixelPerMM;
-        scaleLocked = true;
-        scaleStatusEl.textContent = "(travada)";
-
-        if (lastDistBlue > 0 && lastDistGreen > 0) {
-            L_calib_px = (lastDistBlue + lastDistGreen) / 2;
-        } else if (lastDistBlue > 0) {
-            L_calib_px = lastDistBlue;
-        } else if (lastDistGreen > 0) {
-            L_calib_px = lastDistGreen;
-        } else {
-            alert("Não há distâncias válidas (azul/verde) para calibração. Posicione os marcadores corretamente antes de calibrar.");
-            scaleLocked = false;
-            lockedPixelPerMM = 0;
-            scaleStatusEl.textContent = "";
-            return;
-        }
-
-        if (lastOriginX == null || lastOriginY == null) {
-            alert("Origem não detectada no momento. Posicione a origem antes de calibrar.");
-            scaleLocked = false;
-            lockedPixelPerMM = 0;
-            scaleStatusEl.textContent = "";
-            return;
-        }
-        refOriginX = lastOriginX;
-        refOriginY = lastOriginY;
-
-        const input = prompt("Informe o valor atual de +Z em mm (ex.: 200):", "200");
-        if (input === null) {
-            scaleLocked = false;
-            lockedPixelPerMM = 0;
-            scaleStatusEl.textContent = "";
-            refOriginX = null;
-            refOriginY = null;
-            return;
-        }
-        const zVal = parseFloat(input);
-        if (isNaN(zVal) || zVal <= 0) {
-            alert("Valor de +Z inválido. Calibração cancelada.");
-            scaleLocked = false;
-            lockedPixelPerMM = 0;
-            scaleStatusEl.textContent = "";
-            refOriginX = null;
-            refOriginY = null;
-            return;
-        }
-
-        Z_calib_mm = zVal;
-        calibK = Z_calib_mm * L_calib_px;
-
-        // iniciar processo de gravação
-        recordedFrames = [];
-        calibrating = true;
-        calibrateBtn.textContent = "FINALIZAR CALIBRAGEM";
-
-        zEl.textContent = Z_calib_mm.toFixed(2);
-        scaleEl.textContent = lockedPixelPerMM.toFixed(3);
-
-    } else {
-        // finalizar calibragem e disparar download JSON (comportamento existente)
-        calibrating = false;
-        calibrateBtn.textContent = "CALIBRAR";
-
-        const now = new Date();
-        const pad = (n) => n.toString().padStart(2, "0");
-        const fname = `calibragem-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`;
-
-        const blob = new Blob([JSON.stringify(recordedFrames, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fname;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-            URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-        }, 500);
-
-        recordedFrames = [];
-        alert("Calibração finalizada. Arquivo JSON gerado.");
+    // ao calibrar: trava a escala atual e pede +Z ao usuário
+    if (!lastAvgPx || lastAvgPx <= 0) {
+        alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
+        return;
     }
+
+    // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
+    const currentPixelPerMM = lastAvgPx / 100; // px por mm para 100 mm
+    pixelPerMM_locked = currentPixelPerMM;
+    calibration_px = lastAvgPx;
+
+    const input = prompt("Informe o valor atual de +Z em milímetros (por exemplo: 250):");
+    if (!input) {
+        // desfazer travamento se usuário cancelar
+        pixelPerMM_locked = null;
+        calibration_px = null;
+        isCalibrated = false;
+        scaleLockEl.textContent = "aberta";
+        return;
+    }
+
+    const zVal = parseFloat(input.replace(",", "."));
+    if (isNaN(zVal) || zVal <= 0) {
+        alert("Valor de +Z inválido. Calibração cancelada.");
+        pixelPerMM_locked = null;
+        calibration_px = null;
+        isCalibrated = false;
+        scaleLockEl.textContent = "aberta";
+        return;
+    }
+
+    calibrationZ_mm = zVal;
+    isCalibrated = true;
+    scaleLockEl.textContent = "travada";
+    // mostrar valor travado
+    scaleEl.textContent = pixelPerMM_locked.toFixed(3);
 });
 
+// lê orientações do dispositivo
 function onOrientation(e) {
-    pitch = e.beta || 0;   // X
-    yaw   = e.alpha || 0;  // Z
-    roll  = e.gamma || 0;  // Y
+    // alpha = yaw (z), beta = pitch (x), gamma = roll (y)
+    pitch = e.beta || 0;
+    yaw = e.alpha || 0;
+    roll = e.gamma || 0;
 
     pitchEl.textContent = pitch.toFixed(1);
-    yawEl.textContent   = yaw.toFixed(1);
-    rollEl.textContent  = roll.toFixed(1);
+    yawEl.textContent = yaw.toFixed(1);
+    rollEl.textContent = roll.toFixed(1);
 }
 
-// Função utilitária RGB -> HSV
+// converter RGB para HSV
 function rgbToHsv(r, g, b) {
-    r /= 255;
-    g /= 255;
-    b /= 255;
-
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
     const d = max - min;
-
     let h = 0;
     let s = max === 0 ? 0 : d / max;
     let v = max;
-
     if (d !== 0) {
         switch (max) {
             case r: h = ((g - b) / d) % 6; break;
@@ -253,10 +127,10 @@ function rgbToHsv(r, g, b) {
         h *= 60;
         if (h < 0) h += 360;
     }
-
     return { h, s, v };
 }
 
+// desenha uma seta entre dois pontos
 function drawArrow(x1, y1, x2, y2, color) {
     const headLength = 10;
     const angle = Math.atan2(y2 - y1, x2 - x1);
@@ -284,256 +158,220 @@ function drawArrow(x1, y1, x2, y2, color) {
     ctx.fill();
 }
 
+// cria matriz de rotação a partir de yaw(alpha), pitch(beta), roll(gamma) em graus
+function getRotationMatrix(alphaDeg, betaDeg, gammaDeg) {
+    const a = alphaDeg * Math.PI / 180; // yaw (z)
+    const b = betaDeg * Math.PI / 180;  // pitch (x)
+    const g = gammaDeg * Math.PI / 180; // roll (y)
+
+    // Rz(alpha)
+    const Rz = [
+        [Math.cos(a), -Math.sin(a), 0],
+        [Math.sin(a),  Math.cos(a), 0],
+        [0, 0, 1]
+    ];
+    // Rx(beta)
+    const Rx = [
+        [1, 0, 0],
+        [0, Math.cos(b), -Math.sin(b)],
+        [0, Math.sin(b),  Math.cos(b)]
+    ];
+    // Ry(gamma)
+    const Ry = [
+        [ Math.cos(g), 0, Math.sin(g)],
+        [ 0, 1, 0],
+        [-Math.sin(g), 0, Math.cos(g)]
+    ];
+
+    // R = Rz * Rx * Ry  (ordem: yaw, pitch, roll)
+    function mul(A, B) {
+        const C = Array(A.length).fill(0).map(()=>Array(B[0].length).fill(0));
+        for (let i=0;i<A.length;i++){
+            for (let j=0;j<B[0].length;j++){
+                for (let k=0;k<B.length;k++){
+                    C[i][j] += A[i][k]*B[k][j];
+                }
+            }
+        }
+        return C;
+    }
+
+    const RzRx = mul(Rz, Rx);
+    const R = mul(RzRx, Ry);
+    return R;
+}
+
+// multiplica matriz 3x3 por vetor 3x1
+function matMulVec(M, v) {
+    return [
+        M[0][0]*v[0] + M[0][1]*v[1] + M[0][2]*v[2],
+        M[1][0]*v[0] + M[1][1]*v[1] + M[1][2]*v[2],
+        M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2],
+    ];
+}
+
 function processFrame() {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (video.readyState >= 2) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = frame.data;
+        const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = frame.data;
 
-    const vBlack = blackSlider.value / 100;
-    const sBlue = blueSlider.value / 100;
-    const sGreen = greenSlider.value / 100;
+        const vBlack = blackSlider.value / 100;
+        const sBlue = blueSlider.value / 100;
+        const sGreen = greenSlider.value / 100;
 
-    let sbx = 0, sby = 0, cb = 0;
-    let blx = 0, bly = 0, cbl = 0;
-    let grx = 0, gry = 0, cgr = 0;
+        let sbx = 0, sby = 0, cb = 0;
+        let blx = 0, bly = 0, cbl = 0;
+        let grx = 0, gry = 0, cgr = 0;
 
-    for (let i = 0; i < data.length; i += 4) {
-        const hsv = rgbToHsv(data[i], data[i + 1], data[i + 2]);
+        for (let i = 0; i < data.length; i += 4) {
+            const hsv = rgbToHsv(data[i], data[i + 1], data[i + 2]);
 
-        const idx = i / 4;
-        const x = idx % canvas.width;
-        const y = Math.floor(idx / canvas.width);
+            const idx = i / 4;
+            const x = idx % canvas.width;
+            const y = Math.floor(idx / canvas.width);
 
-        if (hsv.v < vBlack) {
-            data[i] = 255; data[i + 1] = 165; data[i + 2] = 0;
-            sbx += x; sby += y; cb++;
-        } else if (hsv.h >= 200 && hsv.h <= 260 && hsv.s > sBlue) {
-            data[i] = 255; data[i + 1] = 255; data[i + 2] = 255;
-            blx += x; bly += y; cbl++;
-        } else if (hsv.h >= 90 && hsv.h <= 150 && hsv.s > sGreen) {
-            data[i] = 128; data[i + 1] = 0; data[i + 2] = 128;
-            grx += x; gry += y; cgr++;
-        }
-    }
-
-    ctx.putImageData(frame, 0, 0);
-
-    let ox, oy, bx, by, gx, gy;
-    let distBlue = 0, distGreen = 0, nDist = 0;
-
-    if (cb) {
-        ox = sbx / cb; oy = sby / cb;
-        ctx.fillStyle = "white";
-        ctx.beginPath(); ctx.arc(ox, oy, 4, 0, Math.PI * 2); ctx.fill();
-        lastOriginX = ox;
-        lastOriginY = oy;
-    } else {
-        lastOriginX = null;
-        lastOriginY = null;
-    }
-    if (cbl) {
-        bx = blx / cbl; by = bly / cbl;
-        ctx.fillStyle = "blue";
-        ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
-        if (cb) {
-            distBlue = Math.hypot(bx - ox, by - oy);
-            nDist++;
-        }
-    }
-    if (cgr) {
-        gx = grx / cgr; gy = gry / cgr;
-        ctx.fillStyle = "green";
-        ctx.beginPath(); ctx.arc(gx, gy, 4, 0, Math.PI * 2); ctx.fill();
-        if (cb) {
-            distGreen = Math.hypot(gx - ox, gy - oy);
-            nDist++;
-        }
-    }
-
-    // atualizar variáveis last para possível calibração
-    lastDistBlue = distBlue;
-    lastDistGreen = distGreen;
-
-    // Calcular escala px/mm usando a(s) distância(s) detectada(s) entre origem e pontos.
-    let pixelPerMM = 0;
-    if (nDist > 0) {
-        const avgPx = (distBlue + distGreen) / nDist; // média das distâncias em pixels
-        pixelPerMM = avgPx / 100; // px por mm
-        lastPixelPerMM = pixelPerMM;
-    }
-
-    // Se a escala estiver travada, use o valor travado para exibir.
-    if (scaleLocked && lockedPixelPerMM > 0) {
-        scaleEl.textContent = lockedPixelPerMM.toFixed(3);
-        scaleStatusEl.textContent = "(travada)";
-    } else {
-        if (pixelPerMM > 0) {
-            scaleEl.textContent = pixelPerMM.toFixed(3);
-            scaleStatusEl.textContent = "";
-        } else {
-            scaleEl.textContent = "-";
-            scaleStatusEl.textContent = "";
-        }
-    }
-
-    // Determinar pixelPerMM usado para desenhar setas (travado ou atual)
-    const usedPixelPerMM = (scaleLocked && lockedPixelPerMM > 0) ? lockedPixelPerMM : pixelPerMM;
-
-    // calcular e desenhar setas originais (direções). Guardar endpoints para pintura do plano.
-    let blueEnd = null;
-    let greenEnd = null;
-
-    if (cb && usedPixelPerMM > 0) {
-        const desiredPx = usedPixelPerMM * 100; // comprimento em pixels para 100 mm
-
-        if (cbl) {
-            // direção do azul
-            let dx = bx - ox;
-            let dy = by - oy;
-            let norm = Math.hypot(dx, dy);
-            if (norm > 0) {
-                const ex = ox + (dx / norm) * desiredPx;
-                const ey = oy + (dy / norm) * desiredPx;
-                drawArrow(ox, oy, ex, ey, "blue");
-                blueEnd = { x: ex, y: ey };
+            if (hsv.v < vBlack) {
+                data[i] = 255; data[i + 1] = 165; data[i + 2] = 0;
+                sbx += x; sby += y; cb++;
+            } else if (hsv.h >= 200 && hsv.h <= 260 && hsv.s > sBlue) {
+                data[i] = 255; data[i + 1] = 255; data[i + 2] = 255;
+                blx += x; bly += y; cbl++;
+            } else if (hsv.h >= 90 && hsv.h <= 150 && hsv.s > sGreen) {
+                data[i] = 128; data[i + 1] = 0; data[i + 2] = 128;
+                grx += x; gry += y; cgr++;
             }
         }
 
-        if (cgr) {
-            // direção do verde
-            let dx2 = gx - ox;
-            let dy2 = gy - oy;
-            let norm2 = Math.hypot(dx2, dy2);
-            if (norm2 > 0) {
-                const ex2 = ox + (dx2 / norm2) * desiredPx;
-                const ey2 = oy + (dy2 / norm2) * desiredPx;
-                drawArrow(ox, oy, ex2, ey2, "green");
-                greenEnd = { x: ex2, y: ey2 };
+        ctx.putImageData(frame, 0, 0);
+
+        let ox, oy, bx, by, gx, gy;
+        let distBlue = 0, distGreen = 0, nDist = 0;
+
+        if (cb > 0) {
+            ox = sbx / cb;
+            oy = sby / cb;
+            ctx.fillStyle = "white";
+            ctx.beginPath(); ctx.arc(ox, oy, 4, 0, Math.PI * 2); ctx.fill();
+        }
+
+        if (cbl > 0) {
+            bx = blx / cbl;
+            by = bly / cbl;
+            ctx.fillStyle = "blue";
+            ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
+            if (cb) {
+                distBlue = Math.hypot(bx - ox, by - oy);
+                nDist++;
             }
         }
-    }
 
-    // --- NOVO: durante a calibragem, calcular o plano XY usando pose, origem e vetores,
-    // e pintar o plano como um polígono azul-claro com lados sendo as setas ---
-    if (calibrating && cb && blueEnd && greenEnd) {
-        // canto 1: origem (ox,oy)
-        // canto 2: azulEnd (blueEnd.x, blueEnd.y)
-        // canto 3: blueEnd + (greenEnd - origin) = blueEnd + (gx-ox, gy-oy)
-        const corner3x = blueEnd.x + (greenEnd.x - ox);
-        const corner3y = blueEnd.y + (greenEnd.y - oy);
-        // canto 4: greenEnd
-        const corner4x = greenEnd.x;
-        const corner4y = greenEnd.y;
-
-        // desenhar polígono preenchido (azul claro)
-        ctx.save();
-        ctx.globalAlpha = 0.35;
-        ctx.fillStyle = 'lightblue';
-        ctx.beginPath();
-        ctx.moveTo(ox, oy);
-        ctx.lineTo(blueEnd.x, blueEnd.y);
-        ctx.lineTo(corner3x, corner3y);
-        ctx.lineTo(greenEnd.x, greenEnd.y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-
-        // --- calcular o plano em coordenadas do mundo usando pose e vetores ---
-        // Converter vetores de tela (px) para mm usando a escala travada (lockedPixelPerMM)
-        // vx_cam_mm = (blueEnd - origin) / px_per_mm
-        const vx_mm = {
-            x: (blueEnd.x - ox) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
-            y: (blueEnd.y - oy) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
-            z: 0
-        };
-        const vy_mm = {
-            x: (greenEnd.x - ox) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
-            y: (greenEnd.y - oy) / ((usedPixelPerMM > 0) ? usedPixelPerMM : 1),
-            z: 0
-        };
-
-        // Interpretamos o vetor (x positive → para a direita da tela, y positive → para baixo da tela)
-        // como vetores no sistema de coordenadas da câmera (em mm). Agora aplicamos a rotação da câmera
-        // (Euler pitch, yaw, roll) para obter vetores no sistema de coordenadas do mundo.
-        const R = eulerToRotationMatrix(pitch, yaw, roll);
-
-        // vetor mundo = R * vetor_camera
-        const vx_world = matMulVec(R, [vx_mm.x, vx_mm.y, vx_mm.z]);
-        const vy_world = matMulVec(R, [vy_mm.x, vy_mm.y, vy_mm.z]);
-
-        // normal do plano = vx_world × vy_world
-        const nx = vx_world[1]*vy_world[2] - vx_world[2]*vy_world[1];
-        const ny = vx_world[2]*vy_world[0] - vx_world[0]*vy_world[2];
-        const nz = vx_world[0]*vy_world[1] - vx_world[1]*vy_world[0];
-
-        // normal unitário:
-        const nnorm = Math.hypot(nx, ny, nz) || 1;
-        const normalWorld = { x: nx/nnorm, y: ny/nnorm, z: nz/nnorm };
-
-        // ponto no plano (world) — assumimos origem do plano como (0,0,0) no sistema de referência do objeto
-        // (essa convenção segue a calibração onde a câmera estava acima da origem)
-        const planePointWorld = { x: 0, y: 0, z: 0 };
-        // plano em forma ax + by + cz + d = 0 -> d = -normal ⋅ point
-        const planeD = -(normalWorld.x*planePointWorld.x + normalWorld.y*planePointWorld.y + normalWorld.z*planePointWorld.z);
-
-        // note: os valores world acima são calculados conforme solicitado (pose + origem + vetores).
-        // não alteram a UI; ficam disponíveis aqui caso queira exportar ou salvar depois.
-
-        // (opcional) -- nada a mais salvo; continuamos a gravação como antes
-    }
-
-    // --- Calcular +Z atual a partir da calibração, se houver (Z = K / L) ---
-    let Zcur = null;
-    if (calibK !== null) {
-        let Lcur = 0;
-        let countL = 0;
-        if (distBlue > 0) { Lcur += distBlue; countL++; }
-        if (distGreen > 0) { Lcur += distGreen; countL++; }
-
-        if (countL > 0 && Lcur > 0) {
-            Lcur = Lcur / countL;
-            Zcur = calibK / Lcur;
-            zEl.textContent = Zcur.toFixed(2);
-        } else {
-            zEl.textContent = "-";
+        if (cgr > 0) {
+            gx = grx / cgr;
+            gy = gry / cgr;
+            ctx.fillStyle = "green";
+            ctx.beginPath(); ctx.arc(gx, gy, 4, 0, Math.PI * 2); ctx.fill();
+            if (cb) {
+                distGreen = Math.hypot(gx - ox, gy - oy);
+                nDist++;
+            }
         }
-    }
 
-    // Calcular translação +X / +Y se possível
-    let Xmm = null;
-    let Ymm = null;
-    if (calibK !== null && refOriginX !== null && refOriginY !== null && lastOriginX !== null && lastOriginY !== null && lockedPixelPerMM > 0) {
-        const delta_px_x = refOriginX - lastOriginX;
-        const delta_px_y = lastOriginY - refOriginY;
-
-        Xmm = delta_px_x / lockedPixelPerMM;
-        Ymm = delta_px_y / lockedPixelPerMM;
-
-        xEl.textContent = Xmm.toFixed(2);
-        yEl.textContent = Ymm.toFixed(2);
-    } else {
-        if (calibK === null) {
-            xEl.textContent = "-";
-            yEl.textContent = "-";
+        // média das distâncias observadas (em pixels)
+        let avgPx = null;
+        if (nDist > 0) {
+            avgPx = (distBlue + distGreen) / nDist;
+            lastAvgPx = avgPx;
         } else {
-            xEl.textContent = "-";
-            yEl.textContent = "-";
+            lastAvgPx = null;
         }
-    }
 
-    // se calibrando, gravar frame com os valores atuais (null quando não disponíveis)
-    if (calibrating) {
-        const entry = {
-            t: Date.now(),
-            x_mm: (Xmm !== null) ? Number(Xmm.toFixed(3)) : null,
-            y_mm: (Ymm !== null) ? Number(Ymm.toFixed(3)) : null,
-            z_mm: (Zcur !== null) ? Number(Zcur.toFixed(3)) : null,
-            pitch: (typeof pitch === "number") ? Number(pitch.toFixed(3)) : null,
-            yaw: (typeof yaw === "number") ? Number(yaw.toFixed(3)) : null,
-            roll: (typeof roll === "number") ? Number(roll.toFixed(3)) : null
-        };
-        recordedFrames.push(entry);
+        // escala px/mm (assumindo que as distâncias medidas correspondem a 100 mm)
+        if (!isCalibrated) {
+            if (avgPx && avgPx > 0) {
+                pixelPerMM_current = avgPx / 100;
+                scaleEl.textContent = pixelPerMM_current.toFixed(3);
+                scaleLockEl.textContent = "aberta";
+            } else {
+                pixelPerMM_current = 0;
+                scaleEl.textContent = "-";
+                scaleLockEl.textContent = "aberta";
+            }
+        } else {
+            // se calibrado, mostrar o valor travado
+            scaleEl.textContent = (pixelPerMM_locked !== null) ? pixelPerMM_locked.toFixed(3) : "-";
+            scaleLockEl.textContent = "travada";
+        }
+
+        // calcular +Z se calibrado
+        let zCamera = null; // Z em mm no referencial da câmera (estimado)
+        if (isCalibrated && lastAvgPx && lastAvgPx > 0 && calibration_px && calibrationZ_mm) {
+            // relação inversa proporcional (tamanho projetado ~ 1/Z)
+            zCamera = calibrationZ_mm * (calibration_px / lastAvgPx);
+            zCameraEl.textContent = zCamera.toFixed(2);
+        } else {
+            zCameraEl.textContent = "-";
+        }
+
+        // desenhar setas com comprimento correspondente a 100 mm usando escala atual/travada
+        // comprimento desejado em pixels: usar pixelPerMM_locked quando calibrado, ou pixelPerMM_current caso contrário
+        const effectivePixelPerMM = (isCalibrated && pixelPerMM_locked !== null) ? pixelPerMM_locked : pixelPerMM_current;
+        if (cb && effectivePixelPerMM > 0) {
+            const desiredPx = effectivePixelPerMM * 100;
+
+            if (cbl) {
+                let dx = bx - ox;
+                let dy = by - oy;
+                let norm = Math.hypot(dx, dy);
+                if (norm > 0) {
+                    const ex = ox + (dx / norm) * desiredPx;
+                    const ey = oy + (dy / norm) * desiredPx;
+                    drawArrow(ox, oy, ex, ey, "blue");
+                }
+            }
+
+            if (cgr) {
+                let dx2 = gx - ox;
+                let dy2 = gy - oy;
+                let norm2 = Math.hypot(dx2, dy2);
+                if (norm2 > 0) {
+                    const ex2 = ox + (dx2 / norm2) * desiredPx;
+                    const ey2 = oy + (dy2 / norm2) * desiredPx;
+                    drawArrow(ox, oy, ex2, ey2, "green");
+                }
+            }
+        }
+
+        // transformar deslocamentos medidos na imagem para deslocamentos no espaço (usar escala travada se houver)
+        if (isCalibrated && pixelPerMM_locked && cb) {
+            // preferimos usar os pontos detectados com a escala travada:
+            // dx_mm = (bx - ox) / pixelPerMM_locked
+            // dy_mm = (by - oy) / pixelPerMM_locked
+            // dz_mm = zCamera (estimado)
+            let dx_mm = 0, dy_mm = 0;
+            if (cbl) {
+                dx_mm = (bx - ox) / pixelPerMM_locked;
+                dy_mm = (by - oy) / pixelPerMM_locked;
+            } else if (cgr) {
+                dx_mm = (gx - ox) / pixelPerMM_locked;
+                dy_mm = (gy - oy) / pixelPerMM_locked;
+            }
+
+            const dz_mm = zCamera || 0;
+
+            // vetor em coordenadas da câmera (x: direita, y: baixo, z: frente)
+            const camVec = [dx_mm, dy_mm, dz_mm];
+
+            // obter matriz de rotação a partir dos ângulos atuais e multiplicar
+            const R = getRotationMatrix(yaw, pitch, roll); // note: getRotationMatrix espera (alpha=yaw, beta=pitch, gamma=roll)
+            const worldVec = matMulVec(R, camVec);
+
+            // mostrar componente Z do vetor transformado no espaço
+            zWorldEl.textContent = worldVec[2].toFixed(2);
+        } else {
+            zWorldEl.textContent = "-";
+        }
     }
 
     requestAnimationFrame(processFrame);
