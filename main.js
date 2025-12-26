@@ -1,6 +1,5 @@
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
-const downloadBtn = document.getElementById("downloadPointCloudBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -196,11 +195,6 @@ calibrateBtn.addEventListener("click", () => {
         xCameraEl.textContent = cameraX_mm.toFixed(2);
         yCameraEl.textContent = cameraY_mm.toFixed(2);
 
-        // Mostrar botão de download da nuvem de pontos durante a calibração
-        if (downloadBtn) {
-            downloadBtn.style.display = 'inline-block';
-        }
-
         return;
     }
 
@@ -240,11 +234,6 @@ calibrateBtn.addEventListener("click", () => {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-
-        // esconder botão de download da nuvem de pontos ao finalizar
-        if (downloadBtn) {
-            downloadBtn.style.display = 'none';
-        }
 
         alert("Calibração finalizada. Arquivo JSON baixado.");
         return;
@@ -679,7 +668,32 @@ function processFrame() {
                             const tri = triangulateRaysWorld(subset);
                             // se triangulação bem-sucedida, armazenar e atualizar contador
                             if (tri) {
-                                triangulatedPoints.push(tri);
+                                // === AQUI: aplicar translação para que a origem calibrada seja (0,0,0) ===
+                                // Calculamos a posição do marcador de origem (registrado em originCalX/originCalY durante calibração)
+                                // em coordenadas de câmera (mm) usando o modelo pinhole com Z = calibrationZ_mm,
+                                // e então subtraímos essa posição do ponto triangulado (que está no referencial world-fixed).
+                                let triTranslated = tri;
+
+                                if (isCalibrated && originCalX !== null && originCalY !== null && calibrationZ_mm && pixelPerMM_locked) {
+                                    // focal length (pixels) at calibration
+                                    const f_cal = pixelPerMM_locked * calibrationZ_mm;
+                                    const cx_cal = canvas.width / 2;
+                                    const cy_cal = canvas.height / 2;
+
+                                    // origem em coordenadas de câmera (mm) no instante da calibração
+                                    const originCamX = (originCalX - cx_cal) / f_cal * calibrationZ_mm;
+                                    const originCamY = (originCalY - cy_cal) / f_cal * calibrationZ_mm;
+                                    const originCamZ = calibrationZ_mm;
+
+                                    // subtrair para que a origem calibrada vire (0,0,0)
+                                    triTranslated = {
+                                        x: tri.x - originCamX,
+                                        y: tri.y - originCamY,
+                                        z: tri.z - originCamZ
+                                    };
+                                }
+
+                                triangulatedPoints.push(triTranslated);
                                 triangulatedCount++;
                                 triangulatedCountEl.textContent = triangulatedCount.toString();
                             }
@@ -835,33 +849,4 @@ function processFrame() {
     }
 
     requestAnimationFrame(processFrame);
-}
-
-// Evento para baixar a nuvem de pontos triangulados enquanto estiver gravando
-if (downloadBtn) {
-    downloadBtn.addEventListener('click', () => {
-        // usar triangulatedPoints (está sendo preenchido durante a calibração)
-        const pts = triangulatedPoints || [];
-        const exportObj = {
-            meta: {
-                createdAt: Date.now(),
-                count: pts.length,
-                calibration_px: calibration_px,
-                calibrationZ_mm: calibrationZ_mm,
-                pixelPerMM_locked: pixelPerMM_locked
-            },
-            points: pts // array de {x,y,z}
-        };
-        const jsonStr = JSON.stringify(exportObj, null, 2);
-        const blob = new Blob([jsonStr], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        const ts = (new Date()).toISOString().replace(/[:.]/g, "-");
-        a.href = url;
-        a.download = `pointcloud_${ts}.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-    });
 }
