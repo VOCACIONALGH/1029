@@ -100,5 +100,3 @@ canvas#canvas {
     image-rendering: pixelated;
     box-shadow: 0 0 8px rgba(255,105,180,0.06);
 }
-
-/* marca de ponto triangulado (apenas estilo visual no canvas — o desenho é feito via JS) */
