@@ -36,6 +36,13 @@ input[type="range"] {
     text-align: center;
 }
 
+#scaleContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 12px;
+    text-align: center;
+}
+
 #container {
     position: relative;
 }
