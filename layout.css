@@ -1,20 +1,12 @@
 body {
     margin: 0;
-    min-height: 100vh;
+    height: 100vh;
     display: flex;
     flex-direction: column;
-    justify-content: flex-start;
+    justify-content: center;
     align-items: center;
     background-color: #000;
     font-family: Arial, sans-serif;
-    padding: 10px;
-    box-sizing: border-box;
-}
-
-#controlsTop {
-    display: flex;
-    gap: 8px;
-    margin: 8px 0;
 }
 
 button {
@@ -25,9 +17,9 @@ button {
     margin: 8px 6px;
 }
 
-button:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
+#downloadPointCloudBtn {
+    /* botão inicialmente escondido via inline-style; quando exibido, manter mesma aparência */
+    display: none;
 }
 
 .sliderLabel {
@@ -43,62 +35,76 @@ input[type="range"] {
     width: 240px;
 }
 
-#angles, #scaleContainer, #zContainer, #xyContainer,
-#raysContainer, #pinkDirContainer, #rotatedContainer, #triangulatedContainer {
+#angles {
     color: #fff;
     font-size: 14px;
     margin-bottom: 8px;
     text-align: center;
 }
 
-#viewRow {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    margin-top: 8px;
+#scaleContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 8px;
+    text-align: center;
 }
 
-/* main camera + canvas container */
+#zContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+#xyContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+#raysContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+#pinkDirContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+#rotatedContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+#triangulatedContainer {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 12px;
+    text-align: center;
+}
+
 #container {
     position: relative;
-    width: calc(min(480px, 90vw));
-    max-width: 480px;
 }
 
 video,
-canvas#canvas {
+canvas {
     width: 100%;
+    max-width: 480px;
     height: auto;
     background-color: #000;
-    display: block;
 }
 
-canvas#canvas {
+canvas {
     position: absolute;
     top: 0;
     left: 0;
 }
-
-/* mini pointcloud view */
-#pcView {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-}
-
-.pcTitle {
-    color: #fff;
-    font-size: 13px;
-}
-
-#pcCanvas {
-    background: #111;
-    border: 1px solid #333;
-    width: 220px;
-    height: 160px;
-    image-rendering: pixelated;
-    box-shadow: 0 0 8px rgba(255,105,180,0.06);
-}
-
-/* marca de ponto triangulado (apenas estilo visual no canvas — o desenho é feito via JS) */
