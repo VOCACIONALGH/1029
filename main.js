@@ -14,10 +14,12 @@ const rollEl = document.getElementById("roll");
 
 const scaleEl = document.getElementById("scale");
 const scaleLockEl = document.getElementById("scaleLock");
-const scaleStatus = document.getElementById("scaleStatus");
 
 const zCameraEl = document.getElementById("zCamera");
 const zWorldEl = document.getElementById("zWorld");
+
+const xCameraEl = document.getElementById("xCamera");
+const yCameraEl = document.getElementById("yCamera");
 
 let pitch = 0, yaw = 0, roll = 0;
 
@@ -28,6 +30,15 @@ let calibrationZ_mm = null;   // +Z informado pelo usuário durante calibração
 let isCalibrated = false;
 
 let lastAvgPx = null; // último avg px calculado (entre origem e pontos)
+
+let currentOriginX = null; // posição atual da origem (em pixels na tela)
+let currentOriginY = null;
+let originCalX = null; // posição da origem registrada na calibração
+let originCalY = null;
+
+let cameraX_mm = 0; // posição atual da câmera no referencial (mm)
+let cameraY_mm = 0;
+let cameraZ_mm = null;
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -65,17 +76,27 @@ calibrateBtn.addEventListener("click", () => {
         alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
         return;
     }
+    if (currentOriginX === null || currentOriginY === null) {
+        alert("Impossível calibrar: origem (ponto branco) não detectada no momento.");
+        return;
+    }
 
     // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
     const currentPixelPerMM = lastAvgPx / 100; // px por mm para 100 mm
     pixelPerMM_locked = currentPixelPerMM;
     calibration_px = lastAvgPx;
 
+    // registrar posição da origem na tela no momento da calibração
+    originCalX = currentOriginX;
+    originCalY = currentOriginY;
+
     const input = prompt("Informe o valor atual de +Z em milímetros (por exemplo: 250):");
     if (!input) {
         // desfazer travamento se usuário cancelar
         pixelPerMM_locked = null;
         calibration_px = null;
+        originCalX = null;
+        originCalY = null;
         isCalibrated = false;
         scaleLockEl.textContent = "aberta";
         return;
@@ -86,6 +107,8 @@ calibrateBtn.addEventListener("click", () => {
         alert("Valor de +Z inválido. Calibração cancelada.");
         pixelPerMM_locked = null;
         calibration_px = null;
+        originCalX = null;
+        originCalY = null;
         isCalibrated = false;
         scaleLockEl.textContent = "aberta";
         return;
@@ -94,8 +117,16 @@ calibrateBtn.addEventListener("click", () => {
     calibrationZ_mm = zVal;
     isCalibrated = true;
     scaleLockEl.textContent = "travada";
-    // mostrar valor travado
-    scaleEl.textContent = pixelPerMM_locked.toFixed(3);
+
+    // inicializar câmera: considerada sob a origem no momento da calibração
+    cameraX_mm = 0;
+    cameraY_mm = 0;
+    cameraZ_mm = calibrationZ_mm;
+
+    // atualizar UI
+    zCameraEl.textContent = cameraZ_mm.toFixed(2);
+    xCameraEl.textContent = cameraX_mm.toFixed(2);
+    yCameraEl.textContent = cameraY_mm.toFixed(2);
 });
 
 // lê orientações do dispositivo
@@ -254,6 +285,13 @@ function processFrame() {
             oy = sby / cb;
             ctx.fillStyle = "white";
             ctx.beginPath(); ctx.arc(ox, oy, 4, 0, Math.PI * 2); ctx.fill();
+
+            // atualizar posição atual da origem global
+            currentOriginX = ox;
+            currentOriginY = oy;
+        } else {
+            currentOriginX = null;
+            currentOriginY = null;
         }
 
         if (cbl > 0) {
@@ -310,12 +348,13 @@ function processFrame() {
             // relação inversa proporcional (tamanho projetado ~ 1/Z)
             zCamera = calibrationZ_mm * (calibration_px / lastAvgPx);
             zCameraEl.textContent = zCamera.toFixed(2);
+            cameraZ_mm = zCamera;
         } else {
             zCameraEl.textContent = "-";
+            cameraZ_mm = null;
         }
 
         // desenhar setas com comprimento correspondente a 100 mm usando escala atual/travada
-        // comprimento desejado em pixels: usar pixelPerMM_locked quando calibrado, ou pixelPerMM_current caso contrário
         const effectivePixelPerMM = (isCalibrated && pixelPerMM_locked !== null) ? pixelPerMM_locked : pixelPerMM_current;
         if (cb && effectivePixelPerMM > 0) {
             const desiredPx = effectivePixelPerMM * 100;
@@ -343,32 +382,49 @@ function processFrame() {
             }
         }
 
-        // transformar deslocamentos medidos na imagem para deslocamentos no espaço (usar escala travada se houver)
-        if (isCalibrated && pixelPerMM_locked && cb) {
-            // preferimos usar os pontos detectados com a escala travada:
-            // dx_mm = (bx - ox) / pixelPerMM_locked
-            // dy_mm = (by - oy) / pixelPerMM_locked
-            // dz_mm = zCamera (estimado)
-            let dx_mm = 0, dy_mm = 0;
-            if (cbl) {
-                dx_mm = (bx - ox) / pixelPerMM_locked;
-                dy_mm = (by - oy) / pixelPerMM_locked;
-            } else if (cgr) {
-                dx_mm = (gx - ox) / pixelPerMM_locked;
-                dy_mm = (gy - oy) / pixelPerMM_locked;
-            }
+        // calcular translação da câmera em +X e +Y após calibração
+        if (isCalibrated && pixelPerMM_locked && originCalX !== null && originCalY !== null && currentOriginX !== null) {
+            // deslocamento da origem na imagem desde a calibração (em pixels)
+            // convenção pedida:
+            // - mais para baixo => maior +Y positivo -> use (currentY - originCalY)
+            // - mais para a esquerda => maior +X positivo -> use (originCalX - currentX)
+            const delta_px_x = originCalX - currentOriginX; // positivo quando origem foi para a esquerda
+            const delta_px_y = currentOriginY - originCalY; // positive when origin moved down
 
-            const dz_mm = zCamera || 0;
+            // converter para mm usando escala travada
+            const dx_mm_image = delta_px_x / pixelPerMM_locked;
+            const dy_mm_image = delta_px_y / pixelPerMM_locked;
+            const dz_mm_image = cameraZ_mm !== null ? cameraZ_mm : 0; // depth at current frame
 
-            // vetor em coordenadas da câmera (x: direita, y: baixo, z: frente)
-            const camVec = [dx_mm, dy_mm, dz_mm];
+            // vetor em coordenadas da câmera/imagem (x right, y down, z forward)
+            const camVec = [dx_mm_image, dy_mm_image, 0]; // we are computing XY translation, Z handled separately
 
-            // obter matriz de rotação a partir dos ângulos atuais e multiplicar
-            const R = getRotationMatrix(yaw, pitch, roll); // note: getRotationMatrix espera (alpha=yaw, beta=pitch, gamma=roll)
+            // transformar pelo R (Yaw,Pitch,Roll)
+            const R = getRotationMatrix(yaw, pitch, roll);
             const worldVec = matMulVec(R, camVec);
 
-            // mostrar componente Z do vetor transformado no espaço
-            zWorldEl.textContent = worldVec[2].toFixed(2);
+            // atualizar posição da câmera no referencial do mundo (inicial 0,0)
+            cameraX_mm = worldVec[0];
+            cameraY_mm = worldVec[1];
+
+            xCameraEl.textContent = cameraX_mm.toFixed(2);
+            yCameraEl.textContent = cameraY_mm.toFixed(2);
+        } else {
+            // sem calibração mostrar hífen
+            xCameraEl.textContent = "-";
+            yCameraEl.textContent = "-";
+        }
+
+        // mostrar +Z transformado (se disponível) — já calculado antes
+        if (isCalibrated && cameraZ_mm !== null) {
+            // transformar (0,0,Z) da câmera para mundo: o Z transformado já é mostrado em zWorld no bloco anterior
+            // aqui apenas mantemos o zWorld calculado anteriormente (quando se usou getRotationMatrix sobre camVec)
+            // (o cálculo de zWorld foi feito antes com camVec contendo dz_mm; repetimos de forma simples)
+            // Para consistência, vamos calcular a transformação do vetor (0,0,cameraZ_mm)
+            const camVecZ = [0, 0, cameraZ_mm];
+            const R2 = getRotationMatrix(yaw, pitch, roll);
+            const worldZVec = matMulVec(R2, camVecZ);
+            zWorldEl.textContent = worldZVec[2].toFixed(2);
         } else {
             zWorldEl.textContent = "-";
         }
