@@ -52,11 +52,11 @@ function processFrame() {
 
     const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = frame.data;
-    const threshold = parseInt(thresholdSlider.value, 10) / 100;
+    const vThreshold = parseInt(thresholdSlider.value, 10) / 100;
 
-    let sumX = 0;
-    let sumY = 0;
-    let count = 0;
+    let sumBlackX = 0, sumBlackY = 0, countBlack = 0;
+    let sumBlueX = 0, sumBlueY = 0, countBlue = 0;
+    let sumGreenX = 0, sumGreenY = 0, countGreen = 0;
 
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
@@ -65,30 +65,67 @@ function processFrame() {
 
         const hsv = rgbToHsv(r, g, b);
 
-        if (hsv.v < threshold) {
+        const pixelIndex = i / 4;
+        const x = pixelIndex % canvas.width;
+        const y = Math.floor(pixelIndex / canvas.width);
+
+        // PRETO → LARANJA
+        if (hsv.v < vThreshold) {
             data[i] = 255;
             data[i + 1] = 165;
             data[i + 2] = 0;
 
-            const pixelIndex = i / 4;
-            const x = pixelIndex % canvas.width;
-            const y = Math.floor(pixelIndex / canvas.width);
+            sumBlackX += x;
+            sumBlackY += y;
+            countBlack++;
+        }
 
-            sumX += x;
-            sumY += y;
-            count++;
+        // AZUL → BRANCO
+        else if (hsv.h >= 200 && hsv.h <= 260 && hsv.s > 0.4) {
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+
+            sumBlueX += x;
+            sumBlueY += y;
+            countBlue++;
+        }
+
+        // VERDE → ROXO
+        else if (hsv.h >= 90 && hsv.h <= 150 && hsv.s > 0.4) {
+            data[i] = 128;
+            data[i + 1] = 0;
+            data[i + 2] = 128;
+
+            sumGreenX += x;
+            sumGreenY += y;
+            countGreen++;
         }
     }
 
     ctx.putImageData(frame, 0, 0);
 
-    if (count > 0) {
-        const cx = sumX / count;
-        const cy = sumY / count;
-
+    // ORIGEM (preto)
+    if (countBlack > 0) {
         ctx.fillStyle = "white";
         ctx.beginPath();
-        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.arc(sumBlackX / countBlack, sumBlackY / countBlack, 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // PONTO AZUL
+    if (countBlue > 0) {
+        ctx.fillStyle = "blue";
+        ctx.beginPath();
+        ctx.arc(sumBlueX / countBlue, sumBlueY / countBlue, 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // PONTO VERDE
+    if (countGreen > 0) {
+        ctx.fillStyle = "green";
+        ctx.beginPath();
+        ctx.arc(sumGreenX / countGreen, sumGreenY / countGreen, 4, 0, Math.PI * 2);
         ctx.fill();
     }
 
