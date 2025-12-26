@@ -1,4 +1,5 @@
 const scanBtn = document.getElementById("scanBtn");
+const calibrateBtn = document.getElementById("calibrateBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -11,10 +12,18 @@ const pitchEl = document.getElementById("pitch");
 const yawEl = document.getElementById("yaw");
 const rollEl = document.getElementById("roll");
 const scaleEl = document.getElementById("scale");
+const scaleStatusEl = document.getElementById("scaleStatus");
+const zEl = document.getElementById("zValue");
 
 let pitch = 0;
 let yaw = 0;
 let roll = 0;
+
+let scaleLocked = false;
+let lockedPixelPerMM = 0; // valor travado de px/mm
+let calibK = null; // constante de calibração K = Z_calib * L_calib (mm * px)
+let L_calib_px = 0;
+let Z_calib_mm = 0;
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -45,6 +54,54 @@ scanBtn.addEventListener("click", async () => {
     }
 });
 
+calibrateBtn.addEventListener("click", () => {
+    // trava a escala atual (se disponível) e pede ao usuário o valor de +Z atual
+    if (!lastPixelPerMM || lastPixelPerMM <= 0) {
+        alert("Escala inválida no momento. Não é possível calibrar. Certifique-se de que há pontos detectados.");
+        return;
+    }
+
+    // trava a escala
+    lockedPixelPerMM = lastPixelPerMM;
+    scaleLocked = true;
+    scaleStatusEl.textContent = "(travada)";
+
+    // calcula L_calib (média das distâncias origem→azul e origem→verde atuais) e solicita valor de Z ao usuário
+    if (lastDistBlue > 0 && lastDistGreen > 0) {
+        L_calib_px = (lastDistBlue + lastDistGreen) / 2;
+    } else if (lastDistBlue > 0) {
+        L_calib_px = lastDistBlue;
+    } else if (lastDistGreen > 0) {
+        L_calib_px = lastDistGreen;
+    } else {
+        alert("Não há distâncias válidas (azul/verde) para calibração. Posicione os marcadores corretamente antes de calibrar.");
+        return;
+    }
+
+    const input = prompt("Informe o valor atual de +Z em mm (ex.: 200):", "200");
+    if (input === null) {
+        // usuário cancelou -> desfazer trava de escala
+        scaleLocked = false;
+        lockedPixelPerMM = 0;
+        scaleStatusEl.textContent = "";
+        return;
+    }
+    const zVal = parseFloat(input);
+    if (isNaN(zVal) || zVal <= 0) {
+        alert("Valor de +Z inválido. Calibração cancelada.");
+        scaleLocked = false;
+        lockedPixelPerMM = 0;
+        scaleStatusEl.textContent = "";
+        return;
+    }
+
+    Z_calib_mm = zVal;
+    calibK = Z_calib_mm * L_calib_px; // K = Z_calib * L_calib
+    // mostra valores gravados na UI
+    zEl.textContent = Z_calib_mm.toFixed(2);
+    scaleEl.textContent = lockedPixelPerMM.toFixed(3);
+});
+
 function onOrientation(e) {
     pitch = e.beta || 0;   // X
     yaw   = e.alpha || 0;  // Z
@@ -55,6 +112,7 @@ function onOrientation(e) {
     rollEl.textContent  = roll.toFixed(1);
 }
 
+// Função utilitária RGB -> HSV
 function rgbToHsv(r, g, b) {
     r /= 255;
     g /= 255;
@@ -107,6 +165,11 @@ function drawArrow(x1, y1, x2, y2, color) {
     ctx.closePath();
     ctx.fill();
 }
+
+// variáveis guardadas de frame para serem usadas na calibração
+let lastDistBlue = 0;
+let lastDistGreen = 0;
+let lastPixelPerMM = 0;
 
 function processFrame() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -170,20 +233,38 @@ function processFrame() {
         }
     }
 
+    // atualizar variáveis last para possível calibração
+    lastDistBlue = distBlue;
+    lastDistGreen = distGreen;
+
     // Calcular escala px/mm usando a(s) distância(s) detectada(s) entre origem e pontos.
-    // Assumimos que a(s) distância(s) medidas representam 100 mm (conforme solicitado).
+    // Assumimos que a(s) distância(s) medidas representam 100 mm (comportamento anterior).
     let pixelPerMM = 0;
     if (nDist > 0) {
         const avgPx = (distBlue + distGreen) / nDist; // média das distâncias em pixels
         pixelPerMM = avgPx / 100; // px por mm
-        scaleEl.textContent = pixelPerMM.toFixed(3);
-    } else {
-        scaleEl.textContent = "-";
+        lastPixelPerMM = pixelPerMM;
     }
 
-    // Desenhar setas com comprimento correspondente a 100 mm (em pixels = pixelPerMM * 100)
-    if (cb && pixelPerMM > 0) {
-        const desiredPx = pixelPerMM * 100; // comprimento em pixels para 100 mm
+    // Se a escala estiver travada, use o valor travado para desenhar setas e exibir escala.
+    if (scaleLocked && lockedPixelPerMM > 0) {
+        scaleEl.textContent = lockedPixelPerMM.toFixed(3);
+    } else {
+        if (pixelPerMM > 0) {
+            scaleEl.textContent = pixelPerMM.toFixed(3);
+            scaleStatusEl.textContent = "";
+        } else {
+            scaleEl.textContent = "-";
+            scaleStatusEl.textContent = "";
+        }
+    }
+
+    // Determinar pixelPerMM usado para desenhar setas (travado ou atual)
+    const usedPixelPerMM = (scaleLocked && lockedPixelPerMM > 0) ? lockedPixelPerMM : pixelPerMM;
+
+    // Desenhar setas com comprimento correspondente a 100 mm (em pixels = usedPixelPerMM * 100)
+    if (cb && usedPixelPerMM > 0) {
+        const desiredPx = usedPixelPerMM * 100; // comprimento em pixels para 100 mm
 
         if (cbl) {
             // direção do azul
@@ -207,6 +288,23 @@ function processFrame() {
                 const ey2 = oy + (dy2 / norm2) * desiredPx;
                 drawArrow(ox, oy, ex2, ey2, "green");
             }
+        }
+    }
+
+    // Calcular +Z atual a partir da calibração, se houver (Z = K / L)
+    if (calibK !== null) {
+        // calcular L atual (média das distâncias observadas)
+        let Lcur = 0;
+        let countL = 0;
+        if (distBlue > 0) { Lcur += distBlue; countL++; }
+        if (distGreen > 0) { Lcur += distGreen; countL++; }
+
+        if (countL > 0 && Lcur > 0) {
+            Lcur = Lcur / countL;
+            const Zcur = calibK / Lcur; // Z proporcional a 1/L, com K definido em calibração
+            zEl.textContent = Zcur.toFixed(2);
+        } else {
+            zEl.textContent = "-";
         }
     }
 
