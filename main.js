@@ -38,6 +38,10 @@ let lastDistBlue = 0;
 let lastDistGreen = 0;
 let lastPixelPerMM = 0;
 
+// gravação durante a calibragem
+let calibrating = false;
+let recordedFrames = [];
+
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -68,70 +72,105 @@ scanBtn.addEventListener("click", async () => {
 });
 
 calibrateBtn.addEventListener("click", () => {
-    // trava a escala atual (se disponível) e pede ao usuário o valor de +Z atual
-    if (!lastPixelPerMM || lastPixelPerMM <= 0) {
-        alert("Escala inválida no momento. Não é possível calibrar. Certifique-se de que há pontos detectados.");
-        return;
-    }
+    if (!calibrating) {
+        // --- iniciar calibragem (comportamento existente) ---
+        if (!lastPixelPerMM || lastPixelPerMM <= 0) {
+            alert("Escala inválida no momento. Não é possível calibrar. Certifique-se de que há pontos detectados.");
+            return;
+        }
 
-    // trava a escala
-    lockedPixelPerMM = lastPixelPerMM;
-    scaleLocked = true;
-    scaleStatusEl.textContent = "(travada)";
+        // trava a escala
+        lockedPixelPerMM = lastPixelPerMM;
+        scaleLocked = true;
+        scaleStatusEl.textContent = "(travada)";
 
-    // calcula L_calib (média das distâncias origem→azul e origem→verde atuais) e solicita valor de Z ao usuário
-    if (lastDistBlue > 0 && lastDistGreen > 0) {
-        L_calib_px = (lastDistBlue + lastDistGreen) / 2;
-    } else if (lastDistBlue > 0) {
-        L_calib_px = lastDistBlue;
-    } else if (lastDistGreen > 0) {
-        L_calib_px = lastDistGreen;
+        // calcula L_calib (média das distâncias origem→azul e origem→verde atuais)
+        if (lastDistBlue > 0 && lastDistGreen > 0) {
+            L_calib_px = (lastDistBlue + lastDistGreen) / 2;
+        } else if (lastDistBlue > 0) {
+            L_calib_px = lastDistBlue;
+        } else if (lastDistGreen > 0) {
+            L_calib_px = lastDistGreen;
+        } else {
+            alert("Não há distâncias válidas (azul/verde) para calibração. Posicione os marcadores corretamente antes de calibrar.");
+            // desfaz lock se nada válido
+            scaleLocked = false;
+            lockedPixelPerMM = 0;
+            scaleStatusEl.textContent = "";
+            return;
+        }
+
+        // registra a origem atual como referência (X=0,Y=0) — câmera está em cima da origem no momento
+        if (lastOriginX == null || lastOriginY == null) {
+            alert("Origem não detectada no momento. Posicione a origem antes de calibrar.");
+            scaleLocked = false;
+            lockedPixelPerMM = 0;
+            scaleStatusEl.textContent = "";
+            return;
+        }
+        refOriginX = lastOriginX;
+        refOriginY = lastOriginY;
+
+        const input = prompt("Informe o valor atual de +Z em mm (ex.: 200):", "200");
+        if (input === null) {
+            // usuário cancelou -> desfazer trava de escala
+            scaleLocked = false;
+            lockedPixelPerMM = 0;
+            scaleStatusEl.textContent = "";
+            refOriginX = null;
+            refOriginY = null;
+            return;
+        }
+        const zVal = parseFloat(input);
+        if (isNaN(zVal) || zVal <= 0) {
+            alert("Valor de +Z inválido. Calibração cancelada.");
+            scaleLocked = false;
+            lockedPixelPerMM = 0;
+            scaleStatusEl.textContent = "";
+            refOriginX = null;
+            refOriginY = null;
+            return;
+        }
+
+        Z_calib_mm = zVal;
+        calibK = Z_calib_mm * L_calib_px; // K = Z_calib * L_calib
+
+        // iniciar gravação
+        recordedFrames = [];
+        calibrating = true;
+        calibrateBtn.textContent = "FINALIZAR CALIBRAGEM";
+
+        // mostra valores gravados na UI
+        zEl.textContent = Z_calib_mm.toFixed(2);
+        scaleEl.textContent = lockedPixelPerMM.toFixed(3);
+
     } else {
-        alert("Não há distâncias válidas (azul/verde) para calibração. Posicione os marcadores corretamente antes de calibrar.");
-        // desfaz lock se nada válido
-        scaleLocked = false;
-        lockedPixelPerMM = 0;
-        scaleStatusEl.textContent = "";
-        return;
-    }
+        // --- finalizar calibragem: gerar JSON e download automático ---
+        calibrating = false;
+        calibrateBtn.textContent = "CALIBRAR";
 
-    // registra a origem atual como referência (X=0,Y=0) — câmera está em cima da origem no momento
-    if (lastOriginX == null || lastOriginY == null) {
-        alert("Origem não detectada no momento. Posicione a origem antes de calibrar.");
-        scaleLocked = false;
-        lockedPixelPerMM = 0;
-        scaleStatusEl.textContent = "";
-        return;
-    }
-    refOriginX = lastOriginX;
-    refOriginY = lastOriginY;
+        // construir JSON e baixar
+        const now = new Date();
+        const pad = (n) => n.toString().padStart(2, "0");
+        const fname = `calibragem-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`;
 
-    const input = prompt("Informe o valor atual de +Z em mm (ex.: 200):", "200");
-    if (input === null) {
-        // usuário cancelou -> desfazer trava de escala
-        scaleLocked = false;
-        lockedPixelPerMM = 0;
-        scaleStatusEl.textContent = "";
-        refOriginX = null;
-        refOriginY = null;
-        return;
-    }
-    const zVal = parseFloat(input);
-    if (isNaN(zVal) || zVal <= 0) {
-        alert("Valor de +Z inválido. Calibração cancelada.");
-        scaleLocked = false;
-        lockedPixelPerMM = 0;
-        scaleStatusEl.textContent = "";
-        refOriginX = null;
-        refOriginY = null;
-        return;
-    }
+        const blob = new Blob([JSON.stringify(recordedFrames, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }, 500);
 
-    Z_calib_mm = zVal;
-    calibK = Z_calib_mm * L_calib_px; // K = Z_calib * L_calib
-    // mostra valores gravados na UI
-    zEl.textContent = Z_calib_mm.toFixed(2);
-    scaleEl.textContent = lockedPixelPerMM.toFixed(3);
+        // deixar a escala travada como antes (não desfaço lock)
+        // limpa buffer de gravação
+        recordedFrames = [];
+        alert("Calibração finalizada. Arquivo JSON gerado.");
+    }
 });
 
 function onOrientation(e) {
@@ -270,7 +309,6 @@ function processFrame() {
     lastDistGreen = distGreen;
 
     // Calcular escala px/mm usando a(s) distância(s) detectada(s) entre origem e pontos.
-    // Assumimos que a(s) distância(s) medidas representam 100 mm (conforme comportamento anterior).
     let pixelPerMM = 0;
     if (nDist > 0) {
         const avgPx = (distBlue + distGreen) / nDist; // média das distâncias em pixels
@@ -325,6 +363,7 @@ function processFrame() {
     }
 
     // Calcular +Z atual a partir da calibração, se houver (Z = K / L)
+    let Zcur = null;
     if (calibK !== null) {
         // calcular L atual (média das distâncias observadas)
         let Lcur = 0;
@@ -334,40 +373,51 @@ function processFrame() {
 
         if (countL > 0 && Lcur > 0) {
             Lcur = Lcur / countL;
-            const Zcur = calibK / Lcur; // Z proporcional a 1/L, com K definido em calibração
+            Zcur = calibK / Lcur; // Z proporcional a 1/L, com K definido em calibração
             zEl.textContent = Zcur.toFixed(2);
-
-            // Se tivermos referência da origem (do momento da calibração) e a escala travada,
-            // calcular translação da câmera em +X e +Y:
-            if (refOriginX !== null && refOriginY !== null && lastOriginX !== null && lastOriginY !== null && lockedPixelPerMM > 0) {
-                // Convenções:
-                // - Quanto mais para baixo for a origem (origin_y atual > origin_y referência), maior o +Y (positivo).
-                // - Quanto mais para a esquerda for a origem (origin_x atual < origin_x referência), maior o +X (positivo).
-                // Implementação:
-                // delta_px_x = refX - curX  -> se origin se moveu para a esquerda (curX < refX), delta_px_x > 0 => +X positivo
-                // delta_px_y = curY - refY  -> se origin se moveu para baixo (curY > refY), delta_px_y > 0 => +Y positivo
-                const delta_px_x = refOriginX - lastOriginX;
-                const delta_px_y = lastOriginY - refOriginY;
-
-                const Xmm = delta_px_x / lockedPixelPerMM;
-                const Ymm = delta_px_y / lockedPixelPerMM;
-
-                xEl.textContent = Xmm.toFixed(2);
-                yEl.textContent = Ymm.toFixed(2);
-            } else {
-                xEl.textContent = "-";
-                yEl.textContent = "-";
-            }
         } else {
             zEl.textContent = "-";
+        }
+    }
+
+    // Calcular translação +X / +Y se possível
+    let Xmm = null;
+    let Ymm = null;
+    if (calibK !== null && refOriginX !== null && refOriginY !== null && lastOriginX !== null && lastOriginY !== null && lockedPixelPerMM > 0) {
+        // Convenções:
+        // delta_px_x = refX - curX  -> se origin se moveu para a esquerda (curX < refX), delta_px_x > 0 => +X positivo
+        // delta_px_y = curY - refY  -> se origin se moveu para baixo (curY > refY), delta_px_y > 0 => +Y positivo
+        const delta_px_x = refOriginX - lastOriginX;
+        const delta_px_y = lastOriginY - refOriginY;
+
+        Xmm = delta_px_x / lockedPixelPerMM;
+        Ymm = delta_px_y / lockedPixelPerMM;
+
+        xEl.textContent = Xmm.toFixed(2);
+        yEl.textContent = Ymm.toFixed(2);
+    } else {
+        // manter valores - se calibragem não iniciou ou referência não disponível
+        if (calibK === null) {
+            xEl.textContent = "-";
+            yEl.textContent = "-";
+        } else {
             xEl.textContent = "-";
             yEl.textContent = "-";
         }
-    } else {
-        // sem calibração
-        zEl.textContent = "-";
-        xEl.textContent = "-";
-        yEl.textContent = "-";
+    }
+
+    // se calibrando, gravar frame com os valores atuais (null quando não disponíveis)
+    if (calibrating) {
+        const entry = {
+            t: Date.now(),
+            x_mm: (Xmm !== null) ? Number(Xmm.toFixed(3)) : null,
+            y_mm: (Ymm !== null) ? Number(Ymm.toFixed(3)) : null,
+            z_mm: (Zcur !== null) ? Number(Zcur.toFixed(3)) : null,
+            pitch: (typeof pitch === "number") ? Number(pitch.toFixed(3)) : null,
+            yaw: (typeof yaw === "number") ? Number(yaw.toFixed(3)) : null,
+            roll: (typeof roll === "number") ? Number(roll.toFixed(3)) : null
+        };
+        recordedFrames.push(entry);
     }
 
     requestAnimationFrame(processFrame);
