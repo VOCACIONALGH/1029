@@ -21,6 +21,8 @@ const zWorldEl = document.getElementById("zWorld");
 const xCameraEl = document.getElementById("xCamera");
 const yCameraEl = document.getElementById("yCamera");
 
+const raysCountEl = document.getElementById("raysCount");
+
 let pitch = 0, yaw = 0, roll = 0;
 
 let pixelPerMM_current = 0;   // atualizado dinamicamente
@@ -43,6 +45,10 @@ let cameraZ_mm = null;
 let isRecording = false; // true enquanto a calibração está registrando frames
 let calibrationLog = []; // array para armazenar os frames durante calibração
 let calibrationStartTime = null;
+
+// novos: contagem e registro de raios gerados pelo ponto rosa
+let raysCount = 0;
+let raysLog = []; // cada entrada: { t, origin: {x,y,z}, direction: {dx,dy,dz} }
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -133,6 +139,11 @@ calibrateBtn.addEventListener("click", () => {
         calibrationLog = [];
         calibrationStartTime = Date.now();
 
+        // reset de contagem de raios para nova calibração
+        raysCount = 0;
+        raysLog = [];
+        raysCountEl.textContent = raysCount.toString();
+
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
         xCameraEl.textContent = cameraX_mm.toFixed(2);
@@ -145,7 +156,7 @@ calibrateBtn.addEventListener("click", () => {
     if (isCalibrated && isRecording) {
         isRecording = false;
 
-        // preparar objeto para exportar
+        // preparar objeto para exportar (mantemos como antes, sem mudanças pedidas)
         const exportObj = {
             meta: {
                 calibration_px: calibration_px,
@@ -155,9 +166,11 @@ calibrateBtn.addEventListener("click", () => {
                 originCalY: originCalY,
                 calibrationStart: calibrationStartTime,
                 calibrationEnd: Date.now(),
-                frames: calibrationLog.length
+                frames: calibrationLog.length,
+                raysDefined: raysCount
             },
-            frames: calibrationLog
+            frames: calibrationLog,
+            rays: raysLog
         };
 
         const jsonStr = JSON.stringify(exportObj, null, 2);
@@ -308,7 +321,7 @@ function processFrame() {
         let blx = 0, bly = 0, cbl = 0;
         let grx = 0, gry = 0, cgr = 0;
 
-        // novos acumuladores para vermelho
+        // acumuladores para vermelho
         let rdx = 0, rdy = 0, cr = 0;
 
         for (let i = 0; i < data.length; i += 4) {
@@ -329,8 +342,7 @@ function processFrame() {
                 grx += x; gry += y; cgr++;
             }
 
-            // detectar VERMELHO (duas zonas de hue: perto de 0 e perto de 360)
-            // usamos um limiar moderado para saturação e brilho para evitar ruído
+            // detectar VERMELHO (zonas em torno de 0/360)
             if ((hsv.h <= 15 || hsv.h >= 345) && hsv.s > 0.4 && hsv.v > 0.2) {
                 rdx += x;
                 rdy += y;
@@ -380,13 +392,53 @@ function processFrame() {
         }
 
         // calcular centroid dos VERMELHOS (ponto rosa)
+        let redCx = null, redCy = null;
         if (cr > 0) {
-            const redCx = rdx / cr;
-            const redCy = rdy / cr;
+            redCx = rdx / cr;
+            redCy = rdy / cr;
             ctx.fillStyle = "#FF69B4"; // hotpink
             ctx.beginPath();
             ctx.arc(redCx, redCy, 4, 0, Math.PI * 2);
             ctx.fill();
+
+            // se estamos gravando (durante calibragem), registrar um raio 3D a partir da câmera através deste pixel
+            if (isRecording) {
+                // definir origem da câmera em (0,0,0) no referencial da câmera
+                const originCam = { x: 0, y: 0, z: 0 };
+
+                // direção: usar pixels relativos ao centro da imagem; converter para mm se possível
+                const cx = canvas.width / 2;
+                const cy = canvas.height / 2;
+                const dx_px = redCx - cx;
+                const dy_px = redCy - cy;
+
+                // preferir escala travada quando disponível; caso contrário usar escala atual (pode ser 0)
+                const scale = (pixelPerMM_locked && pixelPerMM_locked > 0) ? pixelPerMM_locked : (pixelPerMM_current || 1);
+
+                const dx_mm = dx_px / scale;
+                const dy_mm = dy_px / scale;
+
+                // usar cameraZ_mm quando disponível para dar uma componente Z significativa, caso contrário usar 1
+                const dz_mm = (typeof cameraZ_mm === "number" && cameraZ_mm > 0) ? cameraZ_mm : 1.0;
+
+                // direção em coordenadas da câmera (x right, y down, z forward)
+                let dir = [dx_mm, dy_mm, dz_mm];
+
+                // normalizar direção
+                const norm = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+                dir = [dir[0] / norm, dir[1] / norm, dir[2] / norm];
+
+                // incrementar contador e registrar
+                raysCount++;
+                raysCountEl.textContent = raysCount.toString();
+
+                raysLog.push({
+                    t: Date.now(),
+                    origin: originCam,
+                    direction: { dx: dir[0], dy: dir[1], dz: dir[2] },
+                    pixel: { x: redCx, y: redCy }
+                });
+            }
         }
 
         // média das distâncias observadas (em pixels)
