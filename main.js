@@ -66,11 +66,15 @@ let rotatedCount = 0;
 // triangulação
 let nRaysRequired = null; // número de raios por triangulação (definido pelo usuário no início da calibração)
 let pendingRaysForTriang = []; // raios acumulados (world-fixed) para próxima triangulação
-let triangulatedPoints = []; // array de pontos triangulados { x, y, z }
+let triangulatedPoints = []; // array de pontos triangulados { x, y, z } (agora armazenados relativos ao primeiro triangulado)
 let triangulatedCount = 0;
 
 // Nuvem de pontos (registrada durante calibração; conteúdo salvo em JSON quando o usuário clicar em Download)
-let pointCloud = []; // cada item: { x, y, z }
+let pointCloud = []; // cada item: { x, y, z } (relativo ao primeiro triangulado quando definido)
+
+// Primeiro ponto triangulado que serve como origem (world coords antes de tornar relativo)
+// Quando definido, todos os pontos posteriores são salvos como (p - originFirst)
+let originTriPoint = null; // { x, y, z } ou null
 
 // lista de destaques temporários na imagem (cada item: { x, y, expireAt })
 let tempHighlights = [];
@@ -215,8 +219,9 @@ calibrateBtn.addEventListener("click", () => {
         triangulatedCount = 0;
         triangulatedCountEl.textContent = triangulatedCount.toString();
 
-        // reset da nuvem de pontos
+        // reset da nuvem de pontos e origem triangulada
         pointCloud = [];
+        originTriPoint = null;
 
         // mostrar botão Download e miniCanvas durante a calibração
         downloadBtn.style.display = "inline-block";
@@ -291,9 +296,11 @@ downloadBtn.addEventListener("click", () => {
             calibrationZ_mm: calibrationZ_mm,
             pixelPerMM_locked: pixelPerMM_locked,
             generatedAt: Date.now(),
-            points: pointCloud.length
+            points: pointCloud.length,
+            // informar se existe origem definida pelo primeiro triangulado
+            originFirstDefined: originTriPoint !== null
         },
-        points: pointCloud // array de { x, y, z }
+        points: pointCloud // array de { x, y, z } (relativos ao primeiro triangulado, se definido)
     };
     const jsonStr = JSON.stringify(obj, null, 2);
     const blob = new Blob([jsonStr], { type: "application/json" });
@@ -511,7 +518,7 @@ function drawMiniCloud() {
     clearMiniCanvas();
     if (!pointCloud || pointCloud.length === 0) return;
 
-    // calcular bounds nos eixos X,Y (usar apenas x/y de world)
+    // calcular bounds nos eixos X,Y (usar apenas x/y de world relativos)
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const p of pointCloud) {
         if (p.x < minX) minX = p.x;
@@ -527,7 +534,7 @@ function drawMiniCloud() {
     const w = miniCanvas.width - pad*2;
     const h = miniCanvas.height - pad*2;
 
-    // desenhar pontos (pequenos) – não especificamos cores globais além do necessário
+    // desenhar pontos (pequenos)
     miniCtx.save();
     miniCtx.globalCompositeOperation = 'source-over';
     for (const p of pointCloud) {
@@ -818,19 +825,37 @@ function processFrame() {
                                     };
                                 }
 
-                                triangulatedPoints.push(triTranslated);
-                                triangulatedCount++;
-                                triangulatedCountEl.textContent = triangulatedCount.toString();
-
-                                // registrar na nuvem de pontos durante a calibração
-                                if (isRecording) {
-                                    pointCloud.push({ x: triTranslated.x, y: triTranslated.y, z: triTranslated.z });
-                                    // atualizar mini visualização
-                                    drawMiniCloud();
+                                // === NOVO: usar o primeiro ponto triangulado como origem fixa ===
+                                if (originTriPoint === null) {
+                                    // definir o primeiro triangulado como origem
+                                    originTriPoint = { x: triTranslated.x, y: triTranslated.y, z: triTranslated.z };
+                                    // armazenar o primeiro ponto como (0,0,0)
+                                    const relativeZero = { x: 0, y: 0, z: 0 };
+                                    triangulatedPoints.push(relativeZero);
+                                    triangulatedCount++;
+                                    triangulatedCountEl.textContent = triangulatedCount.toString();
+                                    // também armazenar na nuvem como (0,0,0)
+                                    if (isRecording) {
+                                        pointCloud.push(relativeZero);
+                                        drawMiniCloud();
+                                    }
+                                } else {
+                                    // calcular relativo ao primeiro triangulado
+                                    const rel = {
+                                        x: triTranslated.x - originTriPoint.x,
+                                        y: triTranslated.y - originTriPoint.y,
+                                        z: triTranslated.z - originTriPoint.z
+                                    };
+                                    triangulatedPoints.push(rel);
+                                    triangulatedCount++;
+                                    triangulatedCountEl.textContent = triangulatedCount.toString();
+                                    if (isRecording) {
+                                        pointCloud.push(rel);
+                                        drawMiniCloud();
+                                    }
                                 }
 
                                 // criar destaque temporário no local do centroid atual (se disponível)
-                                // usamos o centroid redCx/redCy detectado no frame para destacar visualmente
                                 if (typeof redCx === "number" && typeof redCy === "number") {
                                     tempHighlights.push({ x: redCx, y: redCy, expireAt: Date.now() + 250 }); // 250 ms
                                 }
