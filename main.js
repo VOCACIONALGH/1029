@@ -24,6 +24,7 @@ const yCameraEl = document.getElementById("yCamera");
 const raysCountEl = document.getElementById("raysCount");
 const pinkDirCountEl = document.getElementById("pinkDirCount");
 const rotatedCountEl = document.getElementById("rotatedCount");
+const triangulatedCountEl = document.getElementById("triangulatedCount");
 
 let pitch = 0, yaw = 0, roll = 0;
 
@@ -50,13 +51,19 @@ let calibrationStartTime = null;
 
 // contagem e registro de raios gerados pelo ponto rosa
 let raysCount = 0;
-let raysLog = []; // agora cada entrada será: { origin: {x,y,z}, direction: {dx,dy,dz} }
+let raysLog = []; // cada entrada: { origin: {x,y,z}, direction: {dx,dy,dz} }
 
 // contagem de pontos rosas com direção definida (pinhole)
 let pinkDirCount = 0;
 
 // contagem de vetores rotacionados (aplicados à direção para colocá-los no referencial world-fixed)
 let rotatedCount = 0;
+
+// triangulação
+let nRaysRequired = null; // número de raios por triangulação (definido pelo usuário no início da calibração)
+let pendingRaysForTriang = []; // raios acumulados (world-fixed) para próxima triangulação
+let triangulatedPoints = []; // array de pontos triangulados { x, y, z }
+let triangulatedCount = 0;
 
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
@@ -95,6 +102,19 @@ scanBtn.addEventListener("click", async () => {
 calibrateBtn.addEventListener("click", () => {
     // Inicia calibração quando ainda não calibrado
     if (!isCalibrated) {
+        // pedir ao usuário a quantidade de raios necessária por triangulação (no início)
+        const nrInput = prompt("Informe a quantidade de raios necessários para triangular cada ponto rosa (inteiro >= 2):", "3");
+        if (!nrInput) {
+            alert("Calibração cancelada: número de raios não fornecido.");
+            return;
+        }
+        const nr = parseInt(nrInput, 10);
+        if (isNaN(nr) || nr < 2) {
+            alert("Valor inválido para número de raios. Calibração cancelada.");
+            return;
+        }
+        nRaysRequired = nr;
+
         if (!lastAvgPx || lastAvgPx <= 0) {
             alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
             return;
@@ -154,7 +174,7 @@ calibrateBtn.addEventListener("click", () => {
         calibrationLog = [];
         calibrationStartTime = Date.now();
 
-        // reset contadores e logs de raios
+        // reset contadores e logs de raios e triangulação
         raysCount = 0;
         raysLog = [];
         raysCountEl.textContent = raysCount.toString();
@@ -164,6 +184,11 @@ calibrateBtn.addEventListener("click", () => {
 
         rotatedCount = 0;
         rotatedCountEl.textContent = rotatedCount.toString();
+
+        pendingRaysForTriang = [];
+        triangulatedPoints = [];
+        triangulatedCount = 0;
+        triangulatedCountEl.textContent = triangulatedCount.toString();
 
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
@@ -184,15 +209,18 @@ calibrateBtn.addEventListener("click", () => {
                 pixelPerMM_locked: pixelPerMM_locked,
                 originCalX: originCalX,
                 originCalY: originCalY,
+                nRaysRequired: nRaysRequired,
                 calibrationStart: calibrationStartTime,
                 calibrationEnd: Date.now(),
                 frames: calibrationLog.length,
                 raysDefined: raysCount,
                 pinkDirsDefined: pinkDirCount,
-                rotatedDefined: rotatedCount
+                rotatedDefined: rotatedCount,
+                triangulatedCount: triangulatedPoints.length
             },
             frames: calibrationLog,
-            rays: raysLog
+            rays: raysLog,
+            triangulatedPoints: triangulatedPoints
         };
 
         const jsonStr = JSON.stringify(exportObj, null, 2);
@@ -388,6 +416,87 @@ function matMulVec(M, v) {
     ];
 }
 
+// --- função de triangulação por mínimos quadrados (usa apenas raios no referencial world-fixed) ---
+// Recebe array de raios: { origin: {x,y,z}, direction: {dx,dy,dz} }
+// Retorna ponto { x, y, z } ou null se falhar
+function triangulateRaysWorld(rays) {
+    if (!rays || rays.length < 2) return null;
+
+    // Montar A = sum (I - d d^T), b = sum (I - d d^T) * o
+    let A = [
+        [0,0,0],
+        [0,0,0],
+        [0,0,0]
+    ];
+    let b = [0,0,0];
+
+    for (const r of rays) {
+        if (!r.origin || !r.direction) return null;
+        const o = [r.origin.x, r.origin.y, r.origin.z];
+        const d = [r.direction.dx, r.direction.dy, r.direction.dz];
+        // garantir direção unitária
+        const n = Math.hypot(d[0], d[1], d[2]) || 1;
+        const dd = [d[0]/n, d[1]/n, d[2]/n];
+
+        // Compute (I - d d^T)
+        const M = [
+            [1 - dd[0]*dd[0], -dd[0]*dd[1],    -dd[0]*dd[2]],
+            [-dd[1]*dd[0],    1 - dd[1]*dd[1], -dd[1]*dd[2]],
+            [-dd[2]*dd[0],    -dd[2]*dd[1],    1 - dd[2]*dd[2]]
+        ];
+
+        // A += M
+        for (let i=0;i<3;i++){
+            for (let j=0;j<3;j++){
+                A[i][j] += M[i][j];
+            }
+        }
+        // b += M * o
+        for (let i=0;i<3;i++){
+            b[i] += M[i][0]*o[0] + M[i][1]*o[1] + M[i][2]*o[2];
+        }
+    }
+
+    // resolver A x = b (inverter A 3x3)
+    const invA = invert3x3(A);
+    if (!invA) return null;
+
+    const x = [
+        invA[0][0]*b[0] + invA[0][1]*b[1] + invA[0][2]*b[2],
+        invA[1][0]*b[0] + invA[1][1]*b[1] + invA[1][2]*b[2],
+        invA[2][0]*b[0] + invA[2][1]*b[1] + invA[2][2]*b[2]
+    ];
+
+    return { x: x[0], y: x[1], z: x[2] };
+}
+
+// inverter 3x3 (retorna null se singular)
+function invert3x3(M) {
+    const a = M[0][0], b = M[0][1], c = M[0][2];
+    const d = M[1][0], e = M[1][1], f = M[1][2];
+    const g = M[2][0], h = M[2][1], i = M[2][2];
+
+    const A = e*i - f*h;
+    const B = -(d*i - f*g);
+    const C = d*h - e*g;
+    const D = -(b*i - c*h);
+    const E = a*i - c*g;
+    const F = -(a*h - b*g);
+    const G = b*f - c*e;
+    const H = -(a*f - c*d);
+    const I = a*e - b*d;
+
+    const det = a*A + b*B + c*C;
+    if (Math.abs(det) < 1e-9) return null;
+
+    const invDet = 1 / det;
+    return [
+        [A * invDet, D * invDet, G * invDet],
+        [B * invDet, E * invDet, H * invDet],
+        [C * invDet, F * invDet, I * invDet]
+    ];
+}
+
 function processFrame() {
     if (video.readyState >= 2) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -485,7 +594,7 @@ function processFrame() {
             // se estamos gravando (durante calibragem), definir direção por aproximação pinhole
             if (isRecording) {
                 // apenas definir direção se calibrado e tivermos escala travada e Z da câmera
-                if (isCalibrated && pixelPerMM_locked && cameraZ_mm) {
+                if (isCalibrated && pixelPerMM_locked && cameraZ_mm && initialCamHInv) {
                     // focal length (pixels) via relação f = pixelPerMM_locked * Z
                     const f = pixelPerMM_locked * cameraZ_mm;
 
@@ -512,9 +621,24 @@ function processFrame() {
                         pinkDirCount++;
                         pinkDirCountEl.textContent = pinkDirCount.toString();
 
-                        // construir direção rotacionada usando yaw,pitch,roll (rotaciona a direção da câmera para o referencial world)
-                        const Rrot = getRotationMatrix(yaw, pitch, roll);
-                        let dir_world = matMulVec(Rrot, dir_cam);
+                        // build current camera homogeneous matrix Hc (camera_current -> world_global)
+                        const Hc = buildHomogeneous(yaw, pitch, roll, cameraX_mm, cameraY_mm, cameraZ_mm);
+
+                        // transformar Hc para o referencial fixo world (via inversa de H0)
+                        // H_rel = initialCamHInv * Hc  => representa transform from camera_current to world_fixed (camera0) frame
+                        const Hrel = mul4(initialCamHInv, Hc);
+
+                        // origem do raio em world_fixed: Hrel * [0,0,0,1]
+                        const originWF4 = mul4Vec(Hrel, [0,0,0,1]);
+                        const originWF = { x: originWF4[0], y: originWF4[1], z: originWF4[2] };
+
+                        // Rotacionar direção: R_rel (top-left 3x3 of Hrel) * dir_cam
+                        const Rrel = [
+                            [Hrel[0][0], Hrel[0][1], Hrel[0][2]],
+                            [Hrel[1][0], Hrel[1][1], Hrel[1][2]],
+                            [Hrel[2][0], Hrel[2][1], Hrel[2][2]]
+                        ];
+                        let dir_world = matMulVec(Rrel, dir_cam);
                         const normW = Math.hypot(dir_world[0], dir_world[1], dir_world[2]) || 1;
                         dir_world = [dir_world[0]/normW, dir_world[1]/normW, dir_world[2]/normW];
 
@@ -522,29 +646,35 @@ function processFrame() {
                         rotatedCount++;
                         rotatedCountEl.textContent = rotatedCount.toString();
 
-                        // registrar o raio 3D no formato solicitado: { origin: { x, y, z }, direction: { dx, dy, dz } }
-                        // origem = posição atual da câmera (+X, +Y, +Z calculados)
-                        const origin = {
-                            x: (typeof cameraX_mm === "number") ? cameraX_mm : null,
-                            y: (typeof cameraY_mm === "number") ? cameraY_mm : null,
-                            z: (typeof cameraZ_mm === "number") ? cameraZ_mm : null
+                        // registrar no log: origem e direção no referencial fixo do mundo (formato solicitado anteriormente)
+                        const rayWorld = {
+                            origin: originWF,
+                            direction: { dx: dir_world[0], dy: dir_world[1], dz: dir_world[2] }
                         };
 
-                        const direction = {
-                            dx: dir_world[0],
-                            dy: dir_world[1],
-                            dz: dir_world[2]
-                        };
-
-                        // push apenas o objeto simplificado e exigido
-                        raysLog.push({
-                            origin: origin,
-                            direction: direction
-                        });
+                        // push ray
+                        raysLog.push(rayWorld);
 
                         // atualizar contador cumulativo de raios 3D registrados
                         raysCount++;
                         raysCountEl.textContent = raysCount.toString();
+
+                        // também acumular para triangulação
+                        pendingRaysForTriang.push(rayWorld);
+
+                        // quando tivermos número suficiente de raios (definido pelo usuário), triangular
+                        if (nRaysRequired && pendingRaysForTriang.length >= nRaysRequired) {
+                            const subset = pendingRaysForTriang.slice(0, nRaysRequired);
+                            const tri = triangulateRaysWorld(subset);
+                            // se triangulação bem-sucedida, armazenar e atualizar contador
+                            if (tri) {
+                                triangulatedPoints.push(tri);
+                                triangulatedCount++;
+                                triangulatedCountEl.textContent = triangulatedCount.toString();
+                            }
+                            // remover os raios usados (consumir a janela)
+                            pendingRaysForTriang = pendingRaysForTriang.slice(nRaysRequired);
+                        }
                     }
                 }
             }
