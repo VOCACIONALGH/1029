@@ -2,7 +2,10 @@ const scanBtn = document.getElementById("scanBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-const thresholdSlider = document.getElementById("blackThreshold");
+
+const blackSlider = document.getElementById("blackThreshold");
+const blueSlider = document.getElementById("blueThreshold");
+const greenSlider = document.getElementById("greenThreshold");
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -52,11 +55,14 @@ function processFrame() {
 
     const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = frame.data;
-    const vThreshold = parseInt(thresholdSlider.value, 10) / 100;
 
-    let sumBlackX = 0, sumBlackY = 0, countBlack = 0;
-    let sumBlueX = 0, sumBlueY = 0, countBlue = 0;
-    let sumGreenX = 0, sumGreenY = 0, countGreen = 0;
+    const vBlack = parseInt(blackSlider.value, 10) / 100;
+    const sBlue = parseInt(blueSlider.value, 10) / 100;
+    const sGreen = parseInt(greenSlider.value, 10) / 100;
+
+    let sbx = 0, sby = 0, cb = 0;
+    let blx = 0, bly = 0, cbl = 0;
+    let grx = 0, gry = 0, cgr = 0;
 
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
@@ -65,67 +71,64 @@ function processFrame() {
 
         const hsv = rgbToHsv(r, g, b);
 
-        const pixelIndex = i / 4;
-        const x = pixelIndex % canvas.width;
-        const y = Math.floor(pixelIndex / canvas.width);
+        const idx = i / 4;
+        const x = idx % canvas.width;
+        const y = Math.floor(idx / canvas.width);
 
         // PRETO → LARANJA
-        if (hsv.v < vThreshold) {
+        if (hsv.v < vBlack) {
             data[i] = 255;
             data[i + 1] = 165;
             data[i + 2] = 0;
 
-            sumBlackX += x;
-            sumBlackY += y;
-            countBlack++;
+            sbx += x;
+            sby += y;
+            cb++;
         }
 
         // AZUL → BRANCO
-        else if (hsv.h >= 200 && hsv.h <= 260 && hsv.s > 0.4) {
+        else if (hsv.h >= 200 && hsv.h <= 260 && hsv.s > sBlue) {
             data[i] = 255;
             data[i + 1] = 255;
             data[i + 2] = 255;
 
-            sumBlueX += x;
-            sumBlueY += y;
-            countBlue++;
+            blx += x;
+            bly += y;
+            cbl++;
         }
 
         // VERDE → ROXO
-        else if (hsv.h >= 90 && hsv.h <= 150 && hsv.s > 0.4) {
+        else if (hsv.h >= 90 && hsv.h <= 150 && hsv.s > sGreen) {
             data[i] = 128;
             data[i + 1] = 0;
             data[i + 2] = 128;
 
-            sumGreenX += x;
-            sumGreenY += y;
-            countGreen++;
+            grx += x;
+            gry += y;
+            cgr++;
         }
     }
 
     ctx.putImageData(frame, 0, 0);
 
-    // ORIGEM (preto)
-    if (countBlack > 0) {
+    if (cb > 0) {
         ctx.fillStyle = "white";
         ctx.beginPath();
-        ctx.arc(sumBlackX / countBlack, sumBlackY / countBlack, 4, 0, Math.PI * 2);
+        ctx.arc(sbx / cb, sby / cb, 4, 0, Math.PI * 2);
         ctx.fill();
     }
 
-    // PONTO AZUL
-    if (countBlue > 0) {
+    if (cbl > 0) {
         ctx.fillStyle = "blue";
         ctx.beginPath();
-        ctx.arc(sumBlueX / countBlue, sumBlueY / countBlue, 4, 0, Math.PI * 2);
+        ctx.arc(blx / cbl, bly / cbl, 4, 0, Math.PI * 2);
         ctx.fill();
     }
 
-    // PONTO VERDE
-    if (countGreen > 0) {
+    if (cgr > 0) {
         ctx.fillStyle = "green";
         ctx.beginPath();
-        ctx.arc(sumGreenX / countGreen, sumGreenY / countGreen, 4, 0, Math.PI * 2);
+        ctx.arc(grx / cgr, gry / cgr, 4, 0, Math.PI * 2);
         ctx.fill();
     }
 
