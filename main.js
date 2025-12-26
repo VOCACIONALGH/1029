@@ -50,7 +50,7 @@ let calibrationStartTime = null;
 
 // contagem e registro de raios gerados pelo ponto rosa
 let raysCount = 0;
-let raysLog = []; // cada entrada: { t, origin: {x,y,z}, direction_camera:..., direction_world:..., pixel: {x,y} }
+let raysLog = []; // agora cada entrada será: { origin: {x,y,z}, direction: {dx,dy,dz} }
 
 // contagem de pontos rosas com direção definida (pinhole)
 let pinkDirCount = 0;
@@ -103,7 +103,6 @@ calibrateBtn.addEventListener("click", () => {
             alert("Impossível calibrar: origem (ponto branco) não detectada no momento.");
             return;
         }
-
         // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
         const currentPixelPerMM = lastAvgPx / 100; // px por mm para 100 mm
         pixelPerMM_locked = currentPixelPerMM;
@@ -279,7 +278,6 @@ function mul4(A, B) {
     }
     return C;
 }
-
 // multiply 4x4 by 4x1 vector
 function mul4Vec(M, v) {
     const out = [0,0,0,0];
@@ -448,8 +446,7 @@ function processFrame() {
             // atualizar posição atual da origem global
             currentOriginX = ox;
             currentOriginY = oy;
-        } else {
-            currentOriginX = null;
+        } else { currentOriginX = null;
             currentOriginY = null;
         }
 
@@ -515,55 +512,39 @@ function processFrame() {
                         pinkDirCount++;
                         pinkDirCountEl.textContent = pinkDirCount.toString();
 
-                        // registrar raio (origem na câmera em 0,0,0) inicialmente com direção em câmera
+                        // construir direção rotacionada usando yaw,pitch,roll (rotaciona a direção da câmera para o referencial world)
+                        const Rrot = getRotationMatrix(yaw, pitch, roll);
+                        let dir_world = matMulVec(Rrot, dir_cam);
+                        const normW = Math.hypot(dir_world[0], dir_world[1], dir_world[2]) || 1;
+                        dir_world = [dir_world[0]/normW, dir_world[1]/normW, dir_world[2]/normW];
+
+                        // contabilizar vetor rotacionado (no referencial world fixed)
+                        rotatedCount++;
+                        rotatedCountEl.textContent = rotatedCount.toString();
+
+                        // registrar o raio 3D no formato solicitado: { origin: { x, y, z }, direction: { dx, dy, dz } }
+                        // origem = posição atual da câmera (+X, +Y, +Z calculados)
+                        const origin = {
+                            x: (typeof cameraX_mm === "number") ? cameraX_mm : null,
+                            y: (typeof cameraY_mm === "number") ? cameraY_mm : null,
+                            z: (typeof cameraZ_mm === "number") ? cameraZ_mm : null
+                        };
+
+                        const direction = {
+                            dx: dir_world[0],
+                            dy: dir_world[1],
+                            dz: dir_world[2]
+                        };
+
+                        // push apenas o objeto simplificado e exigido
+                        raysLog.push({
+                            origin: origin,
+                            direction: direction
+                        });
+
+                        // atualizar contador cumulativo de raios 3D registrados
                         raysCount++;
                         raysCountEl.textContent = raysCount.toString();
-
-                        // build current camera homogeneous matrix Hc (camera_current -> world_global)
-                        const Hc = buildHomogeneous(yaw, pitch, roll, cameraX_mm, cameraY_mm, cameraZ_mm);
-
-                        // transformar Hc para o referencial fixo world (via inversa de H0)
-                        // H_rel = initialCamHInv * Hc  => representa transform from camera_current to world_fixed (camera0) frame
-                        if (initialCamHInv) {
-                            const Hrel = mul4(initialCamHInv, Hc);
-
-                            // origem do raio em world_fixed: Hrel * [0,0,0,1]
-                            const originWF4 = mul4Vec(Hrel, [0,0,0,1]);
-                            const originWF = { x: originWF4[0], y: originWF4[1], z: originWF4[2] };
-
-                            // Rotacionar direção: R_rel (top-left 3x3 of Hrel) * dir_cam
-                            const Rrel = [
-                                [Hrel[0][0], Hrel[0][1], Hrel[0][2]],
-                                [Hrel[1][0], Hrel[1][1], Hrel[1][2]],
-                                [Hrel[2][0], Hrel[2][1], Hrel[2][2]]
-                            ];
-                            let dir_world = matMulVec(Rrel, dir_cam);
-                            const normW = Math.hypot(dir_world[0], dir_world[1], dir_world[2]) || 1;
-                            dir_world = [dir_world[0]/normW, dir_world[1]/normW, dir_world[2]/normW];
-
-                            // contabilizar vetor rotacionado (no referencial world fixed)
-                            rotatedCount++;
-                            rotatedCountEl.textContent = rotatedCount.toString();
-
-                            // registrar no log: origem e direção no referencial fixo do mundo
-                            raysLog.push({
-                                t: Date.now(),
-                                origin_world: originWF,
-                                direction_world: { dx: dir_world[0], dy: dir_world[1], dz: dir_world[2] },
-                                pixel: { x: redCx, y: redCy },
-                                // também manter direção em câmera caso seja útil
-                                direction_camera: { dx: dir_cam[0], dy: dir_cam[1], dz: dir_cam[2] }
-                            });
-                        } else {
-                            // fallback: se por algum motivo não temos initialCamHInv, registrar apenas camera-frame direction
-                            raysLog.push({
-                                t: Date.now(),
-                                origin_world: null,
-                                direction_world: null,
-                                pixel: { x: redCx, y: redCy },
-                                direction_camera: { dx: dir_cam[0], dy: dir_cam[1], dz: dir_cam[2] }
-                            });
-                        }
                     }
                 }
             }
@@ -637,9 +618,7 @@ function processFrame() {
                     drawArrow(ox, oy, eyX, eyY, "green");
                 }
             }
-        }
-
-        // desenhar o plano XY durante a calibragem (área azul claro cujos lados são as setas)
+        } // desenhar o plano XY durante a calibragem (área azul claro cujos lados são as setas)
         if (isRecording && cb && exX !== null && eyX !== null) {
             cornerX = exX + eyX - ox;
             cornerY = exY + eyY - oy;
