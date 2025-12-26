@@ -69,9 +69,17 @@
         Pontos triangulados: <span id="triangulatedCount">0</span>
     </div>
 
-    <div id="container">
-        <video id="camera" autoplay playsinline></video>
-        <canvas id="canvas"></canvas>
+    <div id="viewRow">
+        <div id="container">
+            <video id="camera" autoplay playsinline></video>
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <!-- mini canvas para visualização rápida da nuvem -->
+        <div id="pcView">
+            <div class="pcTitle">Nuvem (visão rápida)</div>
+            <canvas id="pcCanvas" width="220" height="160"></canvas>
+        </div>
     </div>
 
     <script src="main.js"></script>
