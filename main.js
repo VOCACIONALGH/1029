@@ -5,6 +5,9 @@ const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
+const pcCanvas = document.getElementById("pcCanvas"); // mini canvas
+const pcCtx = pcCanvas.getContext("2d");
+
 const blackSlider = document.getElementById("blackThreshold");
 const blueSlider = document.getElementById("blueThreshold");
 const greenSlider = document.getElementById("greenThreshold");
@@ -65,6 +68,9 @@ let nRaysRequired = null; // número de raios por triangulação (definido pelo 
 let pendingRaysForTriang = []; // raios acumulados (world-fixed) para próxima triangulação
 let triangulatedPoints = []; // array de pontos triangulados { x, y, z }
 let triangulatedCount = 0;
+
+// telas/visualizações relacionadas à triangulação (persistir marcações na tela principal)
+let triangulatedScreenPoints = []; // { x, y } em pixels para desenhar rosa claro
 
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
@@ -216,6 +222,8 @@ calibrateBtn.addEventListener("click", () => {
         triangulatedCount = 0;
         triangulatedCountEl.textContent = triangulatedCount.toString();
 
+        triangulatedScreenPoints = [];
+
         // mostrar botão de download durante calibração
         downloadBtn.style.display = "inline-block";
         downloadBtn.disabled = true; // inicialmente desabilitado enquanto não houver pontos
@@ -224,6 +232,9 @@ calibrateBtn.addEventListener("click", () => {
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
         xCameraEl.textContent = cameraX_mm.toFixed(2);
         yCameraEl.textContent = cameraY_mm.toFixed(2);
+
+        // limpar mini canvas view
+        clearPointCloudView();
 
         return;
     }
@@ -530,6 +541,60 @@ function invert3x3(M) {
     ];
 }
 
+// --- utilities for point-cloud quick view ---
+// limpa mini canvas
+function clearPointCloudView() {
+    pcCtx.clearRect(0, 0, pcCanvas.width, pcCanvas.height);
+    // desenho de fundo leve
+    pcCtx.fillStyle = "#111";
+    pcCtx.fillRect(0, 0, pcCanvas.width, pcCanvas.height);
+}
+
+// desenha a nuvem (apenas XY, ignora Z) em pcCanvas para visualizar densidade
+function updatePointCloudView() {
+    clearPointCloudView();
+
+    const pts = triangulatedPoints;
+    if (!pts || pts.length === 0) return;
+
+    // calcular bbox em X/Y
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pts) {
+        if (typeof p.x !== "number" || typeof p.y !== "number") continue;
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+
+    // se bbox degenerado, centralizar
+    if (!isFinite(minX) || !isFinite(minY)) return;
+    const pad = 1e-3;
+    if (Math.abs(maxX - minX) < pad) { maxX = minX + 1; minX = minX - 1; }
+    if (Math.abs(maxY - minY) < pad) { maxY = minY + 1; minY = minY - 1; }
+
+    const w = pcCanvas.width;
+    const h = pcCanvas.height;
+    const margin = 8;
+    const availW = w - 2*margin;
+    const availH = h - 2*margin;
+
+    const scaleX = availW / (maxX - minX);
+    const scaleY = availH / (maxY - minY);
+    const scale = Math.min(scaleX, scaleY);
+
+    // desenhar cada ponto
+    pcCtx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
+    for (const p of pts) {
+        if (typeof p.x !== "number" || typeof p.y !== "number") continue;
+        const sx = margin + (p.x - minX) * scale;
+        // inverter Y para visualização (opcional): maior Y para baixo
+        const sy = margin + (maxY - p.y) * scale;
+        // desenhar pequeno pixel
+        pcCtx.fillRect(Math.round(sx)-1, Math.round(sy)-1, 3, 3);
+    }
+}
+
 function processFrame() {
     if (video.readyState >= 2) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -575,6 +640,18 @@ function processFrame() {
         }
 
         ctx.putImageData(frame, 0, 0);
+
+        // desenhar pontos triangulados persistentes (rosa claro) na tela principal
+        if (triangulatedScreenPoints.length > 0) {
+            ctx.save();
+            ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
+            for (const sp of triangulatedScreenPoints) {
+                ctx.beginPath();
+                ctx.arc(sp.x, sp.y, 6, 0, Math.PI*2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
 
         let ox, oy, bx, by, gx, gy;
         let distBlue = 0, distGreen = 0, nDist = 0;
@@ -705,10 +782,18 @@ function processFrame() {
                                 triangulatedCount++;
                                 triangulatedCountEl.textContent = triangulatedCount.toString();
 
+                                // registrar ponto de tela (origem atual) para desenhar rosa claro persistente
+                                if (currentOriginX !== null && currentOriginY !== null) {
+                                    triangulatedScreenPoints.push({ x: currentOriginX, y: currentOriginY });
+                                }
+
                                 // habilitar botão de download se houver pelo menos 1 ponto
                                 if (triangulatedPoints.length > 0) {
                                     downloadBtn.disabled = false;
                                 }
+
+                                // atualizar mini visualização da nuvem
+                                updatePointCloudView();
                             }
                             // remover os raios usados (consumir a janela)
                             pendingRaysForTriang = pendingRaysForTriang.slice(nRaysRequired);
