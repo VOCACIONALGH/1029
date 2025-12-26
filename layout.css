@@ -52,6 +52,13 @@ input[type="range"] {
 #zContainer {
     color: #fff;
     font-size: 16px;
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+#transContainer {
+    color: #fff;
+    font-size: 16px;
     margin-bottom: 12px;
     text-align: center;
 }
