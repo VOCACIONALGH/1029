@@ -23,6 +23,7 @@ const yCameraEl = document.getElementById("yCamera");
 
 const raysCountEl = document.getElementById("raysCount");
 const pinkDirCountEl = document.getElementById("pinkDirCount");
+const rotatedCountEl = document.getElementById("rotatedCount");
 
 let pitch = 0, yaw = 0, roll = 0;
 
@@ -53,6 +54,9 @@ let raysLog = []; // cada entrada: { t, origin: {x,y,z}, direction: {dx,dy,dz}, 
 
 // contagem de pontos rosas com direção definida (pinhole)
 let pinkDirCount = 0;
+
+// contagem de vetores rotacionados (após aplicar matriz de rotação)
+let rotatedCount = 0;
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -151,6 +155,9 @@ calibrateBtn.addEventListener("click", () => {
         pinkDirCount = 0;
         pinkDirCountEl.textContent = pinkDirCount.toString();
 
+        rotatedCount = 0;
+        rotatedCountEl.textContent = rotatedCount.toString();
+
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
         xCameraEl.textContent = cameraX_mm.toFixed(2);
@@ -175,7 +182,8 @@ calibrateBtn.addEventListener("click", () => {
                 calibrationEnd: Date.now(),
                 frames: calibrationLog.length,
                 raysDefined: raysCount,
-                pinkDirsDefined: pinkDirCount
+                pinkDirsDefined: pinkDirCount,
+                rotatedDefined: rotatedCount
             },
             frames: calibrationLog,
             rays: raysLog
@@ -199,7 +207,7 @@ calibrateBtn.addEventListener("click", () => {
         return;
     }
 
-    // Se isCalibrated true mas isRecording false (calibração já finalizada), re-click não re-inicia automaticamente
+    // Se isCalibrado true mas isRecording false (calibração já finalizada), re-click não re-inicia automaticamente
 });
 
 // lê orientações do dispositivo
@@ -263,6 +271,7 @@ function drawArrow(x1, y1, x2, y2, color) {
 }
 
 // cria matriz de rotação a partir de yaw(alpha), pitch(beta), roll(gamma) em graus
+// (a função converte graus -> radianos internamente)
 function getRotationMatrix(alphaDeg, betaDeg, gammaDeg) {
     const a = alphaDeg * Math.PI / 180; // yaw (z)
     const b = betaDeg * Math.PI / 180;  // pitch (x)
@@ -431,24 +440,45 @@ function processFrame() {
                             1
                         ];
 
-                        // normalizar
-                        const norm = Math.hypot(dir[0], dir[1], dir[2]) || 1;
-                        dir = [dir[0] / norm, dir[1] / norm, dir[2] / norm];
+                        // normalizar (direção do modelo pinhole)
+                        const normP = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+                        dir = [dir[0] / normP, dir[1] / normP, dir[2] / normP];
 
-                        // registrar raio (origem na câmera em 0,0,0)
-                        raysCount++;
-                        raysCountEl.textContent = raysCount.toString();
-
-                        // contar pontos rosas com direção definida (pinhole)
+                        // registrar que temos um ponto rosa com direção definida (pinhole)
                         pinkDirCount++;
                         pinkDirCountEl.textContent = pinkDirCount.toString();
 
+                        // registrar raio original (direção no referencial da câmera)
+                        raysCount++;
+                        raysCountEl.textContent = raysCount.toString();
+
+                        // PRE-registrar ray with camera-frame direction
                         raysLog.push({
                             t: Date.now(),
                             origin: { x: 0, y: 0, z: 0 },
-                            direction: { dx: dir[0], dy: dir[1], dz: dir[2] },
+                            direction_camera: { dx: dir[0], dy: dir[1], dz: dir[2] },
                             pixel: { x: redCx, y: redCy }
                         });
+
+                        // --- ROTACIONAR O VETOR USANDO MATRIZ 3x3 (yaw, pitch, roll) ---
+                        // converte graus -> radianos feito internamente em getRotationMatrix
+                        const R = getRotationMatrix(yaw, pitch, roll); // yaw, pitch, roll em graus
+                        const rotated = matMulVec(R, dir);
+
+                        // normalizar novamente
+                        const normR = Math.hypot(rotated[0], rotated[1], rotated[2]) || 1;
+                        const rotatedNorm = [rotated[0] / normR, rotated[1] / normR, rotated[2] / normR];
+
+                        // contabilizar vetor rotacionado
+                        rotatedCount++;
+                        rotatedCountEl.textContent = rotatedCount.toString();
+
+                        // substituir/estender última entrada do log com a direção rotacionada (referencial world)
+                        raysLog[raysLog.length - 1].direction_world = {
+                            dx: rotatedNorm[0],
+                            dy: rotatedNorm[1],
+                            dz: rotatedNorm[2]
+                        };
                     }
                 }
             }
