@@ -90,16 +90,32 @@ input[type="range"] {
     position: relative;
 }
 
+/* video + main canvas */
 video,
-canvas {
+canvas#canvas {
     width: 100%;
     max-width: 480px;
     height: auto;
     background-color: #000;
 }
 
-canvas {
+canvas#canvas {
     position: absolute;
     top: 0;
     left: 0;
+}
+
+/* mini canvas: pequena visualização da nuvem (cantos do vídeo) */
+#miniCanvas {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: 140px;
+    height: 140px;
+    max-width: 140px;
+    max-height: 140px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(0,0,0,0.6);
+    border-radius: 6px;
+    z-index: 20;
 }
