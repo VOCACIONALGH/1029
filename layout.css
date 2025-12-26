@@ -61,6 +61,13 @@ input[type="range"] {
 #raysContainer {
     color: #fff;
     font-size: 14px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+#pinkDirContainer {
+    color: #fff;
+    font-size: 14px;
     margin-bottom: 12px;
     text-align: center;
 }
