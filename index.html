@@ -10,12 +10,10 @@
 </head>
 <body>
 
-    <div id="controlsTop">
-        <button id="scanBtn">ESCÂNER</button>
-        <button id="calibrateBtn">Calibrar</button>
-        <!-- botão de download da nuvem (aparece somente durante calibração) -->
-        <button id="downloadBtn" style="display:none;">Download Nuvem (.json)</button>
-    </div>
+    <button id="scanBtn">ESCÂNER</button>
+    <button id="calibrateBtn">Calibrar</button>
+    <!-- botão de download da nuvem de pontos: aparece apenas durante a calibração (isRecording) -->
+    <button id="downloadPointCloudBtn" style="display:none;">Download Nuvem (.json)</button>
 
     <label class="sliderLabel">
         Sensibilidade do Preto
@@ -69,17 +67,9 @@
         Pontos triangulados: <span id="triangulatedCount">0</span>
     </div>
 
-    <div id="viewRow">
-        <div id="container">
-            <video id="camera" autoplay playsinline></video>
-            <canvas id="canvas"></canvas>
-        </div>
-
-        <!-- mini canvas para visualização rápida da nuvem -->
-        <div id="pcView">
-            <div class="pcTitle">Nuvem (visão rápida)</div>
-            <canvas id="pcCanvas" width="220" height="160"></canvas>
-        </div>
+    <div id="container">
+        <video id="camera" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
     </div>
 
     <script src="main.js"></script>
