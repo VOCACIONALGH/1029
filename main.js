@@ -5,6 +5,9 @@ const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
+const miniCanvas = document.getElementById("miniCanvas");
+const miniCtx = miniCanvas.getContext("2d");
+
 const blackSlider = document.getElementById("blackThreshold");
 const blueSlider = document.getElementById("blueThreshold");
 const greenSlider = document.getElementById("greenThreshold");
@@ -69,6 +72,8 @@ let triangulatedCount = 0;
 // Nuvem de pontos (registrada durante calibração; conteúdo salvo em JSON quando o usuário clicar em Download)
 let pointCloud = []; // cada item: { x, y, z }
 
+// lista de destaques temporários na imagem (cada item: { x, y, expireAt })
+let tempHighlights = [];
 
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
@@ -87,6 +92,9 @@ scanBtn.addEventListener("click", async () => {
     video.onloadedmetadata = () => {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
+        // ajustar mini canvas tamanho real (retina não tratado)
+        miniCanvas.width = 200;
+        miniCanvas.height = 200;
         processFrame();
     };
 
@@ -112,12 +120,14 @@ calibrateBtn.addEventListener("click", () => {
         if (!nrInput) {
             alert("Calibração cancelada: número de raios não fornecido.");
             downloadBtn.style.display = "none";
+            miniCanvas.style.display = "none";
             return;
         }
         const nr = parseInt(nrInput, 10);
         if (isNaN(nr) || nr < 2) {
             alert("Valor inválido para número de raios. Calibração cancelada.");
             downloadBtn.style.display = "none";
+            miniCanvas.style.display = "none";
             return;
         }
         nRaysRequired = nr;
@@ -125,11 +135,13 @@ calibrateBtn.addEventListener("click", () => {
         if (!lastAvgPx || lastAvgPx <= 0) {
             alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
             downloadBtn.style.display = "none";
+            miniCanvas.style.display = "none";
             return;
         }
         if (currentOriginX === null || currentOriginY === null) {
             alert("Impossível calibrar: origem (ponto branco) não detectada no momento.");
             downloadBtn.style.display = "none";
+            miniCanvas.style.display = "none";
             return;
         }
         // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
@@ -151,6 +163,7 @@ calibrateBtn.addEventListener("click", () => {
             isCalibrated = false;
             scaleLockEl.textContent = "aberta";
             downloadBtn.style.display = "none";
+            miniCanvas.style.display = "none";
             return;
         }
 
@@ -164,6 +177,7 @@ calibrateBtn.addEventListener("click", () => {
             isCalibrated = false;
             scaleLockEl.textContent = "aberta";
             downloadBtn.style.display = "none";
+            miniCanvas.style.display = "none";
             return;
         }
 
@@ -204,8 +218,11 @@ calibrateBtn.addEventListener("click", () => {
         // reset da nuvem de pontos
         pointCloud = [];
 
-        // mostrar botão Download durante a calibração
+        // mostrar botão Download e miniCanvas durante a calibração
         downloadBtn.style.display = "inline-block";
+        miniCanvas.style.display = "block";
+        // limpar mini canvas
+        clearMiniCanvas();
 
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
@@ -252,8 +269,9 @@ calibrateBtn.addEventListener("click", () => {
         a.remove();
         URL.revokeObjectURL(url);
 
-        // esconder o botão de download da nuvem (aparecia só durante gravação)
+        // esconder o botão de download da nuvem (aparecia só durante gravação) e mini canvas
         downloadBtn.style.display = "none";
+        miniCanvas.style.display = "none";
 
         alert("Calibração finalizada. Arquivo JSON baixado.");
         return;
@@ -464,6 +482,66 @@ function matMulVec(M, v) {
         M[1][0]*v[0] + M[1][1]*v[1] + M[1][2]*v[2],
         M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2],
     ];
+}
+
+// desenha os destaques temporários (círculos rosa-claro) na imagem
+function drawTempHighlights() {
+    const now = Date.now();
+    tempHighlights = tempHighlights.filter(h => h.expireAt > now);
+    for (const h of tempHighlights) {
+        ctx.save();
+        ctx.fillStyle = "rgba(255,182,193,0.85)"; // lightpink semi-transparente
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+// limpa mini canvas
+function clearMiniCanvas() {
+    miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+    // fundo semi-transparente
+    miniCtx.fillStyle = "rgba(0,0,0,0.0)";
+    miniCtx.fillRect(0, 0, miniCanvas.width, miniCanvas.height);
+}
+
+// desenha a nuvem de pontos no mini canvas (mapeia usando bounds)
+function drawMiniCloud() {
+    clearMiniCanvas();
+    if (!pointCloud || pointCloud.length === 0) return;
+
+    // calcular bounds nos eixos X,Y (usar apenas x/y de world)
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pointCloud) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    // se todos iguais (poucos pontos), definir uma faixa pequena
+    if (minX === maxX) { minX -= 1; maxX += 1; }
+    if (minY === maxY) { minY -= 1; maxY += 1; }
+
+    const pad = 6;
+    const w = miniCanvas.width - pad*2;
+    const h = miniCanvas.height - pad*2;
+
+    // desenhar pontos (pequenos) – não especificamos cores globais além do necessário
+    miniCtx.save();
+    miniCtx.globalCompositeOperation = 'source-over';
+    for (const p of pointCloud) {
+        const nx = (p.x - minX) / (maxX - minX);
+        const ny = (p.y - minY) / (maxY - minY);
+        // inverter Y para ficar "cartesiano"
+        const vx = pad + nx * w;
+        const vy = pad + (1 - ny) * h;
+        miniCtx.beginPath();
+        miniCtx.fillStyle = "rgba(255,255,255,0.9)";
+        miniCtx.arc(vx, vy, 1.3, 0, Math.PI*2);
+        miniCtx.fill();
+    }
+    miniCtx.restore();
 }
 
 // --- função de triangulação por mínimos quadrados (usa apenas raios no referencial world-fixed) ---
@@ -747,6 +825,14 @@ function processFrame() {
                                 // registrar na nuvem de pontos durante a calibração
                                 if (isRecording) {
                                     pointCloud.push({ x: triTranslated.x, y: triTranslated.y, z: triTranslated.z });
+                                    // atualizar mini visualização
+                                    drawMiniCloud();
+                                }
+
+                                // criar destaque temporário no local do centroid atual (se disponível)
+                                // usamos o centroid redCx/redCy detectado no frame para destacar visualmente
+                                if (typeof redCx === "number" && typeof redCy === "number") {
+                                    tempHighlights.push({ x: redCx, y: redCy, expireAt: Date.now() + 250 }); // 250 ms
                                 }
                             }
                             // remover os raios usados (consumir a janela)
@@ -756,6 +842,9 @@ function processFrame() {
                 }
             }
         }
+
+        // desenhar destaques temporários (após o putImageData e marcações)
+        drawTempHighlights();
 
         // média das distâncias observadas (em pixels)
         let avgPx = null;
