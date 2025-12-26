@@ -50,6 +50,33 @@ function rgbToHsv(r, g, b) {
     return { h, s, v };
 }
 
+function drawArrow(x1, y1, x2, y2, color) {
+    const headLength = 10;
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(
+        x2 - headLength * Math.cos(angle - Math.PI / 6),
+        y2 - headLength * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.lineTo(
+        x2 - headLength * Math.cos(angle + Math.PI / 6),
+        y2 - headLength * Math.sin(angle + Math.PI / 6)
+    );
+    ctx.closePath();
+    ctx.fill();
+}
+
 function processFrame() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
@@ -75,61 +102,63 @@ function processFrame() {
         const x = idx % canvas.width;
         const y = Math.floor(idx / canvas.width);
 
-        // PRETO → LARANJA
         if (hsv.v < vBlack) {
             data[i] = 255;
             data[i + 1] = 165;
             data[i + 2] = 0;
-
-            sbx += x;
-            sby += y;
-            cb++;
+            sbx += x; sby += y; cb++;
         }
-
-        // AZUL → BRANCO
         else if (hsv.h >= 200 && hsv.h <= 260 && hsv.s > sBlue) {
             data[i] = 255;
             data[i + 1] = 255;
             data[i + 2] = 255;
-
-            blx += x;
-            bly += y;
-            cbl++;
+            blx += x; bly += y; cbl++;
         }
-
-        // VERDE → ROXO
         else if (hsv.h >= 90 && hsv.h <= 150 && hsv.s > sGreen) {
             data[i] = 128;
             data[i + 1] = 0;
             data[i + 2] = 128;
-
-            grx += x;
-            gry += y;
-            cgr++;
+            grx += x; gry += y; cgr++;
         }
     }
 
     ctx.putImageData(frame, 0, 0);
 
+    let ox, oy, bx, by, gx, gy;
+
     if (cb > 0) {
+        ox = sbx / cb;
+        oy = sby / cb;
         ctx.fillStyle = "white";
         ctx.beginPath();
-        ctx.arc(sbx / cb, sby / cb, 4, 0, Math.PI * 2);
+        ctx.arc(ox, oy, 4, 0, Math.PI * 2);
         ctx.fill();
     }
 
     if (cbl > 0) {
+        bx = blx / cbl;
+        by = bly / cbl;
         ctx.fillStyle = "blue";
         ctx.beginPath();
-        ctx.arc(blx / cbl, bly / cbl, 4, 0, Math.PI * 2);
+        ctx.arc(bx, by, 4, 0, Math.PI * 2);
         ctx.fill();
     }
 
     if (cgr > 0) {
+        gx = grx / cgr;
+        gy = gry / cgr;
         ctx.fillStyle = "green";
         ctx.beginPath();
-        ctx.arc(grx / cgr, gry / cgr, 4, 0, Math.PI * 2);
+        ctx.arc(gx, gy, 4, 0, Math.PI * 2);
         ctx.fill();
+    }
+
+    if (cb > 0 && cbl > 0) {
+        drawArrow(ox, oy, bx, by, "blue"); // vetor +X
+    }
+
+    if (cb > 0 && cgr > 0) {
+        drawArrow(ox, oy, gx, gy, "green"); // vetor +Y
     }
 
     requestAnimationFrame(processFrame);
