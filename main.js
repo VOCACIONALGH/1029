@@ -1,12 +1,9 @@
 const scanBtn = document.getElementById("scanBtn");
 const calibrateBtn = document.getElementById("calibrateBtn");
-const downloadBtn = document.getElementById("downloadBtn"); // novo botão
+const downloadBtn = document.getElementById("downloadPointCloudBtn");
 const video = document.getElementById("camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-
-const pcCanvas = document.getElementById("pcCanvas"); // mini canvas
-const pcCtx = pcCanvas.getContext("2d");
 
 const blackSlider = document.getElementById("blackThreshold");
 const blueSlider = document.getElementById("blueThreshold");
@@ -66,14 +63,8 @@ let rotatedCount = 0;
 // triangulação
 let nRaysRequired = null; // número de raios por triangulação (definido pelo usuário no início da calibração)
 let pendingRaysForTriang = []; // raios acumulados (world-fixed) para próxima triangulação
-let triangulatedPoints = []; // array de pontos triangulados { x, y, z } (agora armazenados RELATIVOS ao markerOrigin)
+let triangulatedPoints = []; // array de pontos triangulados { x, y, z }
 let triangulatedCount = 0;
-
-// telas/visualizações relacionadas à triangulação (persistir marcações na tela principal)
-let triangulatedScreenPoints = []; // { x, y } em pixels para desenhar rosa claro
-
-// marcador origem (o primeiro ponto triangulado). Quando definido, todos os pontos armazenados são relativos a este.
-let markerOrigin = null; // { x, y, z } absolute world coordinates of the first triangulated point
 
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
@@ -107,31 +98,6 @@ scanBtn.addEventListener("click", async () => {
     } else {
         window.addEventListener("deviceorientation", onOrientation);
     }
-});
-
-// Evento do botão download: gera arquivo JSON da nuvem triangulada no formato { points: [...], meta: {...} }
-downloadBtn.addEventListener("click", () => {
-    // gerar arquivo apenas com os pontos triangulados atuais (já armazenados relativos ao marker)
-    const payload = {
-        meta: {
-            generatedAt: Date.now(),
-            pointCount: triangulatedPoints.length,
-            nRaysRequired: nRaysRequired
-        },
-        points: triangulatedPoints
-    };
-
-    const jsonStr = JSON.stringify(payload, null, 2);
-    const blob = new Blob([jsonStr], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const ts = (new Date()).toISOString().replace(/[:.]/g, "-");
-    a.href = url;
-    a.download = `pointcloud_${ts}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
 });
 
 calibrateBtn.addEventListener("click", () => {
@@ -225,22 +191,15 @@ calibrateBtn.addEventListener("click", () => {
         triangulatedCount = 0;
         triangulatedCountEl.textContent = triangulatedCount.toString();
 
-        triangulatedScreenPoints = [];
-
-        // reset marker origin
-        markerOrigin = null;
-
-        // mostrar botão de download durante calibração
-        downloadBtn.style.display = "inline-block";
-        downloadBtn.disabled = true; // inicialmente desabilitado enquanto não houver pontos
-
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
         xCameraEl.textContent = cameraX_mm.toFixed(2);
         yCameraEl.textContent = cameraY_mm.toFixed(2);
 
-        // limpar mini canvas view
-        clearPointCloudView();
+        // Mostrar botão de download da nuvem de pontos durante a calibração
+        if (downloadBtn) {
+            downloadBtn.style.display = 'inline-block';
+        }
 
         return;
     }
@@ -248,9 +207,6 @@ calibrateBtn.addEventListener("click", () => {
     // Finaliza calibração (se estava gravando) e baixa JSON
     if (isCalibrated && isRecording) {
         isRecording = false;
-
-        // esconder botão de download após finalização (mas permitir download final via export JSON já existente)
-        downloadBtn.style.display = "none";
 
         const exportObj = {
             meta: {
@@ -284,6 +240,11 @@ calibrateBtn.addEventListener("click", () => {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
+
+        // esconder botão de download da nuvem de pontos ao finalizar
+        if (downloadBtn) {
+            downloadBtn.style.display = 'none';
+        }
 
         alert("Calibração finalizada. Arquivo JSON baixado.");
         return;
@@ -547,60 +508,6 @@ function invert3x3(M) {
     ];
 }
 
-// --- utilities for point-cloud quick view ---
-// limpa mini canvas
-function clearPointCloudView() {
-    pcCtx.clearRect(0, 0, pcCanvas.width, pcCanvas.height);
-    // desenho de fundo leve
-    pcCtx.fillStyle = "#111";
-    pcCtx.fillRect(0, 0, pcCanvas.width, pcCanvas.height);
-}
-
-// desenha a nuvem (apenas XY, ignora Z) em pcCanvas para visualizar densidade
-function updatePointCloudView() {
-    clearPointCloudView();
-
-    const pts = triangulatedPoints;
-    if (!pts || pts.length === 0) return;
-
-    // calcular bbox em X/Y
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const p of pts) {
-        if (typeof p.x !== "number" || typeof p.y !== "number") continue;
-        if (p.x < minX) minX = p.x;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.y > maxY) maxY = p.y;
-    }
-
-    // se bbox degenerado, centralizar
-    if (!isFinite(minX) || !isFinite(minY)) return;
-    const pad = 1e-3;
-    if (Math.abs(maxX - minX) < pad) { maxX = minX + 1; minX = minX - 1; }
-    if (Math.abs(maxY - minY) < pad) { maxY = minY + 1; minY = minY - 1; }
-
-    const w = pcCanvas.width;
-    const h = pcCanvas.height;
-    const margin = 8;
-    const availW = w - 2*margin;
-    const availH = h - 2*margin;
-
-    const scaleX = availW / (maxX - minX);
-    const scaleY = availH / (maxY - minY);
-    const scale = Math.min(scaleX, scaleY);
-
-    // desenhar cada ponto
-    pcCtx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
-    for (const p of pts) {
-        if (typeof p.x !== "number" || typeof p.y !== "number") continue;
-        const sx = margin + (p.x - minX) * scale;
-        // inverter Y para visualização (opcional): maior Y para baixo
-        const sy = margin + (maxY - p.y) * scale;
-        // desenhar pequeno pixel
-        pcCtx.fillRect(Math.round(sx)-1, Math.round(sy)-1, 3, 3);
-    }
-}
-
 function processFrame() {
     if (video.readyState >= 2) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -646,18 +553,6 @@ function processFrame() {
         }
 
         ctx.putImageData(frame, 0, 0);
-
-        // desenhar pontos triangulados persistentes (rosa claro) na tela principal
-        if (triangulatedScreenPoints.length > 0) {
-            ctx.save();
-            ctx.fillStyle = "rgba(255,182,193,0.95)"; // lightpink
-            for (const sp of triangulatedScreenPoints) {
-                ctx.beginPath();
-                ctx.arc(sp.x, sp.y, 6, 0, Math.PI*2);
-                ctx.fill();
-            }
-            ctx.restore();
-        }
 
         let ox, oy, bx, by, gx, gy;
         let distBlue = 0, distGreen = 0, nDist = 0;
@@ -784,35 +679,9 @@ function processFrame() {
                             const tri = triangulateRaysWorld(subset);
                             // se triangulação bem-sucedida, armazenar e atualizar contador
                             if (tri) {
-                                // Se ainda não temos marcador (primeiro ponto), definimos markerOrigin = tri
-                                if (!markerOrigin) {
-                                    markerOrigin = { x: tri.x, y: tri.y, z: tri.z };
-                                    // armazenar o primeiro ponto como (0,0,0) relativo ao marker
-                                    triangulatedPoints.push({ x: 0, y: 0, z: 0 });
-                                } else {
-                                    // armazenar ponto relativo ao markerOrigin
-                                    triangulatedPoints.push({
-                                        x: tri.x - markerOrigin.x,
-                                        y: tri.y - markerOrigin.y,
-                                        z: tri.z - markerOrigin.z
-                                    });
-                                }
-
+                                triangulatedPoints.push(tri);
                                 triangulatedCount++;
                                 triangulatedCountEl.textContent = triangulatedCount.toString();
-
-                                // registrar ponto de tela (origem atual) para desenhar rosa claro persistente
-                                if (currentOriginX !== null && currentOriginY !== null) {
-                                    triangulatedScreenPoints.push({ x: currentOriginX, y: currentOriginY });
-                                }
-
-                                // habilitar botão de download se houver pelo menos 1 ponto
-                                if (triangulatedPoints.length > 0) {
-                                    downloadBtn.disabled = false;
-                                }
-
-                                // atualizar mini visualização da nuvem
-                                updatePointCloudView();
                             }
                             // remover os raios usados (consumir a janela)
                             pendingRaysForTriang = pendingRaysForTriang.slice(nRaysRequired);
@@ -966,4 +835,33 @@ function processFrame() {
     }
 
     requestAnimationFrame(processFrame);
+}
+
+// Evento para baixar a nuvem de pontos triangulados enquanto estiver gravando
+if (downloadBtn) {
+    downloadBtn.addEventListener('click', () => {
+        // usar triangulatedPoints (está sendo preenchido durante a calibração)
+        const pts = triangulatedPoints || [];
+        const exportObj = {
+            meta: {
+                createdAt: Date.now(),
+                count: pts.length,
+                calibration_px: calibration_px,
+                calibrationZ_mm: calibrationZ_mm,
+                pixelPerMM_locked: pixelPerMM_locked
+            },
+            points: pts // array de {x,y,z}
+        };
+        const jsonStr = JSON.stringify(exportObj, null, 2);
+        const blob = new Blob([jsonStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const ts = (new Date()).toISOString().replace(/[:.]/g, "-");
+        a.href = url;
+        a.download = `pointcloud_${ts}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    });
 }
