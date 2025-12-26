@@ -17,11 +17,6 @@ button {
     margin: 8px 6px;
 }
 
-#downloadPointCloudBtn {
-    /* botão inicialmente escondido via inline-style; quando exibido, manter mesma aparência */
-    display: none;
-}
-
 .sliderLabel {
     color: #fff;
     font-size: 14px;
