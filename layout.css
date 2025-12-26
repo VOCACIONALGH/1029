@@ -75,6 +75,13 @@ input[type="range"] {
 #rotatedContainer {
     color: #fff;
     font-size: 14px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+#triangulatedContainer {
+    color: #fff;
+    font-size: 14px;
     margin-bottom: 12px;
     text-align: center;
 }
