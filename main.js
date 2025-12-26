@@ -54,6 +54,10 @@ function processFrame() {
     const data = frame.data;
     const threshold = parseInt(thresholdSlider.value, 10) / 100;
 
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
+
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
         const g = data[i + 1];
@@ -65,9 +69,28 @@ function processFrame() {
             data[i] = 255;
             data[i + 1] = 165;
             data[i + 2] = 0;
+
+            const pixelIndex = i / 4;
+            const x = pixelIndex % canvas.width;
+            const y = Math.floor(pixelIndex / canvas.width);
+
+            sumX += x;
+            sumY += y;
+            count++;
         }
     }
 
     ctx.putImageData(frame, 0, 0);
+
+    if (count > 0) {
+        const cx = sumX / count;
+        const cy = sumY / count;
+
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
     requestAnimationFrame(processFrame);
 }
