@@ -22,6 +22,7 @@ const xCameraEl = document.getElementById("xCamera");
 const yCameraEl = document.getElementById("yCamera");
 
 const raysCountEl = document.getElementById("raysCount");
+const pinkDirCountEl = document.getElementById("pinkDirCount");
 
 let pitch = 0, yaw = 0, roll = 0;
 
@@ -46,9 +47,12 @@ let isRecording = false; // true enquanto a calibração está registrando frame
 let calibrationLog = []; // array para armazenar os frames durante calibração
 let calibrationStartTime = null;
 
-// novos: contagem e registro de raios gerados pelo ponto rosa
+// contagem e registro de raios gerados pelo ponto rosa
 let raysCount = 0;
-let raysLog = []; // cada entrada: { t, origin: {x,y,z}, direction: {dx,dy,dz} }
+let raysLog = []; // cada entrada: { t, origin: {x,y,z}, direction: {dx,dy,dz}, pixel: {x,y} }
+
+// contagem de pontos rosas com direção definida (pinhole)
+let pinkDirCount = 0;
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -139,10 +143,13 @@ calibrateBtn.addEventListener("click", () => {
         calibrationLog = [];
         calibrationStartTime = Date.now();
 
-        // reset de contagem de raios para nova calibração
+        // reset de contadores
         raysCount = 0;
         raysLog = [];
         raysCountEl.textContent = raysCount.toString();
+
+        pinkDirCount = 0;
+        pinkDirCountEl.textContent = pinkDirCount.toString();
 
         // atualizar UI
         zCameraEl.textContent = cameraZ_mm.toFixed(2);
@@ -156,7 +163,7 @@ calibrateBtn.addEventListener("click", () => {
     if (isCalibrated && isRecording) {
         isRecording = false;
 
-        // preparar objeto para exportar (mantemos como antes, sem mudanças pedidas)
+        // preparar objeto para exportar (inclui também rays e contagem)
         const exportObj = {
             meta: {
                 calibration_px: calibration_px,
@@ -167,7 +174,8 @@ calibrateBtn.addEventListener("click", () => {
                 calibrationStart: calibrationStartTime,
                 calibrationEnd: Date.now(),
                 frames: calibrationLog.length,
-                raysDefined: raysCount
+                raysDefined: raysCount,
+                pinkDirsDefined: pinkDirCount
             },
             frames: calibrationLog,
             rays: raysLog
@@ -401,43 +409,48 @@ function processFrame() {
             ctx.arc(redCx, redCy, 4, 0, Math.PI * 2);
             ctx.fill();
 
-            // se estamos gravando (durante calibragem), registrar um raio 3D a partir da câmera através deste pixel
+            // se estamos gravando (durante calibragem), definir direção por aproximação pinhole
             if (isRecording) {
-                // definir origem da câmera em (0,0,0) no referencial da câmera
-                const originCam = { x: 0, y: 0, z: 0 };
+                // apenas definir direção se calibrado e tivermos escala travada e Z da câmera
+                if (isCalibrated && pixelPerMM_locked && cameraZ_mm) {
+                    // focal length (pixels) via relação f = pixelPerMM_locked * Z (deduzido da escala usada)
+                    const f = pixelPerMM_locked * cameraZ_mm;
 
-                // direção: usar pixels relativos ao centro da imagem; converter para mm se possível
-                const cx = canvas.width / 2;
-                const cy = canvas.height / 2;
-                const dx_px = redCx - cx;
-                const dy_px = redCy - cy;
+                    if (f > 0 && canvas.width > 0 && canvas.height > 0) {
+                        const cx = canvas.width / 2;
+                        const cy = canvas.height / 2;
 
-                // preferir escala travada quando disponível; caso contrário usar escala atual (pode ser 0)
-                const scale = (pixelPerMM_locked && pixelPerMM_locked > 0) ? pixelPerMM_locked : (pixelPerMM_current || 1);
+                        // coordenadas de imagem (u,v)
+                        const u = redCx;
+                        const v = redCy;
 
-                const dx_mm = dx_px / scale;
-                const dy_mm = dy_px / scale;
+                        // direção em coordenadas da câmera: [(u - cx)/f, (v - cy)/f, 1]
+                        let dir = [
+                            (u - cx) / f,
+                            (v - cy) / f,
+                            1
+                        ];
 
-                // usar cameraZ_mm quando disponível para dar uma componente Z significativa, caso contrário usar 1
-                const dz_mm = (typeof cameraZ_mm === "number" && cameraZ_mm > 0) ? cameraZ_mm : 1.0;
+                        // normalizar
+                        const norm = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+                        dir = [dir[0] / norm, dir[1] / norm, dir[2] / norm];
 
-                // direção em coordenadas da câmera (x right, y down, z forward)
-                let dir = [dx_mm, dy_mm, dz_mm];
+                        // registrar raio (origem na câmera em 0,0,0)
+                        raysCount++;
+                        raysCountEl.textContent = raysCount.toString();
 
-                // normalizar direção
-                const norm = Math.hypot(dir[0], dir[1], dir[2]) || 1;
-                dir = [dir[0] / norm, dir[1] / norm, dir[2] / norm];
+                        // contar pontos rosas com direção definida (pinhole)
+                        pinkDirCount++;
+                        pinkDirCountEl.textContent = pinkDirCount.toString();
 
-                // incrementar contador e registrar
-                raysCount++;
-                raysCountEl.textContent = raysCount.toString();
-
-                raysLog.push({
-                    t: Date.now(),
-                    origin: originCam,
-                    direction: { dx: dir[0], dy: dir[1], dz: dir[2] },
-                    pixel: { x: redCx, y: redCy }
-                });
+                        raysLog.push({
+                            t: Date.now(),
+                            origin: { x: 0, y: 0, z: 0 },
+                            direction: { dx: dir[0], dy: dir[1], dz: dir[2] },
+                            pixel: { x: redCx, y: redCy }
+                        });
+                    }
+                }
             }
         }
 
