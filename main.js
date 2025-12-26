@@ -44,6 +44,15 @@ let isRecording = false; // true enquanto a calibração está registrando frame
 let calibrationLog = []; // array para armazenar os frames durante calibração
 let calibrationStartTime = null;
 
+// --- novos: armazenam últimos endpoints calculados por frame (pixels)
+let lastExX = null, lastExY = null;
+let lastEyX = null, lastEyY = null;
+
+// --- no momento da calibração (capturados)
+let cal_exX = null, cal_exY = null;
+let cal_eyX = null, cal_eyY = null;
+let cal_yaw = null, cal_pitch = null, cal_roll = null;
+
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -86,6 +95,12 @@ calibrateBtn.addEventListener("click", () => {
             return;
         }
 
+        // Certificar que os endpoints das setas existem
+        if (lastExX === null || lastEyX === null) {
+            alert("Impossível calibrar: vetores (+X e +Y) não detectados corretamente.");
+            return;
+        }
+
         // calcular pixelPerMM atual (média das distâncias observadas corresponde a 100 mm)
         const currentPixelPerMM = lastAvgPx / 100; // px por mm para 100 mm
         pixelPerMM_locked = currentPixelPerMM;
@@ -95,6 +110,17 @@ calibrateBtn.addEventListener("click", () => {
         originCalX = currentOriginX;
         originCalY = currentOriginY;
 
+        // registrar os endpoints das setas no momento da calibração (pixels)
+        cal_exX = lastExX;
+        cal_exY = lastExY;
+        cal_eyX = lastEyX;
+        cal_eyY = lastEyY;
+
+        // registrar orientação no momento da calibração
+        cal_yaw = yaw;
+        cal_pitch = pitch;
+        cal_roll = roll;
+
         const input = prompt("Informe o valor atual de +Z em milímetros (por exemplo: 250):");
         if (!input) {
             // desfazer travamento se usuário cancelar
@@ -102,6 +128,8 @@ calibrateBtn.addEventListener("click", () => {
             calibration_px = null;
             originCalX = null;
             originCalY = null;
+            cal_exX = cal_exY = cal_eyX = cal_eyY = null;
+            cal_yaw = cal_pitch = cal_roll = null;
             isCalibrated = false;
             scaleLockEl.textContent = "aberta";
             return;
@@ -114,6 +142,8 @@ calibrateBtn.addEventListener("click", () => {
             calibration_px = null;
             originCalX = null;
             originCalY = null;
+            cal_exX = cal_exY = cal_eyX = cal_eyY = null;
+            cal_yaw = cal_pitch = cal_roll = null;
             isCalibrated = false;
             scaleLockEl.textContent = "aberta";
             return;
@@ -145,7 +175,93 @@ calibrateBtn.addEventListener("click", () => {
     if (isCalibrated && isRecording) {
         isRecording = false;
 
-        // preparar objeto para exportar
+        // --- gerar nuvem de pontos do plano XY com base nos vértices capturados na calibração
+        // usamos uma grade nx x ny para o paralelogramo (incluindo bordas). Aqui nx=ny=11 por padrão.
+        const nx = 11, ny = 11;
+        let planePoints = [];
+        let planeVertices_px = null;
+        let planeVertices_mm = null;
+
+        if (cal_exX !== null && cal_eyX !== null && originCalX !== null && pixelPerMM_locked) {
+            // vetores em pixels a partir da origem de calibração
+            const vx_px = cal_exX - originCalX;
+            const vy_px = cal_exY - originCalY;
+            const ux_px = cal_eyX - originCalX;
+            const uy_px = cal_eyY - originCalY;
+
+            // converter para mm no sistema da câmera/imagem
+            const vx_mm_img = vx_px / pixelPerMM_locked;
+            const vy_mm_img = vy_px / pixelPerMM_locked;
+            const ux_mm_img = ux_px / pixelPerMM_locked;
+            const uy_mm_img = uy_px / pixelPerMM_locked;
+
+            // vetor X em mm (imagem coords)
+            const vecX_img = [vx_mm_img, vy_mm_img, 0];
+            // vetor Y em mm (imagem coords)
+            const vecY_img = [ux_mm_img, uy_mm_img, 0];
+
+            // matriz de rotação no momento da calibração
+            const Rcal = getRotationMatrix(cal_yaw, cal_pitch, cal_roll);
+
+            // converter vetores para world coordinates
+            const vecX_world = matMulVec(Rcal, vecX_img);
+            const vecY_world = matMulVec(Rcal, vecY_img);
+
+            // originWorld = [0,0,0] (pela convenção: câmera sob a origem no momento da calibração)
+            const originWorld = [0, 0, 0];
+
+            // gerar grade
+            for (let i = 0; i < nx; i++) {
+                const s = i / (nx - 1);
+                for (let j = 0; j < ny; j++) {
+                    const t = j / (ny - 1);
+                    const px = originWorld[0] + vecX_world[0] * s + vecY_world[0] * t;
+                    const py = originWorld[1] + vecX_world[1] * s + vecY_world[1] * t;
+                    const pz = originWorld[2] + vecX_world[2] * s + vecY_world[2] * t;
+                    planePoints.push({ x: px, y: py, z: pz });
+                }
+            }
+
+            // também salvar vértices (px e mm)
+            const corner_px = {
+                x: cal_exX + (cal_eyX - originCalX),
+                y: cal_exY + (cal_eyY - originCalY)
+            };
+
+            planeVertices_px = {
+                origin_px: { x: originCalX, y: originCalY },
+                ex_px: { x: cal_exX, y: cal_exY },
+                ey_px: { x: cal_eyX, y: cal_eyY },
+                corner_px: corner_px
+            };
+
+            // convert vertices to mm in world coords using same method
+            const ex_dx_px = cal_exX - originCalX;
+            const ex_dy_px = cal_exY - originCalY;
+            const ey_dx_px = cal_eyX - originCalX;
+            const ey_dy_px = cal_eyY - originCalY;
+            const ex_dx_mm = ex_dx_px / pixelPerMM_locked;
+            const ex_dy_mm = ex_dy_px / pixelPerMM_locked;
+            const ey_dx_mm = ey_dx_px / pixelPerMM_locked;
+            const ey_dy_mm = ey_dy_px / pixelPerMM_locked;
+
+            const ex_world = matMulVec(Rcal, [ex_dx_mm, ex_dy_mm, 0]);
+            const ey_world = matMulVec(Rcal, [ey_dx_mm, ey_dy_mm, 0]);
+            const corner_world = [
+                ex_world[0] + ey_world[0],
+                ex_world[1] + ey_world[1],
+                ex_world[2] + ey_world[2]
+            ];
+
+            planeVertices_mm = {
+                origin_mm: { x: 0, y: 0, z: 0 },
+                ex_mm: { x: ex_world[0], y: ex_world[1], z: ex_world[2] },
+                ey_mm: { x: ey_world[0], y: ey_world[1], z: ey_world[2] },
+                corner_mm: { x: corner_world[0], y: corner_world[1], z: corner_world[2] }
+            };
+        }
+
+        // preparar objeto para exportar (agora com plane)
         const exportObj = {
             meta: {
                 calibration_px: calibration_px,
@@ -153,11 +269,19 @@ calibrateBtn.addEventListener("click", () => {
                 pixelPerMM_locked: pixelPerMM_locked,
                 originCalX: originCalX,
                 originCalY: originCalY,
+                cal_ex_px: (cal_exX !== null) ? { x: cal_exX, y: cal_exY } : null,
+                cal_ey_px: (cal_eyX !== null) ? { x: cal_eyX, y: cal_eyY } : null,
+                cal_orientation_deg: (cal_yaw !== null) ? { yaw: cal_yaw, pitch: cal_pitch, roll: cal_roll } : null,
                 calibrationStart: calibrationStartTime,
                 calibrationEnd: Date.now(),
                 frames: calibrationLog.length
             },
-            frames: calibrationLog
+            frames: calibrationLog,
+            plane: {
+                vertices_px: planeVertices_px,
+                vertices_mm: planeVertices_mm,
+                points: planePoints
+            }
         };
 
         const jsonStr = JSON.stringify(exportObj, null, 2);
@@ -172,7 +296,7 @@ calibrateBtn.addEventListener("click", () => {
         a.remove();
         URL.revokeObjectURL(url);
 
-        alert("Calibração finalizada. Arquivo JSON baixado.");
+        alert("Calibração finalizada. Arquivo JSON (inclui nuvem do plano) baixado.");
 
         // manter isCalibrated = true (escala travada) mas gravação parada
         return;
@@ -346,6 +470,9 @@ function processFrame() {
             currentOriginY = null;
         }
 
+        // endpoints locais temporários (pixels) — também atualizamos lastEx/lastEy globais
+        let exX = null, exY = null, eyX = null, eyY = null;
+
         if (cbl > 0) {
             bx = blx / cbl;
             by = bly / cbl;
@@ -354,6 +481,22 @@ function processFrame() {
             if (cb) {
                 distBlue = Math.hypot(bx - ox, by - oy);
                 nDist++;
+            }
+
+            // calcular endpoint ex (origem + direção normalizada * desiredPx)
+            const effectivePixelPerMM = (isCalibrated && pixelPerMM_locked !== null) ? pixelPerMM_locked : (lastAvgPx ? lastAvgPx / 100 : null);
+            if (effectivePixelPerMM) {
+                const desiredPx = effectivePixelPerMM * 100;
+                const dx = bx - ox;
+                const dy = by - oy;
+                const norm = Math.hypot(dx, dy);
+                if (norm > 0) {
+                    exX = ox + (dx / norm) * desiredPx;
+                    exY = oy + (dy / norm) * desiredPx;
+                    // atualiza último endpoint X conhecido
+                    lastExX = exX;
+                    lastExY = exY;
+                }
             }
         }
 
@@ -365,6 +508,21 @@ function processFrame() {
             if (cb) {
                 distGreen = Math.hypot(gx - ox, gy - oy);
                 nDist++;
+            }
+
+            const effectivePixelPerMM2 = (isCalibrated && pixelPerMM_locked !== null) ? pixelPerMM_locked : (lastAvgPx ? lastAvgPx / 100 : null);
+            if (effectivePixelPerMM2) {
+                const desiredPx2 = effectivePixelPerMM2 * 100;
+                const dx2 = gx - ox;
+                const dy2 = gy - oy;
+                const norm2 = Math.hypot(dx2, dy2);
+                if (norm2 > 0) {
+                    eyX = ox + (dx2 / norm2) * desiredPx2;
+                    eyY = oy + (dy2 / norm2) * desiredPx2;
+                    // atualiza último endpoint Y conhecido
+                    lastEyX = eyX;
+                    lastEyY = eyY;
+                }
             }
         }
 
@@ -408,62 +566,44 @@ function processFrame() {
 
         // desenhar setas com comprimento correspondente a 100 mm usando escala atual/travada
         const effectivePixelPerMM = (isCalibrated && pixelPerMM_locked !== null) ? pixelPerMM_locked : pixelPerMM_current;
-
-        // vars para endpoints em pixels (usadas para desenhar o plano)
-        let exX = null, exY = null, eyX = null, eyY = null, cornerX = null, cornerY = null;
-
         if (cb && effectivePixelPerMM > 0) {
             const desiredPx = effectivePixelPerMM * 100;
 
-            if (cbl) {
-                let dx = bx - ox;
-                let dy = by - oy;
-                let norm = Math.hypot(dx, dy);
-                if (norm > 0) {
-                    exX = ox + (dx / norm) * desiredPx;
-                    exY = oy + (dy / norm) * desiredPx;
-                    drawArrow(ox, oy, exX, exY, "blue");
-                }
+            if (exX !== null && exY !== null) {
+                drawArrow(ox, oy, exX, exY, "blue");
             }
 
-            if (cgr) {
-                let dx2 = gx - ox;
-                let dy2 = gy - oy;
-                let norm2 = Math.hypot(dx2, dy2);
-                if (norm2 > 0) {
-                    eyX = ox + (dx2 / norm2) * desiredPx;
-                    eyY = oy + (dy2 / norm2) * desiredPx;
-                    drawArrow(ox, oy, eyX, eyY, "green");
-                }
+            if (eyX !== null && eyY !== null) {
+                drawArrow(ox, oy, eyX, eyY, "green");
             }
         }
 
         // desenhar o plano XY durante a calibragem (área azul claro cujos lados são as setas)
         // condição: estamos gravando (isRecording) e temos origem + ambos vetores calculados
-        if (isRecording && cb && exX !== null && eyX !== null) {
+        if (isRecording && cb && lastExX !== null && lastEyX !== null && currentOriginX !== null) {
             // corner = ex + ey - origin  (pixel coordinates)
-            cornerX = exX + eyX - ox;
-            cornerY = exY + eyY - oy;
+            const cornerX = lastExX + lastEyX - currentOriginX;
+            const cornerY = lastExY + lastEyY - currentOriginY;
 
             // preencher o paralelogramo origin -> ex -> corner -> ey
             ctx.save();
             ctx.fillStyle = 'rgba(173,216,230,0.35)'; // lightblue com transparência
             ctx.beginPath();
-            ctx.moveTo(ox, oy);
-            ctx.lineTo(exX, exY);
+            ctx.moveTo(currentOriginX, currentOriginY);
+            ctx.lineTo(lastExX, lastExY);
             ctx.lineTo(cornerX, cornerY);
-            ctx.lineTo(eyX, eyY);
+            ctx.lineTo(lastEyX, lastEyY);
             ctx.closePath();
             ctx.fill();
 
-            // opcional: borda leve
+            // borda
             ctx.strokeStyle = 'rgba(173,216,230,0.9)';
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(ox, oy);
-            ctx.lineTo(exX, exY);
+            ctx.moveTo(currentOriginX, currentOriginY);
+            ctx.lineTo(lastExX, lastExY);
             ctx.lineTo(cornerX, cornerY);
-            ctx.lineTo(eyX, eyY);
+            ctx.lineTo(lastEyX, lastEyY);
             ctx.closePath();
             ctx.stroke();
             ctx.restore();
