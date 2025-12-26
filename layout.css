@@ -13,7 +13,20 @@ button {
     font-size: 20px;
     font-weight: bold;
     cursor: pointer;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
+}
+
+#thresholdLabel {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+input[type="range"] {
+    width: 240px;
 }
 
 #container {
