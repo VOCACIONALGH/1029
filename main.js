@@ -50,13 +50,17 @@ let calibrationStartTime = null;
 
 // contagem e registro de raios gerados pelo ponto rosa
 let raysCount = 0;
-let raysLog = []; // cada entrada: { t, origin: {x,y,z}, direction: {dx,dy,dz}, pixel: {x,y} }
+let raysLog = []; // cada entrada: { t, origin: {x,y,z}, direction_camera:..., direction_world:..., pixel: {x,y} }
 
 // contagem de pontos rosas com direção definida (pinhole)
 let pinkDirCount = 0;
 
-// contagem de vetores rotacionados (após aplicar matriz de rotação)
+// contagem de vetores rotacionados (aplicados à direção para colocá-los no referencial world-fixed)
 let rotatedCount = 0;
+
+// Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
+let initialCamH = null;    // H0 (4x4) camera0 -> world_global
+let initialCamHInv = null; // inverse(H0)
 
 scanBtn.addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -89,7 +93,7 @@ scanBtn.addEventListener("click", async () => {
 });
 
 calibrateBtn.addEventListener("click", () => {
-    // Se ainda não calibrado, tenta iniciar a calibração (travar escala e pedir +Z)
+    // Inicia calibração quando ainda não calibrado
     if (!isCalibrated) {
         if (!lastAvgPx || lastAvgPx <= 0) {
             alert("Impossível calibrar: não foi detectada distância entre origem e pontos. Certifique-se de que origem e pontos existam na cena.");
@@ -142,12 +146,16 @@ calibrateBtn.addEventListener("click", () => {
         cameraY_mm = 0;
         cameraZ_mm = calibrationZ_mm;
 
+        // construir matriz homogênea inicial H0 (camera0 -> world_global)
+        initialCamH = buildHomogeneous(yaw, pitch, roll, cameraX_mm, cameraY_mm, cameraZ_mm);
+        initialCamHInv = invertHomogeneous(initialCamH);
+
         // iniciar gravação dos frames de calibração
         isRecording = true;
         calibrationLog = [];
         calibrationStartTime = Date.now();
 
-        // reset de contadores
+        // reset contadores e logs de raios
         raysCount = 0;
         raysLog = [];
         raysCountEl.textContent = raysCount.toString();
@@ -166,11 +174,10 @@ calibrateBtn.addEventListener("click", () => {
         return;
     }
 
-    // Se já estava calibrado e a gravação está ativa, ao clicar novamente finalizamos e baixamos o JSON
+    // Finaliza calibração (se estava gravando) e baixa JSON
     if (isCalibrated && isRecording) {
         isRecording = false;
 
-        // preparar objeto para exportar (inclui também rays e contagem)
         const exportObj = {
             meta: {
                 calibration_px: calibration_px,
@@ -202,12 +209,8 @@ calibrateBtn.addEventListener("click", () => {
         URL.revokeObjectURL(url);
 
         alert("Calibração finalizada. Arquivo JSON baixado.");
-
-        // manter isCalibrated = true (escala travada) mas gravação parada
         return;
     }
-
-    // Se isCalibrado true mas isRecording false (calibração já finalizada), re-click não re-inicia automaticamente
 });
 
 // lê orientações do dispositivo
@@ -222,7 +225,71 @@ function onOrientation(e) {
     rollEl.textContent = roll.toFixed(1);
 }
 
-// converter RGB para HSV
+// --- utilitários para matrizes 4x4 homogeneas ---
+// buildHomogeneous(yaw, pitch, roll, tx, ty, tz) -> H (4x4) camera->world
+function buildHomogeneous(alphaDeg, betaDeg, gammaDeg, tx, ty, tz) {
+    const R = getRotationMatrix(alphaDeg, betaDeg, gammaDeg); // 3x3
+    // build 4x4
+    return [
+        [R[0][0], R[0][1], R[0][2], tx],
+        [R[1][0], R[1][1], R[1][2], ty],
+        [R[2][0], R[2][1], R[2][2], tz],
+        [0, 0, 0, 1]
+    ];
+}
+
+// invert homogeneous H = [R t; 0 1] -> [R^T, -R^T*t; 0 1]
+function invertHomogeneous(H) {
+    // H is 4x4
+    const R = [
+        [H[0][0], H[0][1], H[0][2]],
+        [H[1][0], H[1][1], H[1][2]],
+        [H[2][0], H[2][1], H[2][2]]
+    ];
+    const t = [H[0][3], H[1][3], H[2][3]];
+    // R^T
+    const RT = [
+        [R[0][0], R[1][0], R[2][0]],
+        [R[0][1], R[1][1], R[2][1]],
+        [R[0][2], R[1][2], R[2][2]]
+    ];
+    // -R^T * t
+    const nt = [
+        -(RT[0][0]*t[0] + RT[0][1]*t[1] + RT[0][2]*t[2]),
+        -(RT[1][0]*t[0] + RT[1][1]*t[1] + RT[1][2]*t[2]),
+        -(RT[2][0]*t[0] + RT[2][1]*t[1] + RT[2][2]*t[2])
+    ];
+    return [
+        [RT[0][0], RT[0][1], RT[0][2], nt[0]],
+        [RT[1][0], RT[1][1], RT[1][2], nt[1]],
+        [RT[2][0], RT[2][1], RT[2][2], nt[2]],
+        [0, 0, 0, 1]
+    ];
+}
+
+// multiply 4x4 matrices A*B
+function mul4(A, B) {
+    const C = Array(4).fill(0).map(()=>Array(4).fill(0));
+    for (let i=0;i<4;i++){
+        for (let j=0;j<4;j++){
+            let s = 0;
+            for (let k=0;k<4;k++) s += A[i][k]*B[k][j];
+            C[i][j] = s;
+        }
+    }
+    return C;
+}
+
+// multiply 4x4 by 4x1 vector
+function mul4Vec(M, v) {
+    const out = [0,0,0,0];
+    for (let i=0;i<4;i++){
+        out[i] = M[i][0]*v[0] + M[i][1]*v[1] + M[i][2]*v[2] + M[i][3]*v[3];
+    }
+    return out;
+}
+
+// converter RGB para HSV (mantive a mesma função)
 function rgbToHsv(r, g, b) {
     r /= 255; g /= 255; b /= 255;
     const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -271,7 +338,7 @@ function drawArrow(x1, y1, x2, y2, color) {
 }
 
 // cria matriz de rotação a partir de yaw(alpha), pitch(beta), roll(gamma) em graus
-// (a função converte graus -> radianos internamente)
+// (converte graus -> radianos internamente)
 function getRotationMatrix(alphaDeg, betaDeg, gammaDeg) {
     const a = alphaDeg * Math.PI / 180; // yaw (z)
     const b = betaDeg * Math.PI / 180;  // pitch (x)
@@ -422,7 +489,7 @@ function processFrame() {
             if (isRecording) {
                 // apenas definir direção se calibrado e tivermos escala travada e Z da câmera
                 if (isCalibrated && pixelPerMM_locked && cameraZ_mm) {
-                    // focal length (pixels) via relação f = pixelPerMM_locked * Z (deduzido da escala usada)
+                    // focal length (pixels) via relação f = pixelPerMM_locked * Z
                     const f = pixelPerMM_locked * cameraZ_mm;
 
                     if (f > 0 && canvas.width > 0 && canvas.height > 0) {
@@ -434,51 +501,69 @@ function processFrame() {
                         const v = redCy;
 
                         // direção em coordenadas da câmera: [(u - cx)/f, (v - cy)/f, 1]
-                        let dir = [
+                        let dir_cam = [
                             (u - cx) / f,
                             (v - cy) / f,
                             1
                         ];
 
                         // normalizar (direção do modelo pinhole)
-                        const normP = Math.hypot(dir[0], dir[1], dir[2]) || 1;
-                        dir = [dir[0] / normP, dir[1] / normP, dir[2] / normP];
+                        const normP = Math.hypot(dir_cam[0], dir_cam[1], dir_cam[2]) || 1;
+                        dir_cam = [dir_cam[0] / normP, dir_cam[1] / normP, dir_cam[2] / normP];
 
                         // registrar que temos um ponto rosa com direção definida (pinhole)
                         pinkDirCount++;
                         pinkDirCountEl.textContent = pinkDirCount.toString();
 
-                        // registrar raio original (direção no referencial da câmera)
+                        // registrar raio (origem na câmera em 0,0,0) inicialmente com direção em câmera
                         raysCount++;
                         raysCountEl.textContent = raysCount.toString();
 
-                        // PRE-registrar ray with camera-frame direction
-                        raysLog.push({
-                            t: Date.now(),
-                            origin: { x: 0, y: 0, z: 0 },
-                            direction_camera: { dx: dir[0], dy: dir[1], dz: dir[2] },
-                            pixel: { x: redCx, y: redCy }
-                        });
+                        // build current camera homogeneous matrix Hc (camera_current -> world_global)
+                        const Hc = buildHomogeneous(yaw, pitch, roll, cameraX_mm, cameraY_mm, cameraZ_mm);
 
-                        // --- ROTACIONAR O VETOR USANDO MATRIZ 3x3 (yaw, pitch, roll) ---
-                        // converte graus -> radianos feito internamente em getRotationMatrix
-                        const R = getRotationMatrix(yaw, pitch, roll); // yaw, pitch, roll em graus
-                        const rotated = matMulVec(R, dir);
+                        // transformar Hc para o referencial fixo world (via inversa de H0)
+                        // H_rel = initialCamHInv * Hc  => representa transform from camera_current to world_fixed (camera0) frame
+                        if (initialCamHInv) {
+                            const Hrel = mul4(initialCamHInv, Hc);
 
-                        // normalizar novamente
-                        const normR = Math.hypot(rotated[0], rotated[1], rotated[2]) || 1;
-                        const rotatedNorm = [rotated[0] / normR, rotated[1] / normR, rotated[2] / normR];
+                            // origem do raio em world_fixed: Hrel * [0,0,0,1]
+                            const originWF4 = mul4Vec(Hrel, [0,0,0,1]);
+                            const originWF = { x: originWF4[0], y: originWF4[1], z: originWF4[2] };
 
-                        // contabilizar vetor rotacionado
-                        rotatedCount++;
-                        rotatedCountEl.textContent = rotatedCount.toString();
+                            // Rotacionar direção: R_rel (top-left 3x3 of Hrel) * dir_cam
+                            const Rrel = [
+                                [Hrel[0][0], Hrel[0][1], Hrel[0][2]],
+                                [Hrel[1][0], Hrel[1][1], Hrel[1][2]],
+                                [Hrel[2][0], Hrel[2][1], Hrel[2][2]]
+                            ];
+                            let dir_world = matMulVec(Rrel, dir_cam);
+                            const normW = Math.hypot(dir_world[0], dir_world[1], dir_world[2]) || 1;
+                            dir_world = [dir_world[0]/normW, dir_world[1]/normW, dir_world[2]/normW];
 
-                        // substituir/estender última entrada do log com a direção rotacionada (referencial world)
-                        raysLog[raysLog.length - 1].direction_world = {
-                            dx: rotatedNorm[0],
-                            dy: rotatedNorm[1],
-                            dz: rotatedNorm[2]
-                        };
+                            // contabilizar vetor rotacionado (no referencial world fixed)
+                            rotatedCount++;
+                            rotatedCountEl.textContent = rotatedCount.toString();
+
+                            // registrar no log: origem e direção no referencial fixo do mundo
+                            raysLog.push({
+                                t: Date.now(),
+                                origin_world: originWF,
+                                direction_world: { dx: dir_world[0], dy: dir_world[1], dz: dir_world[2] },
+                                pixel: { x: redCx, y: redCy },
+                                // também manter direção em câmera caso seja útil
+                                direction_camera: { dx: dir_cam[0], dy: dir_cam[1], dz: dir_cam[2] }
+                            });
+                        } else {
+                            // fallback: se por algum motivo não temos initialCamHInv, registrar apenas camera-frame direction
+                            raysLog.push({
+                                t: Date.now(),
+                                origin_world: null,
+                                direction_world: null,
+                                pixel: { x: redCx, y: redCy },
+                                direction_camera: { dx: dir_cam[0], dy: dir_cam[1], dz: dir_cam[2] }
+                            });
+                        }
                     }
                 }
             }
@@ -581,7 +666,7 @@ function processFrame() {
             ctx.restore();
         }
 
-        // calcular translação da câmera em +X e +Y após calibração
+        // calcular translação da câmera em +X e +Y após calibração (mantive sua lógica)
         if (isCalibrated && pixelPerMM_locked && originCalX !== null && originCalY !== null && currentOriginX !== null) {
             const delta_px_x = originCalX - currentOriginX; // positivo quando origem foi para a esquerda
             const delta_px_y = currentOriginY - originCalY; // positivo quando origem moved down
