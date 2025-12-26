@@ -69,11 +69,6 @@ let triangulatedCount = 0;
 // Nuvem de pontos (registrada durante calibração; conteúdo salvo em JSON quando o usuário clicar em Download)
 let pointCloud = []; // cada item: { x, y, z }
 
-// Threshold de movimento mínimo para aceitar um novo raio para triangulação (mm)
-const MIN_CAMERA_MOVE_MM = 5;
-
-// guarda a última origem (world-fixed) que foi aceita para triangulação
-let lastAcceptedOrigin = null;
 
 // Matrizes homogeneas iniciais (definem o referencial world fixo no instante de calibração)
 let initialCamH = null;    // H0 (4x4) camera0 -> world_global
@@ -208,9 +203,6 @@ calibrateBtn.addEventListener("click", () => {
 
         // reset da nuvem de pontos
         pointCloud = [];
-
-        // reset do último raio aceito para triangulação
-        lastAcceptedOrigin = null;
 
         // mostrar botão Download durante a calibração
         downloadBtn.style.display = "inline-block";
@@ -710,31 +702,15 @@ function processFrame() {
                             direction: { dx: dir_world[0], dy: dir_world[1], dz: dir_world[2] }
                         };
 
-                        // push ray (registramos TODOS os raios no log)
+                        // push ray
                         raysLog.push(rayWorld);
 
                         // atualizar contador cumulativo de raios 3D registrados
                         raysCount++;
                         raysCountEl.textContent = raysCount.toString();
 
-                        // ---- aceitar raios para triangulação somente se a câmera se moveu o suficiente ----
-                        let acceptForTriang = false;
-                        if (lastAcceptedOrigin === null) {
-                            // primeiro raio aceito
-                            acceptForTriang = true;
-                        } else {
-                            const dxA = originWF.x - lastAcceptedOrigin.x;
-                            const dyA = originWF.y - lastAcceptedOrigin.y;
-                            const dzA = originWF.z - lastAcceptedOrigin.z;
-                            const distA = Math.hypot(dxA, dyA, dzA);
-                            if (distA >= MIN_CAMERA_MOVE_MM) acceptForTriang = true;
-                        }
-
-                        if (acceptForTriang) {
-                            pendingRaysForTriang.push(rayWorld);
-                            // atualizar último aceito
-                            lastAcceptedOrigin = { x: originWF.x, y: originWF.y, z: originWF.z };
-                        } // caso não aceite, o raio é ignorado só para triangulação (continua no raysLog)
+                        // também acumular para triangulação
+                        pendingRaysForTriang.push(rayWorld);
 
                         // quando tivermos número suficiente de raios (definido pelo usuário), triangular
                         if (nRaysRequired && pendingRaysForTriang.length >= nRaysRequired) {
