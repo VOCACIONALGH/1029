@@ -10,6 +10,21 @@
 <body>
 
   <button id="scanBtn">ESCÂNER</button>
+
+  <div id="calibration">
+    <label for="blackSlider">
+      Calibração do preto:
+      <span id="blackValue">30</span>
+    </label>
+    <input
+      type="range"
+      id="blackSlider"
+      min="0"
+      max="100"
+      value="30"
+    >
+  </div>
+
   <video id="camera" autoplay playsinline></video>
 
   <script src="main.js"></script>
