@@ -1,10 +1,14 @@
 // main.js — inclui triangulação por múltiplos raios no referencial fixo (mínimos quadrados)
+// alterações adicionadas: flash rosa-claro de pontos triangulados + mini-canvas de visualização rápida da nuvem
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
+
+const miniCanvas = document.getElementById('miniCloud');
+const miniCtx = miniCanvas ? miniCanvas.getContext('2d') : null;
 
 const scaleValue = document.getElementById('scaleValue');
 const scaleLockedLabel = document.getElementById('scaleLockedLabel');
@@ -67,6 +71,8 @@ let calibrationFrames = [];
 let calibration = null; 
 // calibration fields include registeredRays and triangulatedPoints (see below)
 
+let flashPoints = []; // { x, y, until } — used to draw temporary pink highlight
+
 scanBtn.addEventListener('click', async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -94,6 +100,14 @@ scanBtn.addEventListener('click', async () => {
     video.addEventListener('loadedmetadata', () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
+
+      // mini canvas physical pixel sizing (kept small)
+      if (miniCanvas) {
+        // keep logical size small (160x120) — CSS controls display size
+        miniCanvas.width = 160;
+        miniCanvas.height = 120;
+      }
+
       processFrame();
     });
 
@@ -325,6 +339,7 @@ calibrateBtn.addEventListener('click', () => {
 
     // hide download button when calibration finalizada
     downloadBtn.style.display = "none";
+    if (miniCanvas) miniCanvas.style.display = "none";
 
     const data = {
       recordedAt: new Date().toISOString(),
@@ -357,6 +372,11 @@ calibrateBtn.addEventListener('click', () => {
     acceptedCountSpan.textContent = "0";
     registered3DCountSpan.textContent = "0";
     triangulatedCountSpan.textContent = "0";
+
+    flashPoints = [];
+    if (miniCtx) {
+      miniCtx.clearRect(0,0,miniCanvas.width, miniCanvas.height);
+    }
 
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
@@ -472,7 +492,7 @@ calibrateBtn.addEventListener('click', () => {
     acceptedRays: [],
     lastAcceptedPos: null,
     lastAcceptedDir: null,
-    registeredRays: [],
+    registeredRays: [], // now includes pixel coords for quick visualization
     triangulatedPoints: [],
     numRaysNeeded
   };
@@ -483,6 +503,7 @@ calibrateBtn.addEventListener('click', () => {
 
   // mostrar botão de download da nuvem enquanto grava
   downloadBtn.style.display = "inline-block";
+  if (miniCanvas) miniCanvas.style.display = "block";
 
   raysCountSpan.textContent = "0";
   pinkDirectedCountSpan.textContent = "0";
@@ -522,6 +543,50 @@ downloadBtn.addEventListener('click', () => {
     URL.revokeObjectURL(a.href);
   }
 });
+
+function updateMiniCloud() {
+  if (!miniCtx || !calibration) return;
+  const pts = calibration.triangulatedPoints || [];
+  miniCtx.clearRect(0,0,miniCanvas.width, miniCanvas.height);
+  if (!pts.length) return;
+
+  // get registered coordinates (use registered_* if available)
+  const coords = pts.map(p => {
+    return {
+      x: (p.registered_x !== undefined) ? p.registered_x : p.x,
+      y: (p.registered_y !== undefined) ? p.registered_y : p.y
+    };
+  });
+
+  // compute bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  coords.forEach(p => {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  });
+
+  // ensure a small range to avoid divide by zero
+  if (!isFinite(minX)) return;
+  if (Math.abs(maxX - minX) < 1e-6) { maxX = minX + 1; minX = minX - 1; }
+  if (Math.abs(maxY - minY) < 1e-6) { maxY = minY + 1; minY = minY - 1; }
+
+  const w = miniCanvas.width, h = miniCanvas.height;
+
+  // background
+  miniCtx.fillStyle = 'rgba(0,0,0,0.0)'; // keep transparent
+  miniCtx.fillRect(0,0,w,h);
+
+  // draw points (small squares)
+  miniCtx.fillStyle = 'rgba(255,255,255,0.9)';
+  for (let i=0;i<coords.length;i++) {
+    const p = coords[i];
+    const sx = ((p.x - minX) / (maxX - minX)) * (w-4) + 2;
+    const sy = (1 - ((p.y - minY) / (maxY - minY))) * (h-4) + 2; // invert Y so higher Y goes upwards visually
+    miniCtx.fillRect(Math.round(sx), Math.round(sy), 2, 2);
+  }
+}
 
 function processFrame() {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -605,6 +670,18 @@ function processFrame() {
   if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
 
+  // desenha flashes rosa-claro temporários para pontos triangulados
+  const now = Date.now();
+  flashPoints = flashPoints.filter(fp => fp.until > now);
+  for (const fp of flashPoints) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(255,182,193,0.9)'; // lightpink
+    ctx.arc(fp.x, fp.y, 8, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // +Z
   let camZ_mm = NaN;
   if (calibration && origin && calibration.lockedScalePxPerMm) {
@@ -650,6 +727,11 @@ function processFrame() {
       lastTransformedMatrix = Ttrans;
     } else lastTransformedMatrix = null;
   } else lastTransformedMatrix = null;
+
+  // update mini-cloud view each frame (if visible)
+  if (isRecordingCalibration && miniCanvas && miniCtx) {
+    updateMiniCloud();
+  }
 
   // recording/calibration logic
   if (isRecordingCalibration) {
@@ -759,7 +841,8 @@ function processFrame() {
         const dr = rayEntry.dir_rotated;
         const reg = {
           origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
-          direction: { dx: Number(dr[0]), dy: Number(dr[1]), dz: Number(dr[2]) }
+          direction: { dx: Number(dr[0]), dy: Number(dr[1]), dz: Number(dr[2]) },
+          pixel: { x: px, y: py } // <-- store pixel for quick visualization/flash and mini-cloud mapping
         };
         calibration.registeredRays.push(reg);
         registered3DCountSpan.textContent = String(calibration.registeredRays.length);
@@ -801,6 +884,30 @@ function processFrame() {
             usedRaysStartIndex: startIndex
           });
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
+
+          // --- NEW: create a short pink flash at the average pixel position of the rays used
+          let avgPx = null, avgPy = null;
+          let pixelCount = 0;
+          for (const r of subset) {
+            if (r.pixel && isFinite(r.pixel.x) && isFinite(r.pixel.y)) {
+              avgPx = (avgPx || 0) + r.pixel.x;
+              avgPy = (avgPy || 0) + r.pixel.y;
+              pixelCount++;
+            }
+          }
+          if (pixelCount > 0) {
+            avgPx = avgPx / pixelCount;
+            avgPy = avgPy / pixelCount;
+          } else {
+            // fallback to center of canvas if pixel info missing
+            avgPx = canvas.width / 2;
+            avgPy = canvas.height / 2;
+          }
+          // push flash for ~300 ms
+          flashPoints.push({ x: avgPx, y: avgPy, until: Date.now() + 300 });
+
+          // update mini cloud display now
+          updateMiniCloud();
         } else {
           // triangulation failed (ill-conditioned) — skip silently (no other behavior changed)
         }
