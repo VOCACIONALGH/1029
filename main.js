@@ -716,17 +716,53 @@ function processFrame() {
     ySpan.textContent = camY_mm.toFixed(2);
   } else { xSpan.textContent="--"; ySpan.textContent="--"; }
 
-  // pose transform (kept)
-  if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
-    const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
-    if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
-      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
-      const tNow = [camX_mm, camY_mm, camZval];
-      const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
-      const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
-      lastTransformedMatrix = Ttrans;
-    } else lastTransformedMatrix = null;
-  } else lastTransformedMatrix = null;
+// === substitua aqui o bloco "pose transform (kept)" por este ===
+if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
+  const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
+
+  // apenas continua se tivermos valores razoáveis para X,Y,Z
+  if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
+    // matriz de pose da câmera atual (em mm)
+    const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+    const tNow = [camX_mm, camY_mm, camZval];
+    const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
+
+    // tentativa 1: usar invCamMatrixCal * TcamNow (comportamento original)
+    const Ttrans1 = multiply4x4(calibration.invCamMatrixCal, TcamNow);
+    const o1 = [Ttrans1[0][3], Ttrans1[1][3], Ttrans1[2][3]];
+    const norm1 = Math.hypot(o1[0], o1[1], o1[2]);
+
+    // tentativa 2 (fallback): usar camMatrixCal * TcamNow (caso ordem invertida)
+    const Ttrans2 = multiply4x4(calibration.camMatrixCal, TcamNow);
+    const o2 = [Ttrans2[0][3], Ttrans2[1][3], Ttrans2[2][3]];
+    const norm2 = Math.hypot(o2[0], o2[1], o2[2]);
+
+    console.debug("Pose debug: camX_mm,camY_mm,camZ_mm =", camX_mm, camY_mm, camZval);
+    console.debug("TcamNow translation:", tNow);
+    console.debug("Try inv*pose origin:", o1, "norm:", norm1);
+    console.debug("Try cam*pose origin:", o2, "norm:", norm2);
+
+    // escolha a transform com maior norma de translação (mais informativa) — evita ficar tudo no zero
+    // mas também evita escolher algo absurdo: aceitaremos apenas se norma > epsilon
+    const EPS = 1e-6;
+    if (isFinite(norm1) && norm1 > 1e-3 && norm1 >= norm2) {
+      lastTransformedMatrix = Ttrans1;
+    } else if (isFinite(norm2) && norm2 > 1e-3) {
+      console.warn("Using camMatrixCal * TcamNow fallback (order swap).");
+      lastTransformedMatrix = Ttrans2;
+    } else {
+      // ambos muito pequenos: marcar null (evita usar origem degenerada).
+      console.warn("Both transforms have tiny translation (possible scale/orientation issue). lastTransformedMatrix set to null.");
+      lastTransformedMatrix = null;
+    }
+  } else {
+    lastTransformedMatrix = null;
+  }
+} else {
+  lastTransformedMatrix = null;
+}
+// === fim do bloco substituído ===
+
 
   // update mini-cloud view each frame (if visible)
   if (isRecordingCalibration && miniCanvas && miniCtx) {
