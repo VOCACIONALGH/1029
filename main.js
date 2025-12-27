@@ -54,6 +54,10 @@ let currentScalePxPerMm = null; // atual (pode ser travada)
 let scaleLocked = false;
 let lockedScalePxPerMm = null;
 
+// gravação durante calibração
+let isRecordingCalibration = false;
+let calibrationFrames = []; // array de frames gravados durante calibração
+
 // calibração para +Z e origem
 let calibration = null; 
 // calibration will contain:
@@ -228,8 +232,33 @@ let lastDetectedPoints = null;
 // Última matriz transformada calculada (camera atual referenciada ao mundo fixo)
 let lastTransformedMatrix = null;
 
-// Calibrar: trava escala e pede valor +Z, guarda origem pixel do momento, monta matriz da câmera inicial e sua inversa
+// Calibrar: botão toggles - primeiro clique realiza calibração e inicia gravação,
+// segundo clique finaliza a gravação e faz download do .json
 calibrateBtn.addEventListener('click', () => {
+  // se já estamos gravando, então este clique finaliza a calibração e faz download
+  if (isRecordingCalibration) {
+    // finalizar gravação
+    isRecordingCalibration = false;
+    calibrateBtn.textContent = "Calibrar";
+    // gera JSON e baixa
+    const data = {
+      recordedAt: new Date().toISOString(),
+      frames: calibrationFrames.slice() // cópia
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    // limpa buffer
+    calibrationFrames = [];
+    alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
+    return;
+  }
+
+  // não estamos gravando => faz a calibração inicial (mesma lógica anterior) e inicia gravação
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
     return;
@@ -241,6 +270,7 @@ calibrateBtn.addEventListener('click', () => {
 
   const input = prompt("Informe o valor atual de +Z (mm) — somente números, ex.: 120.5");
   if (input === null) {
+    // usuário cancelou: desfaz lock
     scaleLocked = false;
     lockedScalePxPerMm = null;
     scaleLockedLabel.style.display = "none";
@@ -300,7 +330,11 @@ calibrateBtn.addEventListener('click', () => {
     invCamMatrixCal
   };
 
-  alert("Calibração concluída.\nEscala travada e +Z informado.");
+  // inicia gravação dos frames da calibração
+  isRecordingCalibration = true;
+  calibrationFrames = []; // limpa
+  calibrateBtn.textContent = "Finalizar Calib.";
+  alert("Calibração iniciada e gravação de frames ativada. Clique em 'Finalizar Calib.' para encerrar e baixar o .json.");
 });
 
 function processFrame() {
@@ -387,17 +421,13 @@ function processFrame() {
     }
   }
 
-  // --- NOVO: se estamos calibrados (calibration existe) e temos origin, bluePt, greenPt,
-  // desenhamos o plano XY definido pela origem e vetores.
-  // Construímos os quatro cantos na tela: origin, bluePt, corner4 = bluePt + (greenPt - origin), greenPt.
-  // Preenchimento azul-claro; depois redesenhamos pontos e setas por cima.
+  // --- desenha o plano XY durante calibração (se aplicável)
   if (calibration && origin && bluePt && greenPt) {
     const cornerA = origin;
     const cornerB = bluePt;
     const cornerD = greenPt;
     const cornerC = { x: bluePt.x + (greenPt.x - origin.x), y: bluePt.y + (greenPt.y - origin.y) };
 
-    // fill light-blue with slight transparency
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(cornerA.x, cornerA.y);
@@ -411,25 +441,11 @@ function processFrame() {
   }
 
   // desenha pontos e setas como antes (sobre o preenchimento)
-  if (origin) {
-    drawPoint(origin.x, origin.y, "#FFFFFF");
-  }
-
-  if (bluePt) {
-    drawPoint(bluePt.x, bluePt.y, "#0000FF");
-  }
-
-  if (greenPt) {
-    drawPoint(greenPt.x, greenPt.y, "#00FF00");
-  }
-
-  // desenha setas (se origem e pts existirem)
-  if (origin && bluePt) {
-    drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
-  }
-  if (origin && greenPt) {
-    drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
-  }
+  if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
+  if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
+  if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
+  if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
+  if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
 
   // Cálculo de +Z (mantido)
   if (calibration && origin && calibration.lockedScalePxPerMm) {
@@ -462,6 +478,7 @@ function processFrame() {
   }
 
   // cálculo da translação da câmera em +X e +Y (mantido)
+  let camX_mm = NaN, camY_mm = NaN, camZ_mm = NaN;
   if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
     const originCalPx = calibration.originPixelCal;
     const dx_px = origin.x - originCalPx.x;
@@ -476,8 +493,8 @@ function processFrame() {
     const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
     const vWorld = applyMat3(Rnow, vCamForXY);
 
-    const camX_mm = vWorld[0];
-    const camY_mm = vWorld[1];
+    camX_mm = vWorld[0];
+    camY_mm = vWorld[1];
 
     xSpan.textContent = camX_mm.toFixed(2);
     ySpan.textContent = camY_mm.toFixed(2);
@@ -486,28 +503,68 @@ function processFrame() {
     ySpan.textContent = "--";
   }
 
-  // --- NOVO: montagem da matriz homogênea da pose atual da câmera e transformação para o referencial do mundo fixo
-  if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
-    const camX = (xSpan.textContent !== "--") ? parseFloat(xSpan.textContent) : NaN;
-    const camY = (ySpan.textContent !== "--") ? parseFloat(ySpan.textContent) : NaN;
-    const camZ = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
+  // calcula camZ_mm de acordo com bloco de +Z (se disponível)
+  if (calibration && origin && calibration.lockedScalePxPerMm && lastDetectedPoints.bluePt) {
+    const blueNow = lastDetectedPoints.bluePt;
+    const dx_px_now = blueNow.x - origin.x;
+    const dy_px_now = blueNow.y - origin.y;
 
-    if (!Number.isNaN(camX) && !Number.isNaN(camY) && !Number.isNaN(camZ)) {
+    const dx_mm_now = dx_px_now / calibration.lockedScalePxPerMm;
+    const dy_mm_now = dy_px_now / calibration.lockedScalePxPerMm;
+    const vCamNow = [dx_mm_now, dy_mm_now, 0];
+
+    const orientNow = lastOrientation;
+    const Rnow = rotationMatrixFromAlphaBetaGamma(orientNow.alpha, orientNow.beta, orientNow.gamma);
+    const vWorldNow = applyMat3(Rnow, vCamNow);
+    const worldLenNow = Math.hypot(vWorldNow[0], vWorldNow[1], vWorldNow[2]);
+
+    if (worldLenNow > 1e-6 && calibration.worldLenCal > 1e-6) {
+      camZ_mm = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
+      zSpan.textContent = camZ_mm.toFixed(2);
+    } else {
+      zSpan.textContent = "--";
+      camZ_mm = NaN;
+    }
+  } else {
+    zSpan.textContent = "--";
+  }
+
+  // montagem da matriz homogênea da pose atual da câmera e transformação para o referencial do mundo fixo (mantido)
+  if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
+    const camZ = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
+    if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZ)) {
       const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
-      const tNow = [camX, camY, camZ];
+      const tNow = [camX_mm, camY_mm, camZ];
 
       const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
-
       const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
-
       lastTransformedMatrix = Ttrans;
-
       console.log("Tcamera_now_in_world_fixed (4x4):", Ttrans);
     } else {
       lastTransformedMatrix = null;
     }
   } else {
     lastTransformedMatrix = null;
+  }
+
+  // se estamos gravando a calibração, registremos os valores deste frame
+  if (isRecordingCalibration) {
+    const ts = new Date().toISOString();
+    const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
+    const yaw = (lastOrientation.alpha != null) ? lastOrientation.alpha : null;
+    const roll = (lastOrientation.gamma != null) ? lastOrientation.gamma : null;
+
+    const rec = {
+      timestamp: ts,
+      x_mm: Number.isFinite(camX_mm) ? Number(camX_mm.toFixed(4)) : null,
+      y_mm: Number.isFinite(camY_mm) ? Number(camY_mm.toFixed(4)) : null,
+      z_mm: Number.isFinite(camZ_mm) ? Number(camZ_mm.toFixed(4)) : null,
+      pitch_deg: (pitch != null) ? Number(pitch.toFixed(4)) : null,
+      yaw_deg: (yaw != null) ? Number(yaw.toFixed(4)) : null,
+      roll_deg: (roll != null) ? Number(roll.toFixed(4)) : null
+    };
+
+    calibrationFrames.push(rec);
   }
 
   requestAnimationFrame(processFrame);
