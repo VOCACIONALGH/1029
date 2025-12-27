@@ -57,27 +57,20 @@
 
     <div>Pontos rosas com posição 3D determinada: <span id="triangulatedCount">0</span></div>
 
-    <!-- NOVO: posição 3D atual do ponto rosa (atualizada ao triangular) -->
     <div id="triangulatedPos">
       Posição 3D atual:
       X: <span id="triX">--</span> mm,
       Y: <span id="triY">--</span> mm,
       Z: <span id="triZ">--</span> mm
     </div>
-
-    <!-- NOVO: posição do ÚLTIMO ponto rosa definido (desaparecimento/surgimento) -->
-    <div id="lastDefinedPos" style="margin-top:8px;">
-      Último ponto rosa definido (<span id="lastDefType">--</span>):
-      X: <span id="lastDefX">--</span>,
-      Y: <span id="lastDefY">--</span>,
-      Z: <span id="lastDefZ">--</span>
-      — Count: <span id="lastDefCount">0</span>
-    </div>
   </div>
 
   <div id="viewer">
     <video id="camera" autoplay playsinline></video>
     <canvas id="overlay"></canvas>
+
+    <!-- MINI CLOUD: visualização rápida da nuvem triangulada -->
+    <canvas id="miniCloud" width="220" height="160" aria-hidden="true"></canvas>
   </div>
 
   <script src="main.js"></script>
