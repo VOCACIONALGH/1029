@@ -74,7 +74,7 @@ let calibration = null;
 
 // Convergence threshold (norma do deslocamento em mm).
 // Ajuste este valor conforme necessário.
-const CONVERGENCE_NORM_MM = 2.0; // padrão: 2 mm
+const CONVERGENCE_NORM_MM = 5.0; // padrão: 2 mm
 
 scanBtn.addEventListener('click', async () => {
   try {
