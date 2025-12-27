@@ -93,18 +93,3 @@ canvas {
   top: 0;
   left: 0;
 }
-
-/* miniCloud: pequeno painel no canto inferior-direito dentro do viewer */
-#miniCloud {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-  width: 160px;
-  height: 120px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(0,0,0,0.35);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.6);
-  border-radius: 4px;
-  z-index: 30;
-  display: none; /* mostrado somente durante calibração */
-}
