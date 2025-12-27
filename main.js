@@ -1,6 +1,7 @@
 // main.js — inclui triangulação por múltiplos raios no referencial fixo (mínimos quadrados)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
+const downloadBtn = document.getElementById('downloadBtn');
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
@@ -321,6 +322,10 @@ calibrateBtn.addEventListener('click', () => {
     // finalize: include triangulatedPoints in JSON too
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
+
+    // hide download button when calibration finalizada
+    downloadBtn.style.display = "none";
+
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
@@ -475,6 +480,10 @@ calibrateBtn.addEventListener('click', () => {
   isRecordingCalibration = true;
   calibrationFrames = [];
   calibrateBtn.textContent = "Finalizar Calib.";
+
+  // mostrar botão de download da nuvem enquanto grava
+  downloadBtn.style.display = "inline-block";
+
   raysCountSpan.textContent = "0";
   pinkDirectedCountSpan.textContent = "0";
   rotatedCountSpan.textContent = "0";
@@ -483,6 +492,35 @@ calibrateBtn.addEventListener('click', () => {
   triangulatedCountSpan.textContent = "0";
 
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
+});
+
+// evento do botão Download — gera arquivo .json contendo a nuvem de pontos triangulados (referencial registrado)
+// usa registered_x/y/z (se disponíveis) — isto cria a nuvem com origem em (0,0,0) conforme alteração anterior.
+downloadBtn.addEventListener('click', () => {
+  if (!calibration) return;
+  const pts = (calibration.triangulatedPoints || []).map(p => {
+    const x = (p.registered_x !== undefined) ? p.registered_x : p.x;
+    const y = (p.registered_y !== undefined) ? p.registered_y : p.y;
+    const z = (p.registered_z !== undefined) ? p.registered_z : p.z;
+    return { x, y, z };
+  });
+  const data = {
+    recordedAt: new Date().toISOString(),
+    pointCloud: pts
+  };
+  const fname = `pointcloud-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+  // prefer utility from export.js se existir
+  if (window.createPointCloudBlob && window.downloadBlob) {
+    const blob = window.createPointCloudBlob(data);
+    window.downloadBlob(blob, fname);
+  } else {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
 });
 
 function processFrame() {
