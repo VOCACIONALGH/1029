@@ -72,7 +72,18 @@ button {
   box-sizing: border-box;
 }
 
-#zxyInfo div { margin: 2px 0; }
+#zxyInfo div { margin: 4px 0; }
+
+#referenceInfo {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #dfefff;
+}
+#refStatus {
+  margin-left: 8px;
+  color: #9ad0ff;
+}
+.ref-coords { margin-top: 4px; font-size: 13px; color: #cfe8ff; }
 
 /* viewer */
 #viewer {
@@ -93,3 +104,5 @@ canvas {
   top: 0;
   left: 0;
 }
+
+/* marker styles (canvas drawn, but kept css for completeness) */
