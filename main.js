@@ -3,6 +3,8 @@ const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 
+const scaleValue = document.getElementById('scaleValue');
+
 const blackSlider = document.getElementById('blackSlider');
 const blueSlider  = document.getElementById('blueSlider');
 const greenSlider = document.getElementById('greenSlider');
@@ -119,12 +121,18 @@ function processFrame() {
     drawPoint(sumRedX / countRed, sumRedY / countRed, "#FF69B4");
   }
 
-  // Vetor +X (azul)
+  // Vetores +X e +Y com 100 mm
   if (origin && bluePt) {
+    const dx = bluePt.x - origin.x;
+    const dy = bluePt.y - origin.y;
+    const lenPx = Math.hypot(dx, dy);
+
+    const scalePxPerMm = lenPx / 100;
+    scaleValue.textContent = scalePxPerMm.toFixed(3);
+
     drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   }
 
-  // Vetor +Y (verde)
   if (origin && greenPt) {
     drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
   }
