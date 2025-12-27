@@ -1,3 +1,4 @@
+// (Arquivo main.js completo atualizado)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -20,10 +21,11 @@ const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
 const rollSpan  = document.getElementById('rollValue');
 
-// ZXY UI
+// ZXY UI + Raios count
 const zSpan = document.getElementById('zValue');
 const xSpan = document.getElementById('xValue');
 const ySpan = document.getElementById('yValue');
+const raysCountSpan = document.getElementById('raysCount');
 
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
@@ -61,7 +63,7 @@ let calibrationFrames = []; // array de frames gravados durante calibração
 // calibração para +Z e origem
 let calibration = null; 
 // calibration will contain:
-// { lockedScalePxPerMm, lenPxCal, orientationCal: {alpha,beta,gamma}, worldLenCal, zCalMm, originPixelCal, camMatrixCal, invCamMatrixCal }
+// { lockedScalePxPerMm, lenPxCal, orientationCal: {alpha,beta,gamma}, worldLenCal, zCalMm, originPixelCal, camMatrixCal, invCamMatrixCal, rays: [] }
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -240,10 +242,11 @@ calibrateBtn.addEventListener('click', () => {
     // finalizar gravação
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
-    // gera JSON e baixa
+    // gera JSON e baixa (mantivemos comportamento anterior)
     const data = {
       recordedAt: new Date().toISOString(),
-      frames: calibrationFrames.slice() // cópia
+      frames: calibrationFrames.slice(),
+      rays: (calibration && calibration.rays) ? calibration.rays.slice() : []
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -254,6 +257,8 @@ calibrateBtn.addEventListener('click', () => {
     URL.revokeObjectURL(a.href);
     // limpa buffer
     calibrationFrames = [];
+    if (calibration && calibration.rays) calibration.rays = [];
+    raysCountSpan.textContent = "0";
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
   }
@@ -327,13 +332,15 @@ calibrateBtn.addEventListener('click', () => {
     zCalMm: zCal,
     originPixelCal: { x: origin.x, y: origin.y },
     camMatrixCal,
-    invCamMatrixCal
+    invCamMatrixCal,
+    rays: [] // inicia lista de raios definidos durante a calibração
   };
 
   // inicia gravação dos frames da calibração
   isRecordingCalibration = true;
   calibrationFrames = []; // limpa
   calibrateBtn.textContent = "Finalizar Calib.";
+  raysCountSpan.textContent = "0";
   alert("Calibração iniciada e gravação de frames ativada. Clique em 'Finalizar Calib.' para encerrar e baixar o .json.");
 });
 
@@ -370,6 +377,7 @@ function processFrame() {
       sumGreenX += x; sumGreenY += y; countGreen++;
     }
     else if (r > 150 && g < 100 && b < 100) {
+      // detecta pixels vermelhos
       sumRedX += x; sumRedY += y; countRed++;
     }
   }
@@ -379,10 +387,11 @@ function processFrame() {
   let origin = null;
   let bluePt = null;
   let greenPt = null;
+  let redPt = null;
 
   if (countBlack) {
     origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
-    // drawPoint will be called later (after plane)
+    // drawPoint será chamado mais abaixo
   }
 
   if (countBlue) {
@@ -394,10 +403,12 @@ function processFrame() {
   }
 
   if (countRed) {
-    drawPoint(sumRedX / countRed, sumRedY / countRed, "#FF69B4");
+    redPt = { x: sumRedX / countRed, y: sumRedY / countRed };
+    // desenha ponto rosa no centro da área vermelha (como antes)
+    drawPoint(redPt.x, redPt.y, "#FF69B4");
   }
 
-  lastDetectedPoints = { origin, bluePt, greenPt };
+  lastDetectedPoints = { origin, bluePt, greenPt, redPt };
 
   // cálculo da escala (px/mm) com base em vetor azul (len px corresponde a 100 mm)
   if (origin && bluePt) {
@@ -448,12 +459,12 @@ function processFrame() {
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
 
   // Cálculo de +Z (mantido)
+  let camZ_mm = NaN;
   if (calibration && origin && calibration.lockedScalePxPerMm) {
     if (origin && lastDetectedPoints.bluePt) {
       const blueNow = lastDetectedPoints.bluePt;
       const dx_px_now = blueNow.x - origin.x;
       const dy_px_now = blueNow.y - origin.y;
-      const lenPxNow = Math.hypot(dx_px_now, dy_px_now);
 
       const dx_mm_now = dx_px_now / calibration.lockedScalePxPerMm;
       const dy_mm_now = dy_px_now / calibration.lockedScalePxPerMm;
@@ -465,10 +476,11 @@ function processFrame() {
       const worldLenNow = Math.hypot(vWorldNow[0], vWorldNow[1], vWorldNow[2]);
 
       if (worldLenNow > 1e-6 && calibration.worldLenCal > 1e-6) {
-        const zNow = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
-        zSpan.textContent = zNow.toFixed(2);
+        camZ_mm = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
+        zSpan.textContent = camZ_mm.toFixed(2);
       } else {
         zSpan.textContent = "--";
+        camZ_mm = NaN;
       }
     } else {
       zSpan.textContent = "--";
@@ -478,7 +490,7 @@ function processFrame() {
   }
 
   // cálculo da translação da câmera em +X e +Y (mantido)
-  let camX_mm = NaN, camY_mm = NaN, camZ_mm = NaN;
+  let camX_mm = NaN, camY_mm = NaN;
   if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
     const originCalPx = calibration.originPixelCal;
     const dx_px = origin.x - originCalPx.x;
@@ -503,38 +515,12 @@ function processFrame() {
     ySpan.textContent = "--";
   }
 
-  // calcula camZ_mm de acordo com bloco de +Z (se disponível)
-  if (calibration && origin && calibration.lockedScalePxPerMm && lastDetectedPoints.bluePt) {
-    const blueNow = lastDetectedPoints.bluePt;
-    const dx_px_now = blueNow.x - origin.x;
-    const dy_px_now = blueNow.y - origin.y;
-
-    const dx_mm_now = dx_px_now / calibration.lockedScalePxPerMm;
-    const dy_mm_now = dy_px_now / calibration.lockedScalePxPerMm;
-    const vCamNow = [dx_mm_now, dy_mm_now, 0];
-
-    const orientNow = lastOrientation;
-    const Rnow = rotationMatrixFromAlphaBetaGamma(orientNow.alpha, orientNow.beta, orientNow.gamma);
-    const vWorldNow = applyMat3(Rnow, vCamNow);
-    const worldLenNow = Math.hypot(vWorldNow[0], vWorldNow[1], vWorldNow[2]);
-
-    if (worldLenNow > 1e-6 && calibration.worldLenCal > 1e-6) {
-      camZ_mm = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
-      zSpan.textContent = camZ_mm.toFixed(2);
-    } else {
-      zSpan.textContent = "--";
-      camZ_mm = NaN;
-    }
-  } else {
-    zSpan.textContent = "--";
-  }
-
   // montagem da matriz homogênea da pose atual da câmera e transformação para o referencial do mundo fixo (mantido)
   if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
-    const camZ = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
-    if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZ)) {
+    const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
+    if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
       const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
-      const tNow = [camX_mm, camY_mm, camZ];
+      const tNow = [camX_mm, camY_mm, camZval];
 
       const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
       const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
@@ -547,7 +533,7 @@ function processFrame() {
     lastTransformedMatrix = null;
   }
 
-  // se estamos gravando a calibração, registremos os valores deste frame
+  // se estamos gravando a calibração, registremos os valores deste frame (mantido)
   if (isRecordingCalibration) {
     const ts = new Date().toISOString();
     const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
@@ -565,6 +551,55 @@ function processFrame() {
     };
 
     calibrationFrames.push(rec);
+
+    // --- NOVO: se houver ponto rosa neste frame, definimos um raio 3D saindo da câmera
+    if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
+      // use escala travada da calibração
+      const scale = calibration.lockedScalePxPerMm;
+
+      // coordenadas do ponto rosa em pixels
+      const px = lastDetectedPoints.redPt.x;
+      const py = lastDetectedPoints.redPt.y;
+
+      // coordenadas relativas ao centro da imagem (origem da câmera no plano da imagem)
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const ux_px = px - cx;
+      const uy_px = py - cy;
+
+      // converte para mm usando escala (px/mm)
+      const ux_mm = ux_px / scale;
+      const uy_mm = uy_px / scale;
+
+      // define direcção no referencial da câmera (z = 1 arbitrary unit in front of camera)
+      let dirCam = [ux_mm, uy_mm, 1.0];
+
+      // normaliza direção
+      const len = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
+      if (len > 0) {
+        dirCam = [dirCam[0]/len, dirCam[1]/len, dirCam[2]/len];
+
+        // transforma direção para o referencial do mundo usando a rotação atual
+        const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+        const dirWorld = applyMat3(Rnow, dirCam);
+
+        // origem do raio = posição da câmera no mundo (camX_mm, camY_mm, camZ_mm)
+        // camX_mm/camY_mm/camZ_mm podem ser NaN se não calculados; só armazenamos se forem finitos
+        const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
+          ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))]
+          : null;
+
+        // adiciona o raio à lista de calibração
+        const rayEntry = {
+          timestamp: ts,
+          origin: originWorld, // pode ser null se não conhecido
+          dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))]
+        };
+
+        calibration.rays.push(rayEntry);
+        raysCountSpan.textContent = String(calibration.rays.length);
+      }
+    }
   }
 
   requestAnimationFrame(processFrame);
