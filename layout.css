@@ -74,21 +74,6 @@ button {
 
 #zxyInfo div { margin: 2px 0; }
 
-/* Informação do ponto de referência */
-#referenceInfo {
-  margin-bottom: 10px;
-  font-size: 14px;
-  width: 80%;
-  max-width: 420px;
-  text-align: left;
-  background: rgba(0,0,0,0.25);
-  padding: 6px 10px;
-  border-radius: 6px;
-  box-sizing: border-box;
-  color: #f0f9ff;
-}
-#referenceInfo strong { color: #bfe1ff; }
-
 /* viewer */
 #viewer {
   position: relative;
