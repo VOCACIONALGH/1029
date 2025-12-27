@@ -1,4 +1,4 @@
-// main.js (atualizado: registra raios 3D no referencial do mundo fixo)
+// main.js — inclui triangulação por múltiplos raios no referencial fixo (mínimos quadrados)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -25,11 +25,13 @@ const rollSpan  = document.getElementById('rollValue');
 const zSpan = document.getElementById('zValue');
 const xSpan = document.getElementById('xValue');
 const ySpan = document.getElementById('yValue');
+
 const raysCountSpan = document.getElementById('raysCount');
 const pinkDirectedCountSpan = document.getElementById('pinkDirectedCount');
 const rotatedCountSpan = document.getElementById('rotatedCount');
 const acceptedCountSpan = document.getElementById('acceptedCount');
 const registered3DCountSpan = document.getElementById('registered3DCount');
+const triangulatedCountSpan = document.getElementById('triangulatedCount');
 
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
@@ -43,12 +45,10 @@ blackSlider.addEventListener('input', () => {
   blackThreshold = Number(blackSlider.value);
   blackValue.textContent = blackThreshold;
 });
-
 blueSlider.addEventListener('input', () => {
   blueThreshold = Number(blueSlider.value);
   blueValue.textContent = blueThreshold;
 });
-
 greenSlider.addEventListener('input', () => {
   greenThreshold = Number(greenSlider.value);
   greenValue.textContent = greenThreshold;
@@ -56,20 +56,15 @@ greenSlider.addEventListener('input', () => {
 
 let orientationListenerAdded = false;
 
-let currentScalePxPerMm = null; // atual (pode ser travada)
+let currentScalePxPerMm = null;
 let scaleLocked = false;
 let lockedScalePxPerMm = null;
 
-// gravação durante calibração
 let isRecordingCalibration = false;
-let calibrationFrames = []; // array de frames gravados durante calibração
+let calibrationFrames = [];
 
-// calibração para +Z e origem
 let calibration = null; 
-// calibration will contain many fields including:
-// { lockedScalePxPerMm, lenPxCal, orientationCal, worldLenCal,
-//   zCalMm, originPixelCal, camMatrixCal, invCamMatrixCal, rays: [], basisMatrix, basisMatrixT,
-//   minCameraMoveMm, acceptedRays, lastAcceptedPos, lastAcceptedDir, registeredRays: [] }
+// calibration fields include registeredRays and triangulatedPoints (see below)
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -77,13 +72,11 @@ scanBtn.addEventListener('click', async () => {
       video: { facingMode: { exact: "environment" } },
       audio: false
     });
-
     video.srcObject = stream;
     video.style.display = "block";
     canvas.style.display = "block";
     scanBtn.style.display = "none";
 
-    // permission for deviceorientation on iOS (gesture)
     try {
       if (typeof DeviceOrientationEvent !== 'undefined' &&
           typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -111,7 +104,6 @@ scanBtn.addEventListener('click', async () => {
 function addOrientationListenerOnce() {
   if (orientationListenerAdded) return;
   orientationListenerAdded = true;
-
   if (window.DeviceOrientationEvent) {
     window.addEventListener('deviceorientation', handleOrientation, true);
   } else {
@@ -122,22 +114,19 @@ function addOrientationListenerOnce() {
 }
 
 let lastOrientation = { alpha: null, beta: null, gamma: null };
-
 function handleOrientation(event) {
   const alpha = event.alpha;
   const beta = event.beta;
   const gamma = event.gamma;
-
   lastOrientation.alpha = alpha;
   lastOrientation.beta = beta;
   lastOrientation.gamma = gamma;
-
   yawSpan.textContent = (alpha != null) ? alpha.toFixed(2) : "--";
   pitchSpan.textContent = (beta  != null) ? beta.toFixed(2)  : "--";
   rollSpan.textContent = (gamma != null) ? gamma.toFixed(2) : "--";
 }
 
-// Rotation matrix builder (convenção usada anteriormente)
+// rotation matrix and helpers
 function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
   const a = (alphaDeg || 0) * Math.PI / 180;
   const b = (betaDeg  || 0) * Math.PI / 180;
@@ -162,7 +151,6 @@ function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
     [0 , 1, 0 ],
     [-sg,0, cg]
   ];
-
   function mul(A,B) {
     const C = [];
     for (let i=0;i<3;i++) {
@@ -175,7 +163,6 @@ function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
     }
     return C;
   }
-
   return mul(mul(Rz,Rx),Ry);
 }
 
@@ -187,7 +174,6 @@ function applyMat3(mat, vec) {
   ];
 }
 
-// pequeno util: cross product e normalize
 function cross(a,b) {
   return [
     a[1]*b[2] - a[2]*b[1],
@@ -214,8 +200,6 @@ function mul3x3Vec(M, v) {
     M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2],
   ];
 }
-
-// Matriz homogênea 4x4 para R(3x3) e t(3)
 function buildHomogeneousMatrix(R, t) {
   return [
     [R[0][0], R[0][1], R[0][2], t[0]],
@@ -224,8 +208,6 @@ function buildHomogeneousMatrix(R, t) {
     [0, 0, 0, 1]
   ];
 }
-
-// Inversa de uma transformação rígida 4x4 (R,t) -> (R^T, -R^T t)
 function inverseRigid4x4(T) {
   const R = [
     [T[0][0], T[0][1], T[0][2]],
@@ -248,7 +230,6 @@ function inverseRigid4x4(T) {
     [0,0,0,1]
   ];
 }
-
 function multiply4x4(A,B) {
   const C = [];
   for (let i=0;i<4;i++) {
@@ -262,29 +243,90 @@ function multiply4x4(A,B) {
   return C;
 }
 
-// Últimas posições detectadas
-let lastDetectedPoints = null;
+// small matrix inverse for 3x3 using adjugate (returns null if near-singular)
+function invert3x3(M) {
+  const a=M[0][0], b=M[0][1], c=M[0][2];
+  const d=M[1][0], e=M[1][1], f=M[1][2];
+  const g=M[2][0], h=M[2][1], i=M[2][2];
+  const A = e*i - f*h;
+  const B = -(d*i - f*g);
+  const C = d*h - e*g;
+  const D = -(b*i - c*h);
+  const E = a*i - c*g;
+  const F = -(a*h - b*g);
+  const G = b*f - c*e;
+  const H = -(a*f - c*d);
+  const I = a*e - b*d;
+  const det = a*A + b*B + c*C;
+  if (!isFinite(det) || Math.abs(det) < 1e-9) return null;
+  const invDet = 1 / det;
+  return [
+    [A*invDet, D*invDet, G*invDet],
+    [B*invDet, E*invDet, H*invDet],
+    [C*invDet, F*invDet, I*invDet]
+  ];
+}
 
-// Última matriz transformada calculada (camera atual referenciada ao mundo fixo)
-let lastTransformedMatrix = null;
+// triangulation from multiple rays (rays: array of { origin:{x,y,z}, direction:{dx,dy,dz} })
+// solves sum (I - d d^T) X = sum (I - d d^T) o
+function triangulateFromRays(rays) {
+  if (!rays || rays.length === 0) return null;
+  // build A and b
+  let A = [[0,0,0],[0,0,0],[0,0,0]];
+  let b = [0,0,0];
+  for (const r of rays) {
+    const o = [r.origin.x, r.origin.y, r.origin.z];
+    const d = [r.direction.dx, r.direction.dy, r.direction.dz];
+    const dn = Math.hypot(d[0],d[1],d[2]);
+    if (dn <= 1e-9) return null;
+    const dd = [d[0]/dn, d[1]/dn, d[2]/dn];
+    // P = I - d d^T
+    const P = [
+      [1 - dd[0]*dd[0],   -dd[0]*dd[1],   -dd[0]*dd[2]],
+      [-dd[1]*dd[0],   1 - dd[1]*dd[1],   -dd[1]*dd[2]],
+      [-dd[2]*dd[0],     -dd[2]*dd[1], 1 - dd[2]*dd[2]]
+    ];
+    // A += P
+    for (let row=0; row<3; row++) for (let col=0; col<3; col++) A[row][col] += P[row][col];
+    // b += P * o
+    const Po = [
+      P[0][0]*o[0] + P[0][1]*o[1] + P[0][2]*o[2],
+      P[1][0]*o[0] + P[1][1]*o[1] + P[1][2]*o[2],
+      P[2][0]*o[0] + P[2][1]*o[1] + P[2][2]*o[2]
+    ];
+    b[0] += Po[0]; b[1] += Po[1]; b[2] += Po[2];
+  }
+  // invert A
+  const Ainv = invert3x3(A);
+  if (!Ainv) return null;
+  // X = Ainv * b
+  const X = [
+    Ainv[0][0]*b[0] + Ainv[0][1]*b[1] + Ainv[0][2]*b[2],
+    Ainv[1][0]*b[0] + Ainv[1][1]*b[1] + Ainv[1][2]*b[2],
+    Ainv[2][0]*b[0] + Ainv[2][1]*b[1] + Ainv[2][2]*b[2]
+  ];
+  return { x: X[0], y: X[1], z: X[2] };
+}
 
-// parâmetros para aceitação de raios (valores padrão)
+// parameters for acceptance (kept from previous behavior)
 const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
 const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
 
+let lastDetectedPoints = null;
+let lastTransformedMatrix = null;
+
 calibrateBtn.addEventListener('click', () => {
-  // se já estamos gravando, então este clique finaliza a calibração e faz download
   if (isRecordingCalibration) {
-    // finalizar gravação
+    // finalize: include triangulatedPoints in JSON too
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
-    // gera JSON e baixa (inclui registeredRays)
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
       rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
-      registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : []
+      registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : [],
+      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : []
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -293,25 +335,29 @@ calibrateBtn.addEventListener('click', () => {
     a.download = fname;
     a.click();
     URL.revokeObjectURL(a.href);
-    // limpa buffer e contadores
+
+    // cleanup UI counters and buffers
     calibrationFrames = [];
-    if (calibration && calibration.rays) calibration.rays = [];
     if (calibration) {
+      calibration.rays = [];
+      calibration.registeredRays = [];
+      calibration.triangulatedPoints = [];
       calibration.acceptedRays = [];
       calibration.lastAcceptedPos = null;
       calibration.lastAcceptedDir = null;
-      calibration.registeredRays = [];
     }
     raysCountSpan.textContent = "0";
     pinkDirectedCountSpan.textContent = "0";
     rotatedCountSpan.textContent = "0";
     acceptedCountSpan.textContent = "0";
     registered3DCountSpan.textContent = "0";
+    triangulatedCountSpan.textContent = "0";
+
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
   }
 
-  // não estamos gravando => faz a calibração inicial (mesma lógica anterior) e inicia gravação
+  // starting calibration: require scale determined
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
     return;
@@ -321,10 +367,8 @@ calibrateBtn.addEventListener('click', () => {
   lockedScalePxPerMm = currentScalePxPerMm;
   scaleLockedLabel.style.display = "inline";
 
-  // pede valor de +Z
   const inputZ = prompt("Informe o valor atual de +Z (mm) — somente números, ex.: 120.5");
   if (inputZ === null) {
-    // usuário cancelou: desfaz lock
     scaleLocked = false;
     lockedScalePxPerMm = null;
     scaleLockedLabel.style.display = "none";
@@ -339,12 +383,20 @@ calibrateBtn.addEventListener('click', () => {
     return;
   }
 
-  // pede MIN_CAMERA_MOVE_MM
+  // ask for MIN_CAMERA_MOVE_MM (kept behavior)
   const inputMinMove = prompt(`Informe MIN_CAMERA_MOVE_MM (mm) — valor mínimo de movimento da câmera para aceitar novo raio. Padrão ${DEFAULT_MIN_CAMERA_MOVE_MM} mm:`);
   let minMoveVal = DEFAULT_MIN_CAMERA_MOVE_MM;
   if (inputMinMove !== null) {
     const v = parseFloat(inputMinMove);
     if (!Number.isNaN(v) && v >= 0) minMoveVal = v;
+  }
+
+  // NEW: ask user for number of rays needed for triangulation
+  const inputNumRays = prompt("Informe a quantidade de raios necessária para triangular o ponto rosa (inteiro >=2). Padrão 3:");
+  let numRaysNeeded = 3;
+  if (inputNumRays !== null) {
+    const n = parseInt(inputNumRays, 10);
+    if (!Number.isNaN(n) && n >= 2) numRaysNeeded = n;
   }
 
   if (!lastDetectedPoints || !lastDetectedPoints.origin || !lastDetectedPoints.bluePt || !lastDetectedPoints.greenPt) {
@@ -366,7 +418,6 @@ calibrateBtn.addEventListener('click', () => {
     gamma: lastOrientation.gamma
   };
 
-  // Converte vetor azul para mm usando escala travada
   const dx_mm = (bluePt.x - origin.x) / lockedScalePxPerMm;
   const dy_mm = (bluePt.y - origin.y) / lockedScalePxPerMm;
   const vCam = [dx_mm, dy_mm, 0];
@@ -375,18 +426,15 @@ calibrateBtn.addEventListener('click', () => {
   const vWorldCal = applyMat3(Rcal, vCam);
   const worldLenCal = Math.hypot(vWorldCal[0], vWorldCal[1], vWorldCal[2]);
 
-  // também converte vetor verde para world para construir a base
   const dxg_mm = (greenPt.x - origin.x) / lockedScalePxPerMm;
   const dyg_mm = (greenPt.y - origin.y) / lockedScalePxPerMm;
   const vCamG = [dxg_mm, dyg_mm, 0];
   const vWorldG = applyMat3(Rcal, vCamG);
 
-  // Monta matriz homogênea da câmera inicial no mundo fixo
   const tCal = [0, 0, zCal];
   const camMatrixCal = buildHomogeneousMatrix(Rcal, tCal);
   const invCamMatrixCal = inverseRigid4x4(camMatrixCal);
 
-  // construir base ortonormal do referencial fixo (xAxis, yAxis, zAxis)
   const xAxis = norm(vWorldCal);
   const tempY = vWorldG;
   let zAxis = norm(cross(xAxis, tempY));
@@ -401,7 +449,7 @@ calibrateBtn.addEventListener('click', () => {
     [xAxis[1], yAxis[1], zAxis[1]],
     [xAxis[2], yAxis[2], zAxis[2]]
   ];
-  const basisMatrixT = transpose3(basisMatrix); // world->fixed coords
+  const basisMatrixT = transpose3(basisMatrix);
 
   calibration = {
     lockedScalePxPerMm,
@@ -419,10 +467,11 @@ calibrateBtn.addEventListener('click', () => {
     acceptedRays: [],
     lastAcceptedPos: null,
     lastAcceptedDir: null,
-    registeredRays: []
+    registeredRays: [],
+    triangulatedPoints: [],
+    numRaysNeeded
   };
 
-  // inicia gravação dos frames da calibração
   isRecordingCalibration = true;
   calibrationFrames = [];
   calibrateBtn.textContent = "Finalizar Calib.";
@@ -431,7 +480,9 @@ calibrateBtn.addEventListener('click', () => {
   rotatedCountSpan.textContent = "0";
   acceptedCountSpan.textContent = "0";
   registered3DCountSpan.textContent = "0";
-  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
+  triangulatedCountSpan.textContent = "0";
+
+  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
 
 function processFrame() {
@@ -446,86 +497,58 @@ function processFrame() {
   let sumRedX   = 0, sumRedY   = 0, countRed   = 0;
 
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-
+    const r = data[i], g = data[i+1], b = data[i+2];
     const p = i / 4;
     const x = p % canvas.width;
     const y = Math.floor(p / canvas.width);
 
     if (r < blackThreshold && g < blackThreshold && b < blackThreshold) {
-      data[i] = 255; data[i+1] = 165; data[i+2] = 0;
+      data[i]=255; data[i+1]=165; data[i+2]=0;
       sumBlackX += x; sumBlackY += y; countBlack++;
-    }
-    else if (b > blueThreshold && r < blueThreshold && g < blueThreshold) {
-      data[i] = 255; data[i+1] = 255; data[i+2] = 255;
+    } else if (b > blueThreshold && r < blueThreshold && g < blueThreshold) {
+      data[i]=255; data[i+1]=255; data[i+2]=255;
       sumBlueX += x; sumBlueY += y; countBlue++;
-    }
-    else if (g > greenThreshold && r < greenThreshold && b < greenThreshold) {
-      data[i] = 128; data[i+1] = 0; data[i+2] = 128;
+    } else if (g > greenThreshold && r < greenThreshold && b < greenThreshold) {
+      data[i]=128; data[i+1]=0; data[i+2]=128;
       sumGreenX += x; sumGreenY += y; countGreen++;
-    }
-    else if (r > 150 && g < 100 && b < 100) {
+    } else if (r > 150 && g < 100 && b < 100) {
       sumRedX += x; sumRedY += y; countRed++;
     }
   }
 
   ctx.putImageData(frame, 0, 0);
 
-  let origin = null;
-  let bluePt = null;
-  let greenPt = null;
-  let redPt = null;
+  let origin = null, bluePt = null, greenPt = null, redPt = null;
+  if (countBlack) origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
+  if (countBlue)  bluePt = { x: sumBlueX / countBlue, y: sumBlueY / countBlue };
+  if (countGreen) greenPt = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
+  if (countRed)   redPt = { x: sumRedX / countRed, y: sumRedY / countRed, count: countRed, cx: sumRedX/countRed, cy: sumRedY/countRed };
 
-  if (countBlack) {
-    origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
-  }
-
-  if (countBlue) {
-    bluePt = { x: sumBlueX / countBlue, y: sumBlueY / countBlue };
-  }
-
-  if (countGreen) {
-    greenPt = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
-  }
-
-  if (countRed) {
-    redPt = { x: sumRedX / countRed, y: sumRedY / countRed };
-    drawPoint(redPt.x, redPt.y, "#FF69B4");
-  }
-
+  if (countRed) drawPoint(redPt.x, redPt.y, "#FF69B4");
   lastDetectedPoints = { origin, bluePt, greenPt, redPt };
 
-  // cálculo da escala (px/mm)
+  // escala
   if (origin && bluePt) {
-    const dx = bluePt.x - origin.x;
-    const dy = bluePt.y - origin.y;
-    const lenPx = Math.hypot(dx, dy);
-
+    const dx = bluePt.x - origin.x, dy = bluePt.y - origin.y;
+    const lenPx = Math.hypot(dx,dy);
     if (!scaleLocked) {
-      currentScalePxPerMm = lenPx / 100; // px/mm
+      currentScalePxPerMm = lenPx / 100;
       scaleValue.textContent = currentScalePxPerMm.toFixed(3);
     } else {
       currentScalePxPerMm = lockedScalePxPerMm;
       scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
     }
   } else {
-    if (!scaleLocked) {
-      scaleValue.textContent = "--";
-      currentScalePxPerMm = null;
-    } else {
-      scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
-    }
+    if (!scaleLocked) { scaleValue.textContent="--"; currentScalePxPerMm=null; }
+    else scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
   }
 
-  // desenha plano XY se aplicável
+  // plano XY
   if (calibration && origin && bluePt && greenPt) {
     const cornerA = origin;
     const cornerB = bluePt;
     const cornerD = greenPt;
     const cornerC = { x: bluePt.x + (greenPt.x - origin.x), y: bluePt.y + (greenPt.y - origin.y) };
-
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(cornerA.x, cornerA.y);
@@ -538,88 +561,59 @@ function processFrame() {
     ctx.restore();
   }
 
-  // desenha pontos e setas (sobre o preenchimento)
   if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
   if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
   if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
   if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
 
-  // cálculo de +Z
+  // +Z
   let camZ_mm = NaN;
   if (calibration && origin && calibration.lockedScalePxPerMm) {
     if (origin && lastDetectedPoints.bluePt) {
       const blueNow = lastDetectedPoints.bluePt;
-      const dx_px_now = blueNow.x - origin.x;
-      const dy_px_now = blueNow.y - origin.y;
-
+      const dx_px_now = blueNow.x - origin.x, dy_px_now = blueNow.y - origin.y;
       const dx_mm_now = dx_px_now / calibration.lockedScalePxPerMm;
       const dy_mm_now = dy_px_now / calibration.lockedScalePxPerMm;
       const vCamNow = [dx_mm_now, dy_mm_now, 0];
-
       const orientNow = lastOrientation;
       const Rnow = rotationMatrixFromAlphaBetaGamma(orientNow.alpha, orientNow.beta, orientNow.gamma);
       const vWorldNow = applyMat3(Rnow, vCamNow);
       const worldLenNow = Math.hypot(vWorldNow[0], vWorldNow[1], vWorldNow[2]);
-
       if (worldLenNow > 1e-6 && calibration.worldLenCal > 1e-6) {
         camZ_mm = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
         zSpan.textContent = camZ_mm.toFixed(2);
-      } else {
-        zSpan.textContent = "--";
-        camZ_mm = NaN;
-      }
-    } else {
-      zSpan.textContent = "--";
-    }
-  } else {
-    zSpan.textContent = "--";
-  }
+      } else { zSpan.textContent = "--"; camZ_mm = NaN; }
+    } else { zSpan.textContent = "--"; }
+  } else { zSpan.textContent="--"; }
 
-  // cálculo da translação da câmera em +X e +Y
+  // cam X Y
   let camX_mm = NaN, camY_mm = NaN;
   if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
     const originCalPx = calibration.originPixelCal;
-    const dx_px = origin.x - originCalPx.x;
-    const dy_px = origin.y - originCalPx.y;
-
-    const dx_mm = dx_px / calibration.lockedScalePxPerMm;
-    const dy_mm = dy_px / calibration.lockedScalePxPerMm;
-
+    const dx_px = origin.x - originCalPx.x, dy_px = origin.y - originCalPx.y;
+    const dx_mm = dx_px / calibration.lockedScalePxPerMm, dy_mm = dy_px / calibration.lockedScalePxPerMm;
     const vCamForXY = [-dx_mm, dy_mm, 0];
-
     const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
     const vWorld = applyMat3(Rnow, vCamForXY);
-
-    camX_mm = vWorld[0];
-    camY_mm = vWorld[1];
-
+    camX_mm = vWorld[0]; camY_mm = vWorld[1];
     xSpan.textContent = camX_mm.toFixed(2);
     ySpan.textContent = camY_mm.toFixed(2);
-  } else {
-    xSpan.textContent = "--";
-    ySpan.textContent = "--";
-  }
+  } else { xSpan.textContent="--"; ySpan.textContent="--"; }
 
-  // montagem da matriz homogênea da pose atual da câmera e transformação para o referencial do mundo fixo (mantido)
+  // pose transform (kept)
   if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
     const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
     if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
       const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
       const tNow = [camX_mm, camY_mm, camZval];
-
       const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
       const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
       lastTransformedMatrix = Ttrans;
-      console.log("Tcamera_now_in_world_fixed (4x4):", Ttrans);
-    } else {
-      lastTransformedMatrix = null;
-    }
-  } else {
-    lastTransformedMatrix = null;
-  }
+    } else lastTransformedMatrix = null;
+  } else lastTransformedMatrix = null;
 
-  // se estamos gravando a calibração, registremos os valores deste frame
+  // recording/calibration logic
   if (isRecordingCalibration) {
     const ts = new Date().toISOString();
     const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
@@ -635,20 +629,15 @@ function processFrame() {
       yaw_deg: (yaw != null) ? Number(yaw.toFixed(4)) : null,
       roll_deg: (roll != null) ? Number(roll.toFixed(4)) : null
     };
-
     calibrationFrames.push(rec);
 
-    // --- PINHOLE: se houver ponto rosa neste frame, definimos direção do raio usando aproximação pinhole
+    // process pink point: generate ray (pinhole), rotate, register, possibly accept, and attempt triangulation
     if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
       const px = lastDetectedPoints.redPt.x;
       const py = lastDetectedPoints.redPt.y;
+      const cx = canvas.width / 2, cy = canvas.height / 2;
 
-      // centro da imagem (principal point approximated as image center)
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
-
-      // estimativa de focal length em pixels:
-      let f_px = Math.max(canvas.width, canvas.height); // fallback
+      let f_px = Math.max(canvas.width, canvas.height);
       try {
         if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
           if (calibration.worldLenCal > 1e-6) {
@@ -656,31 +645,21 @@ function processFrame() {
             if (!isFinite(f_px) || f_px <= 1e-3) f_px = Math.max(canvas.width, canvas.height);
           }
         }
-      } catch (e) {
-        f_px = Math.max(canvas.width, canvas.height);
-      }
+      } catch (e) { f_px = Math.max(canvas.width, canvas.height); }
 
-      // coordinates normalized
       const x_norm = (px - cx) / f_px;
       const y_norm = (py - cy) / f_px;
-
-      // direction in camera coordinates
       let dirCam = [x_norm, y_norm, 1.0];
       const lenDirCam = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
-      if (lenDirCam <= 0) return;
-
+      if (lenDirCam <= 0) { requestAnimationFrame(processFrame); return; }
       dirCam = [dirCam[0]/lenDirCam, dirCam[1]/lenDirCam, dirCam[2]/lenDirCam];
 
-      // transform direction to world (via device orientation)
       const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
       const dirWorld = applyMat3(Rnow, dirCam);
 
-      // origem do raio = posição da câmera no mundo (se conhecida)
       const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
-        ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))]
-        : null;
+        ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))] : null;
 
-      // adiciona o raio (antes de rotacionar para base fixa)
       const rayEntry = {
         timestamp: ts,
         origin: originWorld,
@@ -693,7 +672,6 @@ function processFrame() {
       raysCountSpan.textContent = String(calibration.rays.length);
       pinkDirectedCountSpan.textContent = String(calibration.rays.length);
 
-      // rotacionar o vetor dirWorld para o referencial fixo definido na calibração (world->fixed coords)
       if (calibration && calibration.basisMatrixT) {
         const dirRot = mul3x3Vec(calibration.basisMatrixT, dirWorld);
         const dirRotNorm = norm(dirRot);
@@ -701,10 +679,9 @@ function processFrame() {
         rotatedCountSpan.textContent = String(calibration.rays.filter(r => r.dir_rotated !== null).length);
       }
 
-      // lógica de aceitação para triangulação (mantida)
+      // acceptance logic (keeps original behavior)
       let accepted = false;
       const minMove = (calibration && calibration.minCameraMoveMm != null) ? calibration.minCameraMoveMm : DEFAULT_MIN_CAMERA_MOVE_MM;
-
       if (originWorld && calibration.lastAcceptedPos == null) {
         accepted = true;
       } else if (originWorld && calibration.lastAcceptedPos != null) {
@@ -712,7 +689,6 @@ function processFrame() {
         const dy = originWorld[1] - calibration.lastAcceptedPos[1];
         const dz = originWorld[2] - calibration.lastAcceptedPos[2];
         const dist = Math.hypot(dx, dy, dz);
-
         let notParallel = true;
         if (calibration.lastAcceptedDir) {
           const a = calibration.lastAcceptedDir;
@@ -726,15 +702,8 @@ function processFrame() {
             if (ang < PARALLEL_ANGLE_RAD) notParallel = false;
           }
         }
-
-        if (dist >= minMove && notParallel) {
-          accepted = true;
-        } else {
-          accepted = false;
-        }
-      } else {
-        accepted = false;
-      }
+        if (dist >= minMove && notParallel) accepted = true; else accepted = false;
+      } else accepted = false;
 
       if (accepted) {
         rayEntry.accepted = true;
@@ -747,22 +716,35 @@ function processFrame() {
         acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
       }
 
-      // --- NOVO (pedido): registrar apenas um RAIO 3D real por ponto rosa/frame,
-      // expressando origem e direção no sistema de coordenadas do mundo fixo.
-      // Registramos somente se:
-      //  - originWorld conhecido (posição da câmera no mundo fixo),
-      //  - dir_rotated disponível (direção expressa no referencial fixo),
-      //  - e então empurramos para calibration.registeredRays.
+      // register a 3D ray in world fixed (only one per pink/frame) — kept behavior
       if (originWorld && rayEntry.dir_rotated && calibration) {
-        // direction in fixed coordinates is rayEntry.dir_rotated (unit vector)
         const dr = rayEntry.dir_rotated;
         const reg = {
           origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
           direction: { dx: Number(dr[0]), dy: Number(dr[1]), dz: Number(dr[2]) }
         };
         calibration.registeredRays.push(reg);
-        // atualiza contador cumulativo
         registered3DCountSpan.textContent = String(calibration.registeredRays.length);
+      }
+
+      // --- NEW: attempt triangulation when we have at least calibration.numRaysNeeded registeredRays
+      if (calibration && calibration.registeredRays && calibration.registeredRays.length >= calibration.numRaysNeeded) {
+        // choose the last numRaysNeeded rays (they are in world fixed frame)
+        const startIndex = calibration.registeredRays.length - calibration.numRaysNeeded;
+        const subset = calibration.registeredRays.slice(startIndex, startIndex + calibration.numRaysNeeded);
+        // construct array of rays matching triangulateFromRays input format
+        const raysForTri = subset.map(r => ({
+          origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
+          direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
+        }));
+        const X = triangulateFromRays(raysForTri);
+        if (X) {
+          // store triangulated point (cumulative)
+          calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRaysStartIndex: startIndex });
+          triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
+        } else {
+          // triangulation failed (ill-conditioned) — skip silently (no other behavior changed)
+        }
       }
     }
   }
@@ -776,29 +758,19 @@ function drawPoint(x, y, color) {
   ctx.arc(x, y, 4, 0, Math.PI * 2);
   ctx.fill();
 }
-
 function drawArrow(x1, y1, x2, y2, color) {
   const headLength = 10;
   const angle = Math.atan2(y2 - y1, x2 - x1);
-
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
-
   ctx.beginPath();
   ctx.moveTo(x1, y1);
   ctx.lineTo(x2, y2);
   ctx.stroke();
-
   ctx.beginPath();
   ctx.moveTo(x2, y2);
-  ctx.lineTo(
-    x2 - headLength * Math.cos(angle - Math.PI / 6),
-    y2 - headLength * Math.sin(angle - Math.PI / 6)
-  );
-  ctx.lineTo(
-    x2 - headLength * Math.cos(angle + Math.PI / 6),
-    y2 - headLength * Math.sin(angle + Math.PI / 6)
-  );
+  ctx.lineTo(x2 - headLength * Math.cos(angle - Math.PI / 6), y2 - headLength * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(x2 - headLength * Math.cos(angle + Math.PI / 6), y2 - headLength * Math.sin(angle + Math.PI / 6));
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.fill();
