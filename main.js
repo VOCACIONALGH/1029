@@ -1,4 +1,4 @@
-// main.js — inclui triangulação por múltiplos raios no referencial fixo, Ponto de Referência e exibição de suas coordenadas
+// main.js — versão atualizada: aplica offset uniforme ao primeiro ponto triangulado (Ponto de Referência)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -33,7 +33,7 @@ const acceptedCountSpan = document.getElementById('acceptedCount');
 const registered3DCountSpan = document.getElementById('registered3DCount');
 const triangulatedCountSpan = document.getElementById('triangulatedCount');
 
-// NOVOS: spans para coordenadas do Ponto de Referência
+// spans para coordenadas do Ponto de Referência
 const refXSpan = document.getElementById('refX');
 const refYSpan = document.getElementById('refY');
 const refZSpan = document.getElementById('refZ');
@@ -69,7 +69,7 @@ let isRecordingCalibration = false;
 let calibrationFrames = [];
 
 let calibration = null; 
-// calibration fields include registeredRays, triangulatedPoints, referencePoint, etc.
+// calibration will contain: registeredRays, triangulatedPoints, referencePoint, offset, ...
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -131,7 +131,7 @@ function handleOrientation(event) {
   rollSpan.textContent = (gamma != null) ? gamma.toFixed(2) : "--";
 }
 
-// rotation matrix and helpers (same as before)
+// rotation matrix & helpers
 function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
   const a = (alphaDeg || 0) * Math.PI / 180;
   const b = (betaDeg  || 0) * Math.PI / 180;
@@ -170,7 +170,6 @@ function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
   }
   return mul(mul(Rz,Rx),Ry);
 }
-
 function applyMat3(mat, vec) {
   return [
     mat[0][0]*vec[0] + mat[0][1]*vec[1] + mat[0][2]*vec[2],
@@ -178,7 +177,6 @@ function applyMat3(mat, vec) {
     mat[2][0]*vec[0] + mat[2][1]*vec[1] + mat[2][2]*vec[2]
   ];
 }
-
 function cross(a,b) {
   return [
     a[1]*b[2] - a[2]*b[1],
@@ -248,7 +246,7 @@ function multiply4x4(A,B) {
   return C;
 }
 
-// small matrix inverse and triangulation functions (as before)
+// small inverse for 3x3
 function invert3x3(M) {
   const a=M[0][0], b=M[0][1], c=M[0][2];
   const d=M[1][0], e=M[1][1], f=M[1][2];
@@ -272,6 +270,7 @@ function invert3x3(M) {
   ];
 }
 
+// triangulation (mínimos quadrados)
 function triangulateFromRays(rays) {
   if (!rays || rays.length === 0) return null;
   let A = [[0,0,0],[0,0,0],[0,0,0]];
@@ -305,7 +304,7 @@ function triangulateFromRays(rays) {
   return { x: X[0], y: X[1], z: X[2] };
 }
 
-// acceptance parameters
+// acceptance params (kept)
 const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
 const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
@@ -323,7 +322,8 @@ calibrateBtn.addEventListener('click', () => {
       rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
       registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : [],
       triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : [],
-      referencePoint: (calibration && calibration.referencePoint) ? calibration.referencePoint : null
+      referencePoint: (calibration && calibration.referencePoint) ? calibration.referencePoint : null,
+      offset: (calibration && calibration.offset) ? calibration.offset : { dx:0, dy:0, dz:0 }
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -333,13 +333,14 @@ calibrateBtn.addEventListener('click', () => {
     a.click();
     URL.revokeObjectURL(a.href);
 
-    // cleanup and clear reference UI
+    // cleanup
     calibrationFrames = [];
     if (calibration) {
       calibration.rays = [];
       calibration.registeredRays = [];
       calibration.triangulatedPoints = [];
       calibration.referencePoint = null;
+      calibration.offset = null;
       calibration.acceptedRays = [];
       calibration.lastAcceptedPos = null;
       calibration.lastAcceptedDir = null;
@@ -350,7 +351,8 @@ calibrateBtn.addEventListener('click', () => {
     acceptedCountSpan.textContent = "0";
     registered3DCountSpan.textContent = "0";
     triangulatedCountSpan.textContent = "0";
-    // clear reference coordinate display
+
+    // clear reference UI
     refXSpan.textContent = "--";
     refYSpan.textContent = "--";
     refZSpan.textContent = "--";
@@ -359,6 +361,7 @@ calibrateBtn.addEventListener('click', () => {
     return;
   }
 
+  // start calibration (keeps previous prompts)
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
     return;
@@ -469,6 +472,7 @@ calibrateBtn.addEventListener('click', () => {
     registeredRays: [],
     triangulatedPoints: [],
     referencePoint: null,
+    offset: null, // will hold {dx,dy,dz} after user input (or {0,0,0})
     numRaysNeeded
   };
 
@@ -488,6 +492,24 @@ calibrateBtn.addEventListener('click', () => {
 
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
+
+function parseKnownCoordsInput(text) {
+  if (!text) return null;
+  // Accept formats: "x,y,z" or "x y z" or mixed; allow comma as decimal separator too
+  // Replace commas that separate values with spaces, but preserve decimal points.
+  // Simplest approach: replace commas by spaces, then split by whitespace.
+  const replaced = text.replace(/,/g, ' ').trim();
+  const parts = replaced.split(/\s+/).filter(p => p.length>0);
+  if (parts.length < 3) return null;
+  const nums = parts.slice(0,3).map(s => {
+    // replace comma decimal (if any) with dot just in case
+    const s2 = s.replace(',', '.');
+    const v = parseFloat(s2);
+    return Number.isFinite(v) ? v : NaN;
+  });
+  if (nums.some(n => !Number.isFinite(n))) return null;
+  return { x: nums[0], y: nums[1], z: nums[2] };
+}
 
 function processFrame() {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -740,17 +762,54 @@ function processFrame() {
         }));
         const X = triangulateFromRays(raysForTri);
         if (X) {
-          calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRaysStartIndex: startIndex });
+          // If this is the first triangulated point (reference), ask user for known coords and compute offset
+          if (!calibration.referencePoint) {
+            // parse user-known coordinates
+            const userInput = prompt("Primeiro ponto triangulado detectado.\nSe você conhece as coordenadas exatas (no referencial fixo) deste ponto, insira-as agora no formato: x,y,z  (mm).\nEx.: 12.3, -45.6, 78.9\nSe cancelar ou deixar inválido, o ponto triangulado será usado sem correção.");
+            let known = null;
+            if (userInput !== null) {
+              known = parseKnownCoordsInput(userInput);
+            }
+            if (known) {
+              // compute offset = known - X
+              const dx = known.x - X.x;
+              const dy = known.y - X.y;
+              const dz = known.z - X.z;
+              calibration.offset = { dx, dy, dz };
+              // apply offset to the computed point
+              const Xshift = { x: X.x + dx, y: X.y + dy, z: X.z + dz, usedRaysStartIndex: startIndex };
+              calibration.triangulatedPoints.push(Xshift);
+              calibration.referencePoint = { x: Xshift.x, y: Xshift.y, z: Xshift.z };
+              // ensure any previously triangulated points (unlikely) are shifted as well
+              if (calibration.triangulatedPoints.length > 1) {
+                for (let i=0;i<calibration.triangulatedPoints.length-1;i++){
+                  calibration.triangulatedPoints[i].x += dx;
+                  calibration.triangulatedPoints[i].y += dy;
+                  calibration.triangulatedPoints[i].z += dz;
+                }
+              }
+              // update UI with known coords
+              refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
+              refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
+              refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
+            } else {
+              // user cancelled or invalid -> no offset applied; store original triangulated point
+              calibration.offset = { dx:0, dy:0, dz:0 };
+              calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRaysStartIndex: startIndex });
+              calibration.referencePoint = { x: X.x, y: X.y, z: X.z };
+              refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
+              refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
+              refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
+            }
+          } else {
+            // subsequent triangulations -> apply existing offset (if any) and add
+            const off = calibration.offset || { dx:0, dy:0, dz:0 };
+            const Xshift = { x: X.x + off.dx, y: X.y + off.dy, z: X.z + off.dz, usedRaysStartIndex: startIndex };
+            calibration.triangulatedPoints.push(Xshift);
+          }
+
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
 
-          // set first triangulated point as Ponto de Referência (only the first)
-          if (!calibration.referencePoint) {
-            calibration.referencePoint = { x: X.x, y: X.y, z: X.z };
-            // update UI coordinates immediately
-            refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
-            refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
-            refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
-          }
         } else {
           // triangulation numerically failed -> ignore
         }
@@ -790,7 +849,6 @@ function processFrame() {
       camY_mm_local = vWorld[1];
     }
 
-    // if pose known, project and draw
     if (Number.isFinite(camX_mm_local) && Number.isFinite(camY_mm_local) && Number.isFinite(camZ_mm_local)) {
       const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
       const tNow = [camX_mm_local, camY_mm_local, camZ_mm_local];
@@ -826,21 +884,18 @@ function processFrame() {
         ctx.fillText('Ponto de Referência', u + 8, v - 8);
         ctx.restore();
 
-        // also ensure the UI coordinates reflect the stored reference (keeps them visible)
+        // ensure UI coordinates reflect the stored reference
         refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
         refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
         refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
       }
     } else {
-      // pose unknown: still display the stored coordinates (so the user always sees them)
       refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
       refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
       refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
     }
   } else {
-    // no reference point: display placeholders
     if (!isRecordingCalibration) {
-      // only clear when not recording to avoid flicker during calibration (but safe to clear)
       refXSpan.textContent = "--";
       refYSpan.textContent = "--";
       refZSpan.textContent = "--";
