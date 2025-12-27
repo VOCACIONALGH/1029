@@ -1,4 +1,4 @@
-// main.js — atualizado para aplicar offset uniforme ao Ponto de Referência triangulado quando o usuário informar coordenadas conhecidas
+// main.js — inclui atualização da Posição 3D atual do ponto rosa na UI
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -21,7 +21,7 @@ const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
 const rollSpan  = document.getElementById('rollValue');
 
-// ZXY UI + contadores
+// ZXY UI + contadores + triangulated pos spans
 const zSpan = document.getElementById('zValue');
 const xSpan = document.getElementById('xValue');
 const ySpan = document.getElementById('yValue');
@@ -33,10 +33,10 @@ const acceptedCountSpan = document.getElementById('acceptedCount');
 const registered3DCountSpan = document.getElementById('registered3DCount');
 const triangulatedCountSpan = document.getElementById('triangulatedCount');
 
-// spans para coordenadas do Ponto de Referência
-const refXSpan = document.getElementById('refX');
-const refYSpan = document.getElementById('refY');
-const refZSpan = document.getElementById('refZ');
+// NOVOS: elementos para exibir a posição 3D atual do ponto rosa
+const triXSpan = document.getElementById('triX');
+const triYSpan = document.getElementById('triY');
+const triZSpan = document.getElementById('triZ');
 
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
@@ -68,9 +68,7 @@ let lockedScalePxPerMm = null;
 let isRecordingCalibration = false;
 let calibrationFrames = [];
 
-let calibration = null; 
-// calibration will hold fields including:
-// registeredRays, triangulatedPoints, referencePoint, knownReference (if provided), offsetApplied, etc.
+let calibration = null;
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -171,7 +169,6 @@ function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
   }
   return mul(mul(Rz,Rx),Ry);
 }
-
 function applyMat3(mat, vec) {
   return [
     mat[0][0]*vec[0] + mat[0][1]*vec[1] + mat[0][2]*vec[2],
@@ -179,7 +176,6 @@ function applyMat3(mat, vec) {
     mat[2][0]*vec[0] + mat[2][1]*vec[1] + mat[2][2]*vec[2]
   ];
 }
-
 function cross(a,b) {
   return [
     a[1]*b[2] - a[2]*b[1],
@@ -249,7 +245,7 @@ function multiply4x4(A,B) {
   return C;
 }
 
-// small matrix inverse and triangulation
+// small matrix inverse for 3x3 using adjugate (returns null if near-singular)
 function invert3x3(M) {
   const a=M[0][0], b=M[0][1], c=M[0][2];
   const d=M[1][0], e=M[1][1], f=M[1][2];
@@ -273,6 +269,7 @@ function invert3x3(M) {
   ];
 }
 
+// triangulate from multiple rays (rays: array of { origin:{x,y,z}, direction:{dx,dy,dz} })
 function triangulateFromRays(rays) {
   if (!rays || rays.length === 0) return null;
   let A = [[0,0,0],[0,0,0],[0,0,0]];
@@ -306,7 +303,7 @@ function triangulateFromRays(rays) {
   return { x: X[0], y: X[1], z: X[2] };
 }
 
-// acceptance parameters
+// parameters for acceptance (kept behavior)
 const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
 const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
@@ -316,7 +313,7 @@ let lastTransformedMatrix = null;
 
 calibrateBtn.addEventListener('click', () => {
   if (isRecordingCalibration) {
-    // finalize: include offsetApplied if present
+    // finalize: include triangulatedPoints in JSON too
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
     const data = {
@@ -324,9 +321,7 @@ calibrateBtn.addEventListener('click', () => {
       frames: calibrationFrames.slice(),
       rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
       registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : [],
-      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : [],
-      referencePoint: (calibration && calibration.referencePoint) ? calibration.referencePoint : null,
-      offsetApplied: (calibration && calibration.offset) ? { dx: calibration.offset[0], dy: calibration.offset[1], dz: calibration.offset[2] } : null
+      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : []
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -336,15 +331,12 @@ calibrateBtn.addEventListener('click', () => {
     a.click();
     URL.revokeObjectURL(a.href);
 
-    // cleanup and clear UI
+    // cleanup UI counters and buffers
     calibrationFrames = [];
     if (calibration) {
       calibration.rays = [];
       calibration.registeredRays = [];
       calibration.triangulatedPoints = [];
-      calibration.referencePoint = null;
-      calibration.knownReference = null;
-      calibration.offset = null;
       calibration.acceptedRays = [];
       calibration.lastAcceptedPos = null;
       calibration.lastAcceptedDir = null;
@@ -355,15 +347,16 @@ calibrateBtn.addEventListener('click', () => {
     acceptedCountSpan.textContent = "0";
     registered3DCountSpan.textContent = "0";
     triangulatedCountSpan.textContent = "0";
-    refXSpan.textContent = "--";
-    refYSpan.textContent = "--";
-    refZSpan.textContent = "--";
+    // reset displayed triangulated position
+    triXSpan.textContent = "--";
+    triYSpan.textContent = "--";
+    triZSpan.textContent = "--";
 
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
   }
 
-  // start calibration: require scale determined
+  // starting calibration: require scale determined
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
     return;
@@ -373,7 +366,6 @@ calibrateBtn.addEventListener('click', () => {
   lockedScalePxPerMm = currentScalePxPerMm;
   scaleLockedLabel.style.display = "inline";
 
-  // ask for +Z
   const inputZ = prompt("Informe o valor atual de +Z (mm) — somente números, ex.: 120.5");
   if (inputZ === null) {
     scaleLocked = false;
@@ -390,7 +382,6 @@ calibrateBtn.addEventListener('click', () => {
     return;
   }
 
-  // MIN_CAMERA_MOVE_MM
   const inputMinMove = prompt(`Informe MIN_CAMERA_MOVE_MM (mm) — valor mínimo de movimento da câmera para aceitar novo raio. Padrão ${DEFAULT_MIN_CAMERA_MOVE_MM} mm:`);
   let minMoveVal = DEFAULT_MIN_CAMERA_MOVE_MM;
   if (inputMinMove !== null) {
@@ -398,31 +389,11 @@ calibrateBtn.addEventListener('click', () => {
     if (!Number.isNaN(v) && v >= 0) minMoveVal = v;
   }
 
-  // num rays needed
   const inputNumRays = prompt("Informe a quantidade de raios necessária para triangular o ponto rosa (inteiro >=2). Padrão 3:");
   let numRaysNeeded = 3;
   if (inputNumRays !== null) {
     const n = parseInt(inputNumRays, 10);
     if (!Number.isNaN(n) && n >= 2) numRaysNeeded = n;
-  }
-
-  // NEW: ask for known coordinates of reference point (optional)
-  const inputRefCoords = prompt("Se você conhece as coordenadas exatas do Ponto de Referência no referencial do mundo fixo, informe-as como 'x,y,z' (mm). Deixe em branco ou cancele para pular.");
-  let knownRef = null;
-  if (inputRefCoords !== null && inputRefCoords.trim() !== "") {
-    const parts = inputRefCoords.split(',').map(s => s.trim()).filter(s => s.length);
-    if (parts.length === 3) {
-      const xv = parseFloat(parts[0]);
-      const yv = parseFloat(parts[1]);
-      const zv = parseFloat(parts[2]);
-      if (!Number.isNaN(xv) && !Number.isNaN(yv) && !Number.isNaN(zv)) {
-        knownRef = { x: xv, y: yv, z: zv };
-      } else {
-        alert("Coordenadas informadas inválidas — ignorando referência conhecida.");
-      }
-    } else {
-      alert("Formato inválido. Use: x,y,z — ignorando referência conhecida.");
-    }
   }
 
   if (!lastDetectedPoints || !lastDetectedPoints.origin || !lastDetectedPoints.bluePt || !lastDetectedPoints.greenPt) {
@@ -495,9 +466,6 @@ calibrateBtn.addEventListener('click', () => {
     lastAcceptedDir: null,
     registeredRays: [],
     triangulatedPoints: [],
-    referencePoint: null,
-    knownReference: knownRef, // may be null
-    offset: null, // will store [dx,dy,dz] if applied
     numRaysNeeded
   };
 
@@ -510,12 +478,13 @@ calibrateBtn.addEventListener('click', () => {
   acceptedCountSpan.textContent = "0";
   registered3DCountSpan.textContent = "0";
   triangulatedCountSpan.textContent = "0";
-  // clear reference UI at start
-  refXSpan.textContent = "--";
-  refYSpan.textContent = "--";
-  refZSpan.textContent = "--";
 
-  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\n${knownRef ? 'Referência conhecida registrada.' : 'Nenhuma referência conhecida fornecida.'}\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
+  // reset displayed triangulated position at start
+  triXSpan.textContent = "--";
+  triYSpan.textContent = "--";
+  triZSpan.textContent = "--";
+
+  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
 
 function processFrame() {
@@ -664,6 +633,7 @@ function processFrame() {
     };
     calibrationFrames.push(rec);
 
+    // process pink point: generate ray (pinhole), rotate, register, possibly accept, and attempt triangulation
     if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
       const px = lastDetectedPoints.redPt.x;
       const py = lastDetectedPoints.redPt.y;
@@ -711,7 +681,7 @@ function processFrame() {
         rotatedCountSpan.textContent = String(calibration.rays.filter(r => r.dir_rotated !== null).length);
       }
 
-      // acceptance logic (unchanged)
+      // acceptance logic (keeps original behavior)
       let accepted = false;
       const minMove = (calibration && calibration.minCameraMoveMm != null) ? calibration.minCameraMoveMm : DEFAULT_MIN_CAMERA_MOVE_MM;
       if (originWorld && calibration.lastAcceptedPos == null) {
@@ -748,7 +718,7 @@ function processFrame() {
         acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
       }
 
-      // register 3D ray in world fixed (one per pink/frame)
+      // register a 3D ray in world fixed (only one per pink/frame)
       if (originWorld && rayEntry.dir_rotated && calibration) {
         const dr = rayEntry.dir_rotated;
         const reg = {
@@ -759,7 +729,7 @@ function processFrame() {
         registered3DCountSpan.textContent = String(calibration.registeredRays.length);
       }
 
-      // attempt triangulation when enough registeredRays exist
+      // attempt triangulation when we have at least calibration.numRaysNeeded registeredRays
       if (calibration && calibration.registeredRays && calibration.registeredRays.length >= calibration.numRaysNeeded) {
         const startIndex = calibration.registeredRays.length - calibration.numRaysNeeded;
         const subset = calibration.registeredRays.slice(startIndex, startIndex + calibration.numRaysNeeded);
@@ -767,145 +737,18 @@ function processFrame() {
           origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
           direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
         }));
-        const Xraw = triangulateFromRays(raysForTri);
-        if (Xraw) {
-          // If a known reference was provided and offset not yet computed, compute offset so that first triangulated = knownReference.
-          if (calibration.knownReference && !calibration.offset) {
-            const dx = calibration.knownReference.x - Xraw.x;
-            const dy = calibration.knownReference.y - Xraw.y;
-            const dz = calibration.knownReference.z - Xraw.z;
-            calibration.offset = [dx, dy, dz];
-            // apply offset to existing triangulatedPoints (none yet usually) — but do it generically
-            for (let i = 0; i < calibration.triangulatedPoints.length; i++) {
-              calibration.triangulatedPoints[i].x += calibration.offset[0];
-              calibration.triangulatedPoints[i].y += calibration.offset[1];
-              calibration.triangulatedPoints[i].z += calibration.offset[2];
-            }
-          }
-
-          // apply offset to this triangulated point if offset exists
-          const Xadj = {
-            x: (calibration.offset ? Xraw.x + calibration.offset[0] : Xraw.x),
-            y: (calibration.offset ? Xraw.y + calibration.offset[1] : Xraw.y),
-            z: (calibration.offset ? Xraw.z + calibration.offset[2] : Xraw.z)
-          };
-
-          calibration.triangulatedPoints.push({ x: Xadj.x, y: Xadj.y, z: Xadj.z, usedRaysStartIndex: startIndex });
+        const X = triangulateFromRays(raysForTri);
+        if (X) {
+          calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRaysStartIndex: startIndex });
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
-
-          // If this is the FIRST triangulated point and referencePoint not yet set, set it.
-          if (!calibration.referencePoint) {
-            if (calibration.knownReference) {
-              // if knownRef provided, ensure referencePoint equals the known coords (after offset)
-              calibration.referencePoint = { x: calibration.knownReference.x, y: calibration.knownReference.y, z: calibration.knownReference.z };
-              // update UI
-              refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
-              refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
-              refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
-            } else {
-              // no knownRef: use triangulated value (possibly adjusted by offset if it exists)
-              calibration.referencePoint = { x: Xadj.x, y: Xadj.y, z: Xadj.z };
-              refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
-              refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
-              refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
-            }
-          }
+          // === NOVO: atualizar posição 3D atual na tela (mostrando o último triangulado)
+          triXSpan.textContent = Number(X.x).toFixed(3);
+          triYSpan.textContent = Number(X.y).toFixed(3);
+          triZSpan.textContent = Number(X.z).toFixed(3);
         } else {
-          // triangulation failed numerically — ignore
+          // triangulation failed (ill-conditioned) — do not update current 3D position
         }
       }
-    }
-  }
-
-  // Draw Ponto de Referência (same behavior — uses calibration.referencePoint if present)
-  if (calibration && calibration.referencePoint) {
-    // compute current camera pose
-    let camZ_mm_local = NaN;
-    if (calibration && origin && calibration.lockedScalePxPerMm) {
-      if (origin && lastDetectedPoints && lastDetectedPoints.bluePt) {
-        const blueNow = lastDetectedPoints.bluePt;
-        const dx_px_now = blueNow.x - origin.x, dy_px_now = blueNow.y - origin.y;
-        const dx_mm_now = dx_px_now / calibration.lockedScalePxPerMm;
-        const dy_mm_now = dy_px_now / calibration.lockedScalePxPerMm;
-        const vCamNow = [dx_mm_now, dy_mm_now, 0];
-        const orientNow = lastOrientation;
-        const RnowTmp = rotationMatrixFromAlphaBetaGamma(orientNow.alpha, orientNow.beta, orientNow.gamma);
-        const vWorldNow = applyMat3(RnowTmp, vCamNow);
-        const worldLenNow = Math.hypot(vWorldNow[0], vWorldNow[1], vWorldNow[2]);
-        if (worldLenNow > 1e-6 && calibration.worldLenCal > 1e-6) {
-          camZ_mm_local = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
-        }
-      }
-    }
-    let camX_mm_local = NaN, camY_mm_local = NaN;
-    if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
-      const originCalPx = calibration.originPixelCal;
-      const dx_px = origin.x - originCalPx.x, dy_px = origin.y - originCalPx.y;
-      const dx_mm = dx_px / calibration.lockedScalePxPerMm, dy_mm = dy_px / calibration.lockedScalePxPerMm;
-      const vCamForXY = [-dx_mm, dy_mm, 0];
-      const RnowTmp2 = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
-      const vWorld = applyMat3(RnowTmp2, vCamForXY);
-      camX_mm_local = vWorld[0];
-      camY_mm_local = vWorld[1];
-    }
-
-    if (Number.isFinite(camX_mm_local) && Number.isFinite(camY_mm_local) && Number.isFinite(camZ_mm_local)) {
-      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
-      const tNow = [camX_mm_local, camY_mm_local, camZ_mm_local];
-
-      const Pw = [calibration.referencePoint.x, calibration.referencePoint.y, calibration.referencePoint.z];
-      const diff = [Pw[0] - tNow[0], Pw[1] - tNow[1], Pw[2] - tNow[2]];
-      const RnowT = transpose3(Rnow);
-      const Pc = mul3x3Vec(RnowT, diff);
-
-      let f_px_proj = Math.max(canvas.width, canvas.height);
-      try {
-        if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
-          if (calibration.worldLenCal > 1e-6) {
-            f_px_proj = (calibration.lenPxCal * calibration.zCalMm) / calibration.worldLenCal;
-            if (!isFinite(f_px_proj) || f_px_proj <= 1e-3) f_px_proj = Math.max(canvas.width, canvas.height);
-          }
-        }
-      } catch (e) { f_px_proj = Math.max(canvas.width, canvas.height); }
-
-      if (Pc[2] > 1e-6) {
-        const u = (Pc[0] / Pc[2]) * f_px_proj + canvas.width/2;
-        const v = (Pc[1] / Pc[2]) * f_px_proj + canvas.height/2;
-
-        ctx.save();
-        ctx.fillStyle = '#00008B'; // dark blue
-        ctx.beginPath();
-        ctx.arc(u, v, 6, 0, Math.PI*2);
-        ctx.fill();
-        ctx.fillStyle = '#00008B';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        ctx.fillText('Ponto de Referência', u + 8, v - 8);
-        ctx.restore();
-
-        // ensure UI coordinates reflect stored reference
-        refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
-        refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
-        refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
-      } else {
-        // camera behind or projection invalid: still display stored coords
-        refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
-        refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
-        refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
-      }
-    } else {
-      // pose unknown: still display stored coords
-      refXSpan.textContent = calibration.referencePoint.x.toFixed(3);
-      refYSpan.textContent = calibration.referencePoint.y.toFixed(3);
-      refZSpan.textContent = calibration.referencePoint.z.toFixed(3);
-    }
-  } else {
-    // no reference point
-    if (!isRecordingCalibration) {
-      refXSpan.textContent = "--";
-      refYSpan.textContent = "--";
-      refZSpan.textContent = "--";
     }
   }
 
