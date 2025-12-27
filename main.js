@@ -4,6 +4,9 @@ const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 
 const scaleValue = document.getElementById('scaleValue');
+const pitchValue = document.getElementById('pitchValue');
+const yawValue   = document.getElementById('yawValue');
+const rollValue  = document.getElementById('rollValue');
 
 const blackSlider = document.getElementById('blackSlider');
 const blueSlider  = document.getElementById('blueSlider');
@@ -53,6 +56,20 @@ scanBtn.addEventListener('click', async () => {
       canvas.height = video.videoHeight;
       processFrame();
     });
+
+    // Atualizar Pitch, Yaw, Roll em tempo real
+    if (window.DeviceOrientationEvent) {
+      window.addEventListener('deviceorientation', (event) => {
+        // α = rotation around z axis (yaw), β = x axis (pitch), γ = y axis (roll)
+        const pitch = event.beta || 0;
+        const roll  = event.gamma || 0;
+        const yaw   = event.alpha || 0;
+
+        pitchValue.textContent = pitch.toFixed(1);
+        yawValue.textContent   = yaw.toFixed(1);
+        rollValue.textContent  = roll.toFixed(1);
+      }, true);
+    }
 
   } catch (err) {
     alert("Não foi possível acessar a câmera traseira.");
