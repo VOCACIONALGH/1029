@@ -17,7 +17,7 @@ button {
 }
 
 #calibration {
-  margin-bottom: 20px;
+  margin-bottom: 10px;
   width: 80%;
   max-width: 400px;
   text-align: center;
@@ -32,6 +32,11 @@ button {
 
 #calibration input[type="range"] {
   width: 100%;
+}
+
+#scaleInfo {
+  margin-bottom: 10px;
+  font-size: 14px;
 }
 
 #viewer {
