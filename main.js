@@ -57,7 +57,7 @@ let lockedScalePxPerMm = null;
 // calibração para +Z e origem
 let calibration = null; 
 // calibration will contain:
-// { lockedScalePxPerMm, lenPxCal, orientationCal: {alpha,beta,gamma}, worldLenCal, zCalMm, originPixelCal }
+// { lockedScalePxPerMm, lenPxCal, orientationCal: {alpha,beta,gamma}, worldLenCal, zCalMm, originPixelCal, camMatrixCal, invCamMatrixCal }
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -125,7 +125,7 @@ function handleOrientation(event) {
   rollSpan.textContent = (gamma != null) ? gamma.toFixed(2) : "--";
 }
 
-// Rotation matrix builder (same convention used antes)
+// Rotation matrix builder (convenção usada anteriormente)
 function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
   const a = (alphaDeg || 0) * Math.PI / 180;
   const b = (betaDeg  || 0) * Math.PI / 180;
@@ -175,10 +175,64 @@ function applyMat3(mat, vec) {
   ];
 }
 
+// Matriz homogênea 4x4 para R(3x3) e t(3)
+function buildHomogeneousMatrix(R, t) {
+  // R is 3x3 array, t is [x,y,z]
+  return [
+    [R[0][0], R[0][1], R[0][2], t[0]],
+    [R[1][0], R[1][1], R[1][2], t[1]],
+    [R[2][0], R[2][1], R[2][2], t[2]],
+    [0, 0, 0, 1]
+  ];
+}
+
+// Inversa de uma transformação rígida 4x4 (R,t) -> (R^T, -R^T t)
+function inverseRigid4x4(T) {
+  // T is 4x4
+  const R = [
+    [T[0][0], T[0][1], T[0][2]],
+    [T[1][0], T[1][1], T[1][2]],
+    [T[2][0], T[2][1], T[2][2]]
+  ];
+  const t = [T[0][3], T[1][3], T[2][3]];
+  // R^T
+  const Rt = [
+    [R[0][0], R[1][0], R[2][0]],
+    [R[0][1], R[1][1], R[2][1]],
+    [R[0][2], R[1][2], R[2][2]]
+  ];
+  // -R^T * t
+  const nt0 = -(Rt[0][0]*t[0] + Rt[0][1]*t[1] + Rt[0][2]*t[2]);
+  const nt1 = -(Rt[1][0]*t[0] + Rt[1][1]*t[1] + Rt[1][2]*t[2]);
+  const nt2 = -(Rt[2][0]*t[0] + Rt[2][1]*t[1] + Rt[2][2]*t[2]);
+  return [
+    [Rt[0][0], Rt[0][1], Rt[0][2], nt0],
+    [Rt[1][0], Rt[1][1], Rt[1][2], nt1],
+    [Rt[2][0], Rt[2][1], Rt[2][2], nt2],
+    [0,0,0,1]
+  ];
+}
+
+function multiply4x4(A,B) {
+  const C = [];
+  for (let i=0;i<4;i++) {
+    C[i]=[];
+    for (let j=0;j<4;j++) {
+      let s=0;
+      for (let k=0;k<4;k++) s += A[i][k]*B[k][j];
+      C[i][j]=s;
+    }
+  }
+  return C;
+}
+
 // Últimas posições detectadas
 let lastDetectedPoints = null;
 
-// Calibrar: trava escala e pede valor +Z, guarda origem pixel do momento
+// Última matriz transformada calculada (camera atual referenciada ao mundo fixo)
+let lastTransformedMatrix = null;
+
+// Calibrar: trava escala e pede valor +Z, guarda origem pixel do momento, monta matriz da câmera inicial e sua inversa
 calibrateBtn.addEventListener('click', () => {
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
@@ -232,13 +286,21 @@ calibrateBtn.addEventListener('click', () => {
   const vWorldCal = applyMat3(Rcal, vCam);
   const worldLenCal = Math.hypot(vWorldCal[0], vWorldCal[1], vWorldCal[2]);
 
+  // Monta matriz homogênea da câmera inicial no mundo fixo
+  // posição da câmera no mundo no instante da calibração: (0,0,zCal) conforme premissa
+  const tCal = [0, 0, zCal];
+  const camMatrixCal = buildHomogeneousMatrix(Rcal, tCal);
+  const invCamMatrixCal = inverseRigid4x4(camMatrixCal);
+
   calibration = {
     lockedScalePxPerMm,
     lenPxCal,
     orientationCal: orient,
     worldLenCal,
     zCalMm: zCal,
-    originPixelCal: { x: origin.x, y: origin.y } // salva posição da origem no momento da calibração
+    originPixelCal: { x: origin.x, y: origin.y },
+    camMatrixCal,
+    invCamMatrixCal
   };
 
   alert("Calibração concluída.\nEscala travada e +Z informado.");
@@ -336,7 +398,7 @@ function processFrame() {
     drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
   }
 
-  // Cálculo de +Z (já implementado anteriormente): mantido
+  // Cálculo de +Z (mantido)
   if (calibration && origin && calibration.lockedScalePxPerMm) {
     if (origin && lastDetectedPoints.bluePt) {
       const blueNow = lastDetectedPoints.bluePt;
@@ -366,13 +428,7 @@ function processFrame() {
     zSpan.textContent = "--";
   }
 
-  // --- NOVO: cálculo da translação da câmera em +X e +Y (mm)
-  // premissa: quando a calibração foi feita, a câmera estava sobre a origem (X=0,Y=0,Z=zCal).
-  // registramos pixel da origem na calibração (calibration.originPixelCal).
-  // agora calculamos desloc. da origem na imagem: delta_px = origin_now - origin_cal.
-  // convertemos para mm usando escala travada e transformamos via matriz de orientação atual.
-  // convenção adotada para cumprir a regra textual:
-  //   vCam = [-dx_mm, +dy_mm, 0]  // assim: origem para a esquerda (dx_px < 0) => -dx_mm > 0 => +X cresce.
+  // --- cálculo da translação da câmera em +X e +Y (mantido)
   if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
     const originCalPx = calibration.originPixelCal;
     const dx_px = origin.x - originCalPx.x;
@@ -381,23 +437,53 @@ function processFrame() {
     const dx_mm = dx_px / calibration.lockedScalePxPerMm;
     const dy_mm = dy_px / calibration.lockedScalePxPerMm;
 
-    // construir vetor na "camera plane" com convenção pedida
+    // convenção: vCam = [-dx_mm, dy_mm, 0]
     const vCamForXY = [-dx_mm, dy_mm, 0];
 
-    // transformar para world usando matriz atual (orientação atual)
     const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
     const vWorld = applyMat3(Rnow, vCamForXY);
 
-    // posição da câmera em relação à origem no plano XY (usamos diretamente vWorld.x, vWorld.y)
     const camX_mm = vWorld[0];
     const camY_mm = vWorld[1];
 
-    // atualizar UI
     xSpan.textContent = camX_mm.toFixed(2);
     ySpan.textContent = camY_mm.toFixed(2);
   } else {
     xSpan.textContent = "--";
     ySpan.textContent = "--";
+  }
+
+  // --- NOVO: montagem da matriz homogênea da pose atual da câmera e transformação para o referencial do mundo fixo
+  // Só se houver calibração inicial (camMatrixCal e sua inversa) e valores válidos de X,Y,Z e orientação
+  if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
+    // precisamos da pose atual da câmera no referencial do mundo: tNow = [camX_mm, camY_mm, zNow]
+    // obtém camX_mm, camY_mm (calculados acima) e zNow (calculado no bloco de +Z)
+    const camX = (xSpan.textContent !== "--") ? parseFloat(xSpan.textContent) : NaN;
+    const camY = (ySpan.textContent !== "--") ? parseFloat(ySpan.textContent) : NaN;
+    const camZ = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
+
+    if (!Number.isNaN(camX) && !Number.isNaN(camY) && !Number.isNaN(camZ)) {
+      // Rnow já calculado acima when needed; recompute here to be explicit
+      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+      const tNow = [camX, camY, camZ];
+
+      const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
+
+      // transform to world-fixed referential using inverse of cam matrix at calibration:
+      // T_transformed = inv(T_cam_cal) * TcamNow
+      const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
+
+      lastTransformedMatrix = Ttrans;
+
+      // opcional: log para inspeção
+      // (isso não altera comportamento; remove se preferir silencioso)
+      // console.clear();
+      console.log("Tcamera_now_in_world_fixed (4x4):", Ttrans);
+    } else {
+      lastTransformedMatrix = null;
+    }
+  } else {
+    lastTransformedMatrix = null;
   }
 
   requestAnimationFrame(processFrame);
