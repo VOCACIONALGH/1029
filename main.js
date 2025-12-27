@@ -4,9 +4,6 @@ const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 
 const scaleValue = document.getElementById('scaleValue');
-const pitchValue = document.getElementById('pitchValue');
-const yawValue   = document.getElementById('yawValue');
-const rollValue  = document.getElementById('rollValue');
 
 const blackSlider = document.getElementById('blackSlider');
 const blueSlider  = document.getElementById('blueSlider');
@@ -15,6 +12,11 @@ const greenSlider = document.getElementById('greenSlider');
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
 const greenValue = document.getElementById('greenValue');
+
+// NOVO: elementos de orientação
+const pitchSpan = document.getElementById('pitchValue');
+const yawSpan   = document.getElementById('yawValue');
+const rollSpan  = document.getElementById('rollValue');
 
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
@@ -39,6 +41,8 @@ greenSlider.addEventListener('input', () => {
   greenValue.textContent = greenThreshold;
 });
 
+let orientationListenerAdded = false;
+
 scanBtn.addEventListener('click', async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -51,30 +55,65 @@ scanBtn.addEventListener('click', async () => {
     canvas.style.display = "block";
     scanBtn.style.display = "none";
 
+    // Solicita permissão para DeviceOrientation em iOS (se necessário)
+    // Deve ser chamado em resposta a um gesto do usuário (o clique do botão serve).
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // iOS 13+ permission request
+        DeviceOrientationEvent.requestPermission().catch(() => {
+          // se o usuário negar, não vai lançar aqui? apenas tratamos.
+        }).then(result => {
+          // mesmo que user escolha 'denied', podemos tentar adicionar o listener e o browser decide.
+          addOrientationListenerOnce();
+        });
+      } else {
+        // outros navegadores não exigem permissão explícita
+        addOrientationListenerOnce();
+      }
+    } catch (e) {
+      // segurança: se algo falhar, ainda continuamos sem orientação
+      addOrientationListenerOnce();
+    }
+
     video.addEventListener('loadedmetadata', () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       processFrame();
     });
 
-    // Atualizar Pitch, Yaw, Roll em tempo real
-    if (window.DeviceOrientationEvent) {
-      window.addEventListener('deviceorientation', (event) => {
-        // α = rotation around z axis (yaw), β = x axis (pitch), γ = y axis (roll)
-        const pitch = event.beta || 0;
-        const roll  = event.gamma || 0;
-        const yaw   = event.alpha || 0;
-
-        pitchValue.textContent = pitch.toFixed(1);
-        yawValue.textContent   = yaw.toFixed(1);
-        rollValue.textContent  = roll.toFixed(1);
-      }, true);
-    }
-
   } catch (err) {
     alert("Não foi possível acessar a câmera traseira.");
   }
 });
+
+function addOrientationListenerOnce() {
+  if (orientationListenerAdded) return;
+  orientationListenerAdded = true;
+
+  if (window.DeviceOrientationEvent) {
+    window.addEventListener('deviceorientation', handleOrientation, true);
+  } else {
+    // fallback: não disponível
+    pitchSpan.textContent = "--";
+    yawSpan.textContent = "--";
+    rollSpan.textContent = "--";
+  }
+}
+
+function handleOrientation(event) {
+  // event.alpha = rotation around Z axis (0..360) -> yaw (compass)
+  // event.beta  = rotation around X axis (-180..180) -> pitch (front/back tilt)
+  // event.gamma = rotation around Y axis (-90..90) -> roll (left/right tilt)
+  const alpha = event.alpha;
+  const beta = event.beta;
+  const gamma = event.gamma;
+
+  // normalize -> show as numbers with 2 decimals, or '--' if undefined
+  yawSpan.textContent = (alpha != null) ? alpha.toFixed(2) : "--";
+  pitchSpan.textContent = (beta  != null) ? beta.toFixed(2)  : "--";
+  rollSpan.textContent = (gamma != null) ? gamma.toFixed(2) : "--";
+}
 
 function processFrame() {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
