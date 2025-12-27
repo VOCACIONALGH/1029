@@ -66,6 +66,7 @@ function processFrame() {
   let sumBlackX = 0, sumBlackY = 0, countBlack = 0;
   let sumBlueX  = 0, sumBlueY  = 0, countBlue  = 0;
   let sumGreenX = 0, sumGreenY = 0, countGreen = 0;
+  let sumRedX   = 0, sumRedY   = 0, countRed   = 0;
 
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
@@ -93,6 +94,13 @@ function processFrame() {
       data[i] = 128; data[i+1] = 0; data[i+2] = 128;
       sumGreenX += x; sumGreenY += y; countGreen++;
     }
+
+    // VERMELHO → apenas centroide (ponto rosa)
+    else if (r > 150 && g < 100 && b < 100) {
+      sumRedX += x;
+      sumRedY += y;
+      countRed++;
+    }
   }
 
   ctx.putImageData(frame, 0, 0);
@@ -100,6 +108,7 @@ function processFrame() {
   if (countBlack) drawPoint(sumBlackX / countBlack, sumBlackY / countBlack, "#FFFFFF");
   if (countBlue)  drawPoint(sumBlueX  / countBlue,  sumBlueY  / countBlue,  "#0000FF");
   if (countGreen) drawPoint(sumGreenX / countGreen, sumGreenY / countGreen, "#00FF00");
+  if (countRed)   drawPoint(sumRedX   / countRed,   sumRedY   / countRed,   "#FF69B4"); // rosa
 
   requestAnimationFrame(processFrame);
 }
