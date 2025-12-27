@@ -59,7 +59,8 @@ button {
   color: #e6eef8;
 }
 
-#zInfo {
+/* ZXY block */
+#zxyInfo {
   margin-bottom: 10px;
   font-size: 14px;
   width: 80%;
@@ -70,6 +71,8 @@ button {
   border-radius: 6px;
   box-sizing: border-box;
 }
+
+#zxyInfo div { margin: 2px 0; }
 
 /* viewer */
 #viewer {
