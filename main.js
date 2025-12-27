@@ -45,20 +45,43 @@ function processFrame() {
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = frame.data;
 
+  let sumX = 0;
+  let sumY = 0;
+  let count = 0;
+
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
 
-    // pixel considerado preto conforme calibração
+    const pixelIndex = i / 4;
+    const x = pixelIndex % canvas.width;
+    const y = Math.floor(pixelIndex / canvas.width);
+
     if (r < blackThreshold && g < blackThreshold && b < blackThreshold) {
-      // transforma em laranja
-      data[i]     = 255; // R
-      data[i + 1] = 165; // G
-      data[i + 2] = 0;   // B
+      // transforma pixel preto em laranja
+      data[i]     = 255;
+      data[i + 1] = 165;
+      data[i + 2] = 0;
+
+      sumX += x;
+      sumY += y;
+      count++;
     }
   }
 
   ctx.putImageData(frame, 0, 0);
+
+  // desenha ponto branco no centro da área dos pixels pretos (origem)
+  if (count > 0) {
+    const cx = sumX / count;
+    const cy = sumY / count;
+
+    ctx.fillStyle = "#FFFFFF";
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   requestAnimationFrame(processFrame);
 }
