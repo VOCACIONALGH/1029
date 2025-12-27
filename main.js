@@ -77,38 +77,57 @@ function processFrame() {
     const x = p % canvas.width;
     const y = Math.floor(p / canvas.width);
 
-    // PRETO → LARANJA
     if (r < blackThreshold && g < blackThreshold && b < blackThreshold) {
       data[i] = 255; data[i+1] = 165; data[i+2] = 0;
       sumBlackX += x; sumBlackY += y; countBlack++;
     }
-
-    // AZUL → BRANCO
     else if (b > blueThreshold && r < blueThreshold && g < blueThreshold) {
       data[i] = 255; data[i+1] = 255; data[i+2] = 255;
       sumBlueX += x; sumBlueY += y; countBlue++;
     }
-
-    // VERDE → ROXO
     else if (g > greenThreshold && r < greenThreshold && b < greenThreshold) {
       data[i] = 128; data[i+1] = 0; data[i+2] = 128;
       sumGreenX += x; sumGreenY += y; countGreen++;
     }
-
-    // VERMELHO → apenas centroide (ponto rosa)
     else if (r > 150 && g < 100 && b < 100) {
-      sumRedX += x;
-      sumRedY += y;
-      countRed++;
+      sumRedX += x; sumRedY += y; countRed++;
     }
   }
 
   ctx.putImageData(frame, 0, 0);
 
-  if (countBlack) drawPoint(sumBlackX / countBlack, sumBlackY / countBlack, "#FFFFFF");
-  if (countBlue)  drawPoint(sumBlueX  / countBlue,  sumBlueY  / countBlue,  "#0000FF");
-  if (countGreen) drawPoint(sumGreenX / countGreen, sumGreenY / countGreen, "#00FF00");
-  if (countRed)   drawPoint(sumRedX   / countRed,   sumRedY   / countRed,   "#FF69B4"); // rosa
+  let origin = null;
+  let bluePt = null;
+  let greenPt = null;
+
+  if (countBlack) {
+    origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
+    drawPoint(origin.x, origin.y, "#FFFFFF");
+  }
+
+  if (countBlue) {
+    bluePt = { x: sumBlueX / countBlue, y: sumBlueY / countBlue };
+    drawPoint(bluePt.x, bluePt.y, "#0000FF");
+  }
+
+  if (countGreen) {
+    greenPt = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
+    drawPoint(greenPt.x, greenPt.y, "#00FF00");
+  }
+
+  if (countRed) {
+    drawPoint(sumRedX / countRed, sumRedY / countRed, "#FF69B4");
+  }
+
+  // Vetor +X (azul)
+  if (origin && bluePt) {
+    drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
+  }
+
+  // Vetor +Y (verde)
+  if (origin && greenPt) {
+    drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
+  }
 
   requestAnimationFrame(processFrame);
 }
@@ -117,5 +136,32 @@ function drawPoint(x, y, color) {
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(x, y, 4, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawArrow(x1, y1, x2, y2, color) {
+  const headLength = 10;
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(
+    x2 - headLength * Math.cos(angle - Math.PI / 6),
+    y2 - headLength * Math.sin(angle - Math.PI / 6)
+  );
+  ctx.lineTo(
+    x2 - headLength * Math.cos(angle + Math.PI / 6),
+    y2 - headLength * Math.sin(angle + Math.PI / 6)
+  );
+  ctx.closePath();
+  ctx.fillStyle = color;
   ctx.fill();
 }
