@@ -1,9 +1,11 @@
 const scanBtn = document.getElementById('scanBtn');
+const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 
 const scaleValue = document.getElementById('scaleValue');
+const scaleLockedLabel = document.getElementById('scaleLockedLabel');
 
 const blackSlider = document.getElementById('blackSlider');
 const blueSlider  = document.getElementById('blueSlider');
@@ -13,10 +15,13 @@ const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
 const greenValue = document.getElementById('greenValue');
 
-// NOVO: elementos de orientação
+// orientação UI
 const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
 const rollSpan  = document.getElementById('rollValue');
+
+// +Z UI
+const zSpan = document.getElementById('zValue');
 
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
@@ -43,6 +48,16 @@ greenSlider.addEventListener('input', () => {
 
 let orientationListenerAdded = false;
 
+// escala (px por mm). Normalmente calculada dinamicamente; pode ser travada.
+let currentScalePxPerMm = null; // updated from measured arrow when available
+let scaleLocked = false;
+let lockedScalePxPerMm = null;
+
+// calibração para +Z
+let calibration = null; 
+// calibration object will hold:
+// { lockedScalePxPerMm, lenPxCal, orientationCal: {alpha,beta,gamma}, worldLenCal, zCalMm }
+
 scanBtn.addEventListener('click', async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -55,24 +70,17 @@ scanBtn.addEventListener('click', async () => {
     canvas.style.display = "block";
     scanBtn.style.display = "none";
 
-    // Solicita permissão para DeviceOrientation em iOS (se necessário)
-    // Deve ser chamado em resposta a um gesto do usuário (o clique do botão serve).
+    // permission for deviceorientation on iOS (gesture)
     try {
       if (typeof DeviceOrientationEvent !== 'undefined' &&
           typeof DeviceOrientationEvent.requestPermission === 'function') {
-        // iOS 13+ permission request
-        DeviceOrientationEvent.requestPermission().catch(() => {
-          // se o usuário negar, não vai lançar aqui? apenas tratamos.
-        }).then(result => {
-          // mesmo que user escolha 'denied', podemos tentar adicionar o listener e o browser decide.
+        DeviceOrientationEvent.requestPermission().catch(()=>{}).then(() => {
           addOrientationListenerOnce();
         });
       } else {
-        // outros navegadores não exigem permissão explícita
         addOrientationListenerOnce();
       }
     } catch (e) {
-      // segurança: se algo falhar, ainda continuamos sem orientação
       addOrientationListenerOnce();
     }
 
@@ -94,26 +102,159 @@ function addOrientationListenerOnce() {
   if (window.DeviceOrientationEvent) {
     window.addEventListener('deviceorientation', handleOrientation, true);
   } else {
-    // fallback: não disponível
     pitchSpan.textContent = "--";
     yawSpan.textContent = "--";
     rollSpan.textContent = "--";
   }
 }
 
+let lastOrientation = { alpha: null, beta: null, gamma: null };
+
 function handleOrientation(event) {
-  // event.alpha = rotation around Z axis (0..360) -> yaw (compass)
-  // event.beta  = rotation around X axis (-180..180) -> pitch (front/back tilt)
-  // event.gamma = rotation around Y axis (-90..90) -> roll (left/right tilt)
   const alpha = event.alpha;
   const beta = event.beta;
   const gamma = event.gamma;
 
-  // normalize -> show as numbers with 2 decimals, or '--' if undefined
+  lastOrientation.alpha = alpha;
+  lastOrientation.beta = beta;
+  lastOrientation.gamma = gamma;
+
   yawSpan.textContent = (alpha != null) ? alpha.toFixed(2) : "--";
   pitchSpan.textContent = (beta  != null) ? beta.toFixed(2)  : "--";
   rollSpan.textContent = (gamma != null) ? gamma.toFixed(2) : "--";
 }
+
+// Função para construir a matriz de rotação a partir de yaw(alpha), pitch(beta), roll(gamma)
+// As entradas são em graus; retornamos matriz 3x3.
+// Ordem: R = Rz(alpha) * Rx(beta) * Ry(gamma)
+function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
+  const a = (alphaDeg || 0) * Math.PI / 180;
+  const b = (betaDeg  || 0) * Math.PI / 180;
+  const g = (gammaDeg || 0) * Math.PI / 180;
+
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const cb = Math.cos(b), sb = Math.sin(b);
+  const cg = Math.cos(g), sg = Math.sin(g);
+
+  // Rz(a)
+  const Rz = [
+    [ca, -sa, 0],
+    [sa,  ca, 0],
+    [0 ,   0, 1]
+  ];
+  // Rx(b)
+  const Rx = [
+    [1, 0 ,  0],
+    [0, cb, -sb],
+    [0, sb,  cb]
+  ];
+  // Ry(g)
+  const Ry = [
+    [cg, 0, sg],
+    [0 , 1, 0 ],
+    [-sg,0, cg]
+  ];
+
+  // multiply Rz * Rx -> temp, then temp * Ry
+  function mul(A,B) {
+    const C = [];
+    for (let i=0;i<3;i++) {
+      C[i]=[];
+      for (let j=0;j<3;j++) {
+        let s=0;
+        for (let k=0;k<3;k++) s += A[i][k]*B[k][j];
+        C[i][j]=s;
+      }
+    }
+    return C;
+  }
+
+  return mul(mul(Rz,Rx),Ry);
+}
+
+function applyMat3(mat, vec) {
+  return [
+    mat[0][0]*vec[0] + mat[0][1]*vec[1] + mat[0][2]*vec[2],
+    mat[1][0]*vec[0] + mat[1][1]*vec[1] + mat[1][2]*vec[2],
+    mat[2][0]*vec[0] + mat[2][1]*vec[1] + mat[2][2]*vec[2]
+  ];
+}
+
+// Botão calibrar: trava escala atual e pede valor de +Z atual (mm)
+calibrateBtn.addEventListener('click', () => {
+  // só permite calibrar se já tivermos escala calculada e origem+blue detectados
+  if (!currentScalePxPerMm) {
+    alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
+    return;
+  }
+
+  // lock scale
+  scaleLocked = true;
+  lockedScalePxPerMm = currentScalePxPerMm;
+  scaleLockedLabel.style.display = "inline";
+
+  // ask user for +Z current value (mm)
+  const input = prompt("Informe o valor atual de +Z (mm) — somente números, ex.: 120.5");
+  if (input === null) {
+    // user cancelled: unlock back
+    scaleLocked = false;
+    lockedScalePxPerMm = null;
+    scaleLockedLabel.style.display = "none";
+    return;
+  }
+  const zCal = parseFloat(input);
+  if (Number.isNaN(zCal) || zCal <= 0) {
+    alert("Valor inválido. A calibração foi cancelada.");
+    scaleLocked = false;
+    lockedScalePxPerMm = null;
+    scaleLockedLabel.style.display = "none";
+    return;
+  }
+
+  // need current origin & blue points to store lenPxCal and orientation
+  if (!lastDetectedPoints || !lastDetectedPoints.origin || !lastDetectedPoints.bluePt) {
+    alert("Calibração falhou: origem e ponto azul não detectados no momento.");
+    // unlock
+    scaleLocked = false;
+    lockedScalePxPerMm = null;
+    scaleLockedLabel.style.display = "none";
+    return;
+  }
+
+  const origin = lastDetectedPoints.origin;
+  const bluePt = lastDetectedPoints.bluePt;
+  const lenPxCal = Math.hypot(bluePt.x - origin.x, bluePt.y - origin.y);
+
+  // orientation at this moment
+  const orient = {
+    alpha: lastOrientation.alpha,
+    beta: lastOrientation.beta,
+    gamma: lastOrientation.gamma
+  };
+
+  // compute v_cam (mm)
+  const dx_mm = (bluePt.x - origin.x) / lockedScalePxPerMm;
+  const dy_mm = (bluePt.y - origin.y) / lockedScalePxPerMm;
+  const vCam = [dx_mm, dy_mm, 0];
+
+  // rotation matrix at calibration
+  const Rcal = rotationMatrixFromAlphaBetaGamma(orient.alpha, orient.beta, orient.gamma);
+  const vWorldCal = applyMat3(Rcal, vCam);
+  const worldLenCal = Math.hypot(vWorldCal[0], vWorldCal[1], vWorldCal[2]);
+
+  calibration = {
+    lockedScalePxPerMm,
+    lenPxCal,
+    orientationCal: orient,
+    worldLenCal,
+    zCalMm: zCal
+  };
+
+  alert("Calibração concluída.\nEscala travada e +Z informado.");
+});
+
+// Mantemos as últimas posições detectadas para uso na calibração
+let lastDetectedPoints = null;
 
 function processFrame() {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -177,20 +318,72 @@ function processFrame() {
     drawPoint(sumRedX / countRed, sumRedY / countRed, "#FF69B4");
   }
 
-  // Vetores +X e +Y com 100 mm
+  // mantemos últimas detecções para salvar em calibração
+  lastDetectedPoints = { origin, bluePt, greenPt };
+
+  // cálculo da escala (px/mm) com base em vetor azul (len px corresponde a 100 mm)
   if (origin && bluePt) {
     const dx = bluePt.x - origin.x;
     const dy = bluePt.y - origin.y;
     const lenPx = Math.hypot(dx, dy);
 
-    const scalePxPerMm = lenPx / 100;
-    scaleValue.textContent = scalePxPerMm.toFixed(3);
+    // se escala não estiver travada, atualiza
+    if (!scaleLocked) {
+      currentScalePxPerMm = lenPx / 100; // px por 100 mm -> px/mm = lenPx / 100
+      scaleValue.textContent = currentScalePxPerMm.toFixed(3);
+    } else {
+      // escala travada: usamos lockedScalePxPerMm tanto para cálculo quanto para exibição
+      currentScalePxPerMm = lockedScalePxPerMm;
+      scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
+    }
 
+    // desenha seta azul usando posição atual
     drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
+  } else {
+    if (!scaleLocked) {
+      scaleValue.textContent = "--";
+      currentScalePxPerMm = null;
+    } else {
+      scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
+    }
   }
 
   if (origin && greenPt) {
     drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
+  }
+
+  // Se houver calibração, calculamos +Z atual:
+  if (calibration && origin && calibration.lockedScalePxPerMm) {
+    if (origin && lastDetectedPoints.bluePt) {
+      const blueNow = lastDetectedPoints.bluePt;
+      const dx_px_now = blueNow.x - origin.x;
+      const dy_px_now = blueNow.y - origin.y;
+      const lenPxNow = Math.hypot(dx_px_now, dy_px_now);
+
+      // converte para mm usando escala travada
+      const dx_mm_now = dx_px_now / calibration.lockedScalePxPerMm;
+      const dy_mm_now = dy_px_now / calibration.lockedScalePxPerMm;
+      const vCamNow = [dx_mm_now, dy_mm_now, 0];
+
+      // orientação atual
+      const orientNow = lastOrientation;
+      const Rnow = rotationMatrixFromAlphaBetaGamma(orientNow.alpha, orientNow.beta, orientNow.gamma);
+      const vWorldNow = applyMat3(Rnow, vCamNow);
+      const worldLenNow = Math.hypot(vWorldNow[0], vWorldNow[1], vWorldNow[2]);
+
+      // se mundo atual muito pequeno (evitar div por zero), ignorar
+      if (worldLenNow > 1e-6 && calibration.worldLenCal > 1e-6) {
+        // proporção inversa: Z_now = Z_cal * (worldLenCal / worldLenNow)
+        const zNow = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
+        zSpan.textContent = zNow.toFixed(2);
+      } else {
+        zSpan.textContent = "--";
+      }
+    } else {
+      zSpan.textContent = "--";
+    }
+  } else {
+    zSpan.textContent = "--";
   }
 
   requestAnimationFrame(processFrame);
