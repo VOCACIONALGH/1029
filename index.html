@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Escâner</title>
 
-  <link rel="stylesheet" href="layout.css">
+  <link rel="stylesheet" href="layout.css" />
 </head>
 <body>
 
@@ -35,10 +35,11 @@
     Escala: <span id="scaleValue">--</span> px/mm
   </div>
 
+  <!-- NOVO: Informações de orientação -->
   <div id="orientationInfo">
-    Pitch: <span id="pitchValue">0</span>°, 
-    Yaw: <span id="yawValue">0</span>°, 
-    Roll: <span id="rollValue">0</span>°
+    <div class="orient-row">Pitch: <span id="pitchValue">--</span>°</div>
+    <div class="orient-row">Yaw: <span id="yawValue">--</span>°</div>
+    <div class="orient-row">Roll: <span id="rollValue">--</span>°</div>
   </div>
 
   <div id="viewer">
