@@ -1,91 +1,26 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-    <meta charset="UTF-8">
-    <title>Escâner</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Escâner</title>
 
-    <link rel="manifest" href="manifest.json">
-    <link rel="stylesheet" href="layout.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="layout.css">
 </head>
 <body>
 
-    <button id="scanBtn">ESCÂNER</button>
-    <button id="calibrateBtn">Calibrar</button>
-    <!-- Botão Download da nuvem de pontos: aparece durante a calibração -->
-    <button id="downloadBtn" style="display:none">Download Nuvem (.json)</button>
+  <button id="scanBtn">ESCÂNER</button>
+  <video id="camera" autoplay playsinline></video>
 
-    <label class="sliderLabel">
-        Sensibilidade do Preto
-        <input type="range" id="blackThreshold" min="0" max="100" value="20">
-    </label>
+  <script src="main.js"></script>
+  <script src="export.js"></script>
 
-    <label class="sliderLabel">
-        Sensibilidade do Azul
-        <input type="range" id="blueThreshold" min="0" max="100" value="40">
-    </label>
-
-    <label class="sliderLabel">
-        Sensibilidade do Verde
-        <input type="range" id="greenThreshold" min="0" max="100" value="40">
-    </label>
-
-    <div id="angles">
-        <div>Pitch: <span id="pitch">0</span>°</div>
-        <div>Yaw: <span id="yaw">0</span>°</div>
-        <div>Roll: <span id="roll">0</span>°</div>
-    </div>
-
-    <div id="scaleContainer">
-        Escala: <span id="scale">-</span> px/mm
-        <span id="scaleStatus" style="margin-left:8px;color:#ddd">(<span id="scaleLock">aberta</span>)</span>
-    </div>
-
-    <div id="zContainer">
-        +Z (camera): <span id="zCamera">-</span> mm
-        <span style="margin-left:12px">+Z (transformado): <span id="zWorld">-</span> mm</span>
-    </div>
-
-    <div id="xyContainer">
-        +X (camera): <span id="xCamera">-</span> mm
-        <span style="margin-left:12px">+Y (camera): <span id="yCamera">-</span> mm</span>
-    </div>
-
-    <div id="raysContainer">
-        Raios definidos: <span id="raysCount">0</span>
-    </div>
-
-    <div id="pinkDirContainer">
-        Pontos rosas com direção: <span id="pinkDirCount">0</span>
-    </div>
-
-    <div id="rotatedContainer">
-        Vetores rotacionados: <span id="rotatedCount">0</span>
-    </div>
-
-    <div id="triangulatedContainer">
-        Pontos triangulados: <span id="triangulatedCount">0</span>
-    </div>
-
-    <div id="container">
-        <video id="camera" autoplay playsinline></video>
-        <canvas id="canvas"></canvas>
-    </div>
-
-    <!-- Mini visualização rápida da nuvem -->
-    <div id="miniContainer">
-        <div id="miniTitle">Visualização rápida da nuvem</div>
-        <canvas id="miniCanvas" width="220" height="220"></canvas>
-    </div>
-
-    <script src="main.js"></script>
-    <script src="export.js"></script>
-
-    <script>
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('service-worker.js');
-        }
-    </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js');
+    }
+  </script>
 
 </body>
 </html>
