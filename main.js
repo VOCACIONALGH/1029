@@ -1,4 +1,4 @@
-// main.js (atualizado: aplica rotação 3x3 aos vetores pinhole para o referencial fixo da calibração)
+// main.js (atualizado para rotacionar vetores pinhole para o referencial fixo)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -21,7 +21,7 @@ const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
 const rollSpan  = document.getElementById('rollValue');
 
-// ZXY UI + Raios count + contagem vetores rotacionados
+// ZXY UI + contadores
 const zSpan = document.getElementById('zValue');
 const xSpan = document.getElementById('xValue');
 const ySpan = document.getElementById('yValue');
@@ -64,9 +64,9 @@ let calibrationFrames = []; // array de frames gravados durante calibração
 
 // calibração para +Z e origem
 let calibration = null; 
-// calibration will contain (entre outros):
+// calibration will contain:
 // { lockedScalePxPerMm, lenPxCal, orientationCal: {alpha,beta,gamma}, worldLenCal,
-//   zCalMm, originPixelCal, camMatrixCal, invCamMatrixCal, rays: [], rotatedRays: [] }
+//   zCalMm, originPixelCal, camMatrixCal, invCamMatrixCal, rays: [], basisMatrix: [[..],[..],[..]], basisMatrixT: [[..]] }
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -135,7 +135,6 @@ function handleOrientation(event) {
 }
 
 // Rotation matrix builder (convenção usada anteriormente)
-// Input angles in degrees; function converts to radians internally.
 function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
   const a = (alphaDeg || 0) * Math.PI / 180;
   const b = (betaDeg  || 0) * Math.PI / 180;
@@ -182,6 +181,34 @@ function applyMat3(mat, vec) {
     mat[0][0]*vec[0] + mat[0][1]*vec[1] + mat[0][2]*vec[2],
     mat[1][0]*vec[0] + mat[1][1]*vec[1] + mat[1][2]*vec[2],
     mat[2][0]*vec[0] + mat[2][1]*vec[1] + mat[2][2]*vec[2]
+  ];
+}
+
+// pequeno util: cross product e normalize
+function cross(a,b) {
+  return [
+    a[1]*b[2] - a[2]*b[1],
+    a[2]*b[0] - a[0]*b[2],
+    a[0]*b[1] - a[1]*b[0]
+  ];
+}
+function norm(v) {
+  const l = Math.hypot(v[0],v[1],v[2]);
+  if (l === 0 || !isFinite(l)) return [0,0,0];
+  return [v[0]/l, v[1]/l, v[2]/l];
+}
+function transpose3(M) {
+  return [
+    [M[0][0], M[1][0], M[2][0]],
+    [M[0][1], M[1][1], M[2][1]],
+    [M[0][2], M[1][2], M[2][2]]
+  ];
+}
+function mul3x3Vec(M, v) {
+  return [
+    M[0][0]*v[0] + M[0][1]*v[1] + M[0][2]*v[2],
+    M[1][0]*v[0] + M[1][1]*v[1] + M[1][2]*v[2],
+    M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2],
   ];
 }
 
@@ -238,17 +265,19 @@ let lastDetectedPoints = null;
 // Última matriz transformada calculada (camera atual referenciada ao mundo fixo)
 let lastTransformedMatrix = null;
 
-// Calibrar (toggle) - primeiro clique inicializa calibração e gravação, segundo finaliza e baixa .json
+// Calibrar: botão toggles - primeiro clique realiza calibração e inicia gravação,
+// segundo clique finaliza a gravação e faz download do .json
 calibrateBtn.addEventListener('click', () => {
+  // se já estamos gravando, então este clique finaliza a calibração e faz download
   if (isRecordingCalibration) {
     // finalizar gravação
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
+    // gera JSON e baixa (inclui rays)
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
-      rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
-      rotatedRays: (calibration && calibration.rotatedRays) ? calibration.rotatedRays.slice() : []
+      rays: (calibration && calibration.rays) ? calibration.rays.slice() : []
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -257,12 +286,9 @@ calibrateBtn.addEventListener('click', () => {
     a.download = fname;
     a.click();
     URL.revokeObjectURL(a.href);
-    // limpa buffers e UI contadores relacionados
+    // limpa buffer
     calibrationFrames = [];
-    if (calibration) {
-      calibration.rays = [];
-      calibration.rotatedRays = [];
-    }
+    if (calibration && calibration.rays) calibration.rays = [];
     raysCountSpan.textContent = "0";
     pinkDirectedCountSpan.textContent = "0";
     rotatedCountSpan.textContent = "0";
@@ -270,7 +296,7 @@ calibrateBtn.addEventListener('click', () => {
     return;
   }
 
-  // iniciar calibração
+  // não estamos gravando => faz a calibração inicial (mesma lógica anterior) e inicia gravação
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
     return;
@@ -282,6 +308,7 @@ calibrateBtn.addEventListener('click', () => {
 
   const input = prompt("Informe o valor atual de +Z (mm) — somente números, ex.: 120.5");
   if (input === null) {
+    // usuário cancelou: desfaz lock
     scaleLocked = false;
     lockedScalePxPerMm = null;
     scaleLockedLabel.style.display = "none";
@@ -324,10 +351,37 @@ calibrateBtn.addEventListener('click', () => {
   const vWorldCal = applyMat3(Rcal, vCam);
   const worldLenCal = Math.hypot(vWorldCal[0], vWorldCal[1], vWorldCal[2]);
 
+  // também converte vetor verde para world para construir a base
+  const dxg_mm = (greenPt.x - origin.x) / lockedScalePxPerMm;
+  const dyg_mm = (greenPt.y - origin.y) / lockedScalePxPerMm;
+  const vCamG = [dxg_mm, dyg_mm, 0];
+  const vWorldG = applyMat3(Rcal, vCamG);
+
   // Monta matriz homogênea da câmera inicial no mundo fixo
+  // posição da câmera no mundo no instante da calibração: (0,0,zCal) conforme premissa
   const tCal = [0, 0, zCal];
   const camMatrixCal = buildHomogeneousMatrix(Rcal, tCal);
   const invCamMatrixCal = inverseRigid4x4(camMatrixCal);
+
+  // construir base ortonormal do referencial fixo (xAxis, yAxis, zAxis)
+  const xAxis = norm(vWorldCal);      // +X (a partir do vetor azul)
+  const tempY = vWorldG;              // direção aproximada para +Y
+  // z = normalize(cross(x, tempY))
+  let zAxis = norm(cross(xAxis, tempY));
+  // se zAxis degenerou (colinearidade), tente usar camera z (0,0,1) rotated
+  if (Math.hypot(zAxis[0],zAxis[1],zAxis[2]) < 1e-6) {
+    // fallback: use camera's forward vector rotated by Rcal (camera forward in world)
+    const camForward = applyMat3(Rcal, [0,0,1]);
+    zAxis = norm(camForward);
+  }
+  const yAxis = norm(cross(zAxis, xAxis)); // ensure orthonormal right-handed
+
+  const basisMatrix = [
+    [xAxis[0], yAxis[0], zAxis[0]],
+    [xAxis[1], yAxis[1], zAxis[1]],
+    [xAxis[2], yAxis[2], zAxis[2]]
+  ];
+  const basisMatrixT = transpose3(basisMatrix); // rápido acesso para transformar world->fixed coords
 
   calibration = {
     lockedScalePxPerMm,
@@ -338,13 +392,14 @@ calibrateBtn.addEventListener('click', () => {
     originPixelCal: { x: origin.x, y: origin.y },
     camMatrixCal,
     invCamMatrixCal,
-    rays: [],           // raios definidos (anterior)
-    rotatedRays: []     // raios após rotação para referencial fixo
+    rays: [], // inicia lista de raios definidos durante a calibração
+    basisMatrix,
+    basisMatrixT
   };
 
   // inicia gravação dos frames da calibração
   isRecordingCalibration = true;
-  calibrationFrames = [];
+  calibrationFrames = []; // limpa
   calibrateBtn.textContent = "Finalizar Calib.";
   raysCountSpan.textContent = "0";
   pinkDirectedCountSpan.textContent = "0";
@@ -385,6 +440,7 @@ function processFrame() {
       sumGreenX += x; sumGreenY += y; countGreen++;
     }
     else if (r > 150 && g < 100 && b < 100) {
+      // detecta pixels vermelhos
       sumRedX += x; sumRedY += y; countRed++;
     }
   }
@@ -398,6 +454,7 @@ function processFrame() {
 
   if (countBlack) {
     origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
+    // drawPoint será chamado mais abaixo
   }
 
   if (countBlue) {
@@ -410,6 +467,7 @@ function processFrame() {
 
   if (countRed) {
     redPt = { x: sumRedX / countRed, y: sumRedY / countRed };
+    // desenha ponto rosa no centro da área vermelha (como antes)
     drawPoint(redPt.x, redPt.y, "#FF69B4");
   }
 
@@ -437,7 +495,7 @@ function processFrame() {
     }
   }
 
-  // desenha plano XY se aplicável (mantido)
+  // --- desenha o plano XY durante calibração (se aplicável)
   if (calibration && origin && bluePt && greenPt) {
     const cornerA = origin;
     const cornerB = bluePt;
@@ -451,19 +509,19 @@ function processFrame() {
     ctx.lineTo(cornerC.x, cornerC.y);
     ctx.lineTo(cornerD.x, cornerD.y);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(173,216,230,0.35)';
+    ctx.fillStyle = 'rgba(173,216,230,0.35)'; // lightblue semi-transparent
     ctx.fill();
     ctx.restore();
   }
 
-  // desenha pontos e setas (mantido)
+  // desenha pontos e setas como antes (sobre o preenchimento)
   if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
   if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
   if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
   if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
 
-  // cálculo de +Z (mantido)
+  // Cálculo de +Z (mantido)
   let camZ_mm = NaN;
   if (calibration && origin && calibration.lockedScalePxPerMm) {
     if (origin && lastDetectedPoints.bluePt) {
@@ -504,6 +562,7 @@ function processFrame() {
     const dx_mm = dx_px / calibration.lockedScalePxPerMm;
     const dy_mm = dy_px / calibration.lockedScalePxPerMm;
 
+    // convenção: vCam = [-dx_mm, dy_mm, 0]
     const vCamForXY = [-dx_mm, dy_mm, 0];
 
     const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
@@ -529,6 +588,7 @@ function processFrame() {
       const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
       const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
       lastTransformedMatrix = Ttrans;
+      console.log("Tcamera_now_in_world_fixed (4x4):", Ttrans);
     } else {
       lastTransformedMatrix = null;
     }
@@ -536,7 +596,7 @@ function processFrame() {
     lastTransformedMatrix = null;
   }
 
-  // gravação por frame (mantido) + criação de raios e direção pinhole
+  // se estamos gravando a calibração, registremos os valores deste frame (mantido)
   if (isRecordingCalibration) {
     const ts = new Date().toISOString();
     const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
@@ -555,17 +615,17 @@ function processFrame() {
 
     calibrationFrames.push(rec);
 
-    // se houver ponto rosa, definimos direção pinhole (como antes) e o raio
+    // --- PINHOLE: se houver ponto rosa neste frame, definimos direção do raio usando aproximação pinhole
     if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
       const px = lastDetectedPoints.redPt.x;
       const py = lastDetectedPoints.redPt.y;
 
-      // principal point approximated as image center
+      // centro da imagem (principal point approximated as image center)
       const cx = canvas.width / 2;
       const cy = canvas.height / 2;
 
-      // estimate focal length in pixels using calibration if possible (heuristic)
-      let f_px = Math.max(canvas.width, canvas.height);
+      // estimativa de focal length em pixels:
+      let f_px = Math.max(canvas.width, canvas.height); // fallback
       try {
         if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
           if (calibration.worldLenCal > 1e-6) {
@@ -577,69 +637,50 @@ function processFrame() {
         f_px = Math.max(canvas.width, canvas.height);
       }
 
-      // pinhole normalized coordinates
+      // coordinates normalized
       const x_norm = (px - cx) / f_px;
       const y_norm = (py - cy) / f_px;
 
-      // camera direction (pinhole model)
+      // direction in camera coordinates
       let dirCam = [x_norm, y_norm, 1.0];
-      let lenDir = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
-      if (lenDir > 0) {
-        dirCam = [dirCam[0]/lenDir, dirCam[1]/lenDir, dirCam[2]/lenDir];
+      const lenDirCam = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
+      if (lenDirCam <= 0) return; // safety
 
-        // transforma direção da câmera para "world" usando orientação atual (como antes)
-        const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
-        const dirWorld = applyMat3(Rnow, dirCam);
+      dirCam = [dirCam[0]/lenDirCam, dirCam[1]/lenDirCam, dirCam[2]/lenDirCam];
 
-        // registra o raio original (mantendo origem = câmera, direção = dirWorld)
-        const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
-          ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))]
-          : null;
+      // transform direction to world (via device orientation)
+      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+      const dirWorld = applyMat3(Rnow, dirCam);
 
-        const rayEntry = {
-          timestamp: ts,
-          origin: originWorld,
-          dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))]
-        };
+      // origem do raio = posição da câmera no mundo (se conhecida)
+      const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
+        ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))]
+        : null;
 
-        calibration.rays.push(rayEntry);
-        raysCountSpan.textContent = String(calibration.rays.length);
-        pinkDirectedCountSpan.textContent = String(calibration.rays.length);
-      }
+      // adiciona o raio (direção no world antes de rotacionar)
+      const rayEntry = {
+        timestamp: ts,
+        origin: originWorld,
+        dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))],
+        dir_rotated: null // será preenchido se base fixa disponível
+      };
 
-      // --- NOVO: rotacionar o vetor pinhole para o referencial fixo da calibração
-      // Aplicamos a matriz de rotação 3x3 derivada de calibration.orientationCal (graus -> radianos,
-      // feito internamente por rotationMatrixFromAlphaBetaGamma) ao vetor em coordenadas da câmera (dirCam),
-      // e mantemos o vetor normalizado.
-      if (calibration && calibration.orientationCal) {
-        // recupera direção em camera coords (dirCam normalizado)
-        // (usamos o dirCam já normalizado acima)
-        let dirCamForRotation = [dirCam[0], dirCam[1], dirCam[2]];
+      calibration.rays.push(rayEntry);
+      raysCountSpan.textContent = String(calibration.rays.length);
+      pinkDirectedCountSpan.textContent = String(calibration.rays.length); // cada ray corresponde a um ponto rosa definido
 
-        // monta matriz de rotação do referencial fixo (usando a orientação da calibração)
-        const orientCal = calibration.orientationCal;
-        const Rfixed = rotationMatrixFromAlphaBetaGamma(orientCal.alpha, orientCal.beta, orientCal.gamma);
+      // --- NOVO: rotacionar o vetor dirWorld para o referencial fixo definido na calibração
+      if (calibration && calibration.basisMatrixT) {
+        // dir_rot = basisMatrixT * dirWorld  (world -> coords in fixed basis)
+        const dirRot = mul3x3Vec(calibration.basisMatrixT, dirWorld);
+        const dirRotNorm = norm(dirRot);
+        // armazena no mesmo rayEntry
+        rayEntry.dir_rotated = [Number(dirRotNorm[0].toFixed(6)), Number(dirRotNorm[1].toFixed(6)), Number(dirRotNorm[2].toFixed(6))];
 
-        // aplica Rfixed ao dirCam
-        let dirRotated = applyMat3(Rfixed, dirCamForRotation);
-
-        // normaliza
-        const lr = Math.hypot(dirRotated[0], dirRotated[1], dirRotated[2]);
-        if (lr > 0) {
-          dirRotated = [dirRotated[0]/lr, dirRotated[1]/lr, dirRotated[2]/lr];
-
-          // guarda no array de rotatedRays (origem continua sendo a câmera)
-          const rotatedEntry = {
-            timestamp: ts,
-            origin: originWorld,
-            dir_rotated: [Number(dirRotated[0].toFixed(6)), Number(dirRotated[1].toFixed(6)), Number(dirRotated[2].toFixed(6))]
-          };
-
-          calibration.rotatedRays.push(rotatedEntry);
-
-          // atualiza contador na UI
-          rotatedCountSpan.textContent = String(calibration.rotatedRays.length);
-        }
+        // atualiza contador de vetores rotacionados
+        // contamos quantos raios na lista possuem dir_rotated não nulo
+        const rotatedCount = calibration.rays.filter(r => r.dir_rotated !== null).length;
+        rotatedCountSpan.textContent = String(rotatedCount);
       }
     }
   }
