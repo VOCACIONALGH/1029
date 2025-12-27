@@ -1,5 +1,6 @@
 // main.js — inclui atualização da Posição 3D atual do ponto rosa na UI
-// e aplica critério de convergência por norma do deslocamento entre triangulações consecutivas.
+// e comportamento: criar nova entrada na nuvem quando fora da norma de convergência,
+// ou atualizar posição do ponto existente quando dentro da norma.
 
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
@@ -473,7 +474,7 @@ calibrateBtn.addEventListener('click', () => {
     lastAcceptedDir: null,
     registeredRays: [],
     triangulatedPoints: [],
-    lastTriangulatedPoint: null, // guarda última triangulação aceita
+    lastTriangulatedPoint: null, // guarda última triangulação aceita (para retrocompatibilidade)
     numRaysNeeded
   };
 
@@ -747,33 +748,52 @@ function processFrame() {
         }));
         const X = triangulateFromRays(raysForTri);
         if (X) {
-          // Aplica critério de convergência pela norma do deslocamento (em mm)
-          let acceptTriangulation = false;
-          const lastTri = calibration.lastTriangulatedPoint;
-          if (!lastTri) {
-            // primeira triangulação aceita automaticamente
-            acceptTriangulation = true;
-          } else {
-            const dx = X.x - lastTri.x;
-            const dy = X.y - lastTri.y;
-            const dz = X.z - lastTri.z;
-            const disp = Math.hypot(dx, dy, dz);
-            if (disp <= CONVERGENCE_NORM_MM) acceptTriangulation = true;
-            else acceptTriangulation = false;
+          // NOVO COMPORTAMENTO: procurar ponto existente dentro da norma de convergência
+          let foundIndex = -1;
+          for (let i = 0; i < calibration.triangulatedPoints.length; i++) {
+            const p = calibration.triangulatedPoints[i];
+            const dx = X.x - p.x;
+            const dy = X.y - p.y;
+            const dz = X.z - p.z;
+            const d = Math.hypot(dx, dy, dz);
+            if (d <= CONVERGENCE_NORM_MM) {
+              foundIndex = i;
+              break;
+            }
           }
 
-          if (acceptTriangulation) {
-            calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRaysStartIndex: startIndex });
-            calibration.lastTriangulatedPoint = { x: X.x, y: X.y, z: X.z };
-            triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
-            // atualizar posição 3D atual na tela (mostrando o último triangulado)
-            triXSpan.textContent = Number(X.x).toFixed(3);
-            triYSpan.textContent = Number(X.y).toFixed(3);
-            triZSpan.textContent = Number(X.z).toFixed(3);
+          if (foundIndex >= 0) {
+            // atualiza ponto existente
+            const old = calibration.triangulatedPoints[foundIndex];
+            old.x = X.x;
+            old.y = X.y;
+            old.z = X.z;
+            old.usedRaysStartIndex = startIndex;
+            old.lastUpdated = ts;
+            old.hits = (old.hits || 0) + 1;
           } else {
-            // triangulação rejeitada por não convergência: não atualiza contadores nem triX/triY/triZ
-            // mantém última triangulação aceita visível
+            // cria nova entrada na nuvem
+            calibration.triangulatedPoints.push({
+              x: X.x,
+              y: X.y,
+              z: X.z,
+              usedRaysStartIndex: startIndex,
+              createdAt: ts,
+              lastUpdated: ts,
+              hits: 1
+            });
           }
+
+          // atualiza contador (número de entradas únicas na nuvem)
+          triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
+
+          // atualizar posição 3D atual na tela (mostrando o último triangulado)
+          triXSpan.textContent = Number(X.x).toFixed(3);
+          triYSpan.textContent = Number(X.y).toFixed(3);
+          triZSpan.textContent = Number(X.z).toFixed(3);
+
+          // guarda última triangulação para retrocompatibilidade
+          calibration.lastTriangulatedPoint = { x: X.x, y: X.y, z: X.z };
         } else {
           // triangulation failed (ill-conditioned) — do not update current 3D position
         }
