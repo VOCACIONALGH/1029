@@ -93,14 +93,3 @@ canvas {
   top: 0;
   left: 0;
 }
-
-/* estilos para o Ponto de Referência */
-.ref-point-label {
-  font-size: 14px;
-  color: #001f5b; /* azul escuro para texto */
-  background: rgba(0,31,91,0.75);
-  padding: 4px 6px;
-  border-radius: 4px;
-  transform: translate(-50%, -140%);
-  pointer-events: none;
-}
