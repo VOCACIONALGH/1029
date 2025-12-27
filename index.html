@@ -10,6 +10,7 @@
 <body>
 
   <button id="scanBtn">ESCÂNER</button>
+  <button id="calibrateBtn">Calibrar</button>
 
   <div id="calibration">
     <label>
@@ -33,13 +34,19 @@
 
   <div id="scaleInfo">
     Escala: <span id="scaleValue">--</span> px/mm
+    <span id="scaleLockedLabel" style="display:none"> (travada)</span>
   </div>
 
-  <!-- NOVO: Informações de orientação -->
+  <!-- Informações de orientação -->
   <div id="orientationInfo">
     <div class="orient-row">Pitch: <span id="pitchValue">--</span>°</div>
     <div class="orient-row">Yaw: <span id="yawValue">--</span>°</div>
     <div class="orient-row">Roll: <span id="rollValue">--</span>°</div>
+  </div>
+
+  <!-- NOVO: exibe +Z calculado -->
+  <div id="zInfo">
+    +Z: <span id="zValue">--</span> mm
   </div>
 
   <div id="viewer">
