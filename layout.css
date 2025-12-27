@@ -11,9 +11,9 @@ body {
 }
 
 button {
-  padding: 15px 30px;
-  font-size: 18px;
-  margin-bottom: 20px;
+  padding: 10px 18px;
+  font-size: 16px;
+  margin: 8px 6px;
   cursor: pointer;
 }
 
@@ -36,13 +36,13 @@ button {
 }
 
 #scaleInfo {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   font-size: 14px;
 }
 
-/* NOVO: estilo para orientação */
+/* estilo para orientação */
 #orientationInfo {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   font-size: 14px;
   width: 80%;
   max-width: 400px;
@@ -57,6 +57,18 @@ button {
   margin: 2px 0;
   font-size: 13px;
   color: #e6eef8;
+}
+
+#zInfo {
+  margin-bottom: 10px;
+  font-size: 14px;
+  width: 80%;
+  max-width: 400px;
+  text-align: left;
+  background: rgba(255,255,255,0.02);
+  padding: 6px 10px;
+  border-radius: 6px;
+  box-sizing: border-box;
 }
 
 /* viewer */
