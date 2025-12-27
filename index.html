@@ -10,8 +10,6 @@
 
   <button id="scanBtn">ESCÂNER</button>
   <button id="calibrateBtn">Calibrar</button>
-  <!-- botão de download da nuvem aparece apenas durante a calibração -->
-  <button id="downloadBtn" style="display:none">Download</button>
 
   <div id="calibration">
     <label>
@@ -63,9 +61,6 @@
   <div id="viewer">
     <video id="camera" autoplay playsinline></video>
     <canvas id="overlay"></canvas>
-
-    <!-- mini canvas para visualização rápida da nuvem (aparece durante calibração) -->
-    <canvas id="miniCloud" width="160" height="120" style="display:none"></canvas>
   </div>
 
   <script src="main.js"></script>
