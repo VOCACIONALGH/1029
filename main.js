@@ -777,8 +777,14 @@ function processFrame() {
       const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
       const dirWorld = applyMat3(Rnow, dirCam);
 
-      const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
-        ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))] : null;
+const originWorld = lastTransformedMatrix
+  ? [
+      lastTransformedMatrix[0][3],
+      lastTransformedMatrix[1][3],
+      lastTransformedMatrix[2][3]
+    ]
+  : null;
+
 
       const rayEntry = {
         timestamp: ts,
@@ -863,15 +869,12 @@ function processFrame() {
           // ***** NEW BEHAVIOR: register point applying translation of the origin marker *****
           // Compute origin position from calibration.camMatrixCal translation (this is the camera translation used at calibration)
           // Subtract this origin translation so the calibration origin marker becomes (0,0,0).
-          const originWorldCal = calibration && calibration.camMatrixCal
-            ? [calibration.camMatrixCal[0][3], calibration.camMatrixCal[1][3], calibration.camMatrixCal[2][3]]
-            : [0,0,0];
+         const registeredTranslated = {
+  x: X.x,
+  y: X.y,
+  z: X.z
+};
 
-          const registeredTranslated = {
-            x: X.x - originWorldCal[0],
-            y: X.y - originWorldCal[1],
-            z: X.z - originWorldCal[2]
-          };
 
           // store triangulated point (original + registered translated coordinates, and index info)
           calibration.triangulatedPoints.push({
