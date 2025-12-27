@@ -33,9 +33,21 @@ button {
   width: 100%;
 }
 
-video {
+#viewer {
+  position: relative;
+  width: 100%;
+}
+
+video,
+canvas {
   width: 100%;
   height: auto;
   max-height: 100vh;
   display: none;
+}
+
+canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
 }
