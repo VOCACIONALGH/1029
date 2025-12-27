@@ -1,4 +1,4 @@
-// main.js (modificado apenas para implementar MIN_CAMERA_MOVE_MM e evitar raios quase paralelos)
+// main.js (atualizado: registra raios 3D no referencial do mundo fixo)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -29,6 +29,7 @@ const raysCountSpan = document.getElementById('raysCount');
 const pinkDirectedCountSpan = document.getElementById('pinkDirectedCount');
 const rotatedCountSpan = document.getElementById('rotatedCount');
 const acceptedCountSpan = document.getElementById('acceptedCount');
+const registered3DCountSpan = document.getElementById('registered3DCount');
 
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
@@ -65,10 +66,10 @@ let calibrationFrames = []; // array de frames gravados durante calibração
 
 // calibração para +Z e origem
 let calibration = null; 
-// calibration will contain:
-// { lockedScalePxPerMm, lenPxCal, orientationCal: {alpha,beta,gamma}, worldLenCal,
+// calibration will contain many fields including:
+// { lockedScalePxPerMm, lenPxCal, orientationCal, worldLenCal,
 //   zCalMm, originPixelCal, camMatrixCal, invCamMatrixCal, rays: [], basisMatrix, basisMatrixT,
-//   minCameraMoveMm, acceptedRays, lastAcceptedPos, lastAcceptedDir }
+//   minCameraMoveMm, acceptedRays, lastAcceptedPos, lastAcceptedDir, registeredRays: [] }
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -267,9 +268,9 @@ let lastDetectedPoints = null;
 // Última matriz transformada calculada (camera atual referenciada ao mundo fixo)
 let lastTransformedMatrix = null;
 
-// parâmetros para aceitação de raios
-const DEFAULT_MIN_CAMERA_MOVE_MM = 5; // padrão se usuário não informar
-const PARALLEL_ANGLE_DEG = 5; // limiar para "quase paralelo" (graus)
+// parâmetros para aceitação de raios (valores padrão)
+const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
+const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
 
 calibrateBtn.addEventListener('click', () => {
@@ -278,11 +279,12 @@ calibrateBtn.addEventListener('click', () => {
     // finalizar gravação
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
-    // gera JSON e baixa (inclui rays com campo accepted)
+    // gera JSON e baixa (inclui registeredRays)
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
-      rays: (calibration && calibration.rays) ? calibration.rays.slice() : []
+      rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
+      registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : []
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -298,11 +300,13 @@ calibrateBtn.addEventListener('click', () => {
       calibration.acceptedRays = [];
       calibration.lastAcceptedPos = null;
       calibration.lastAcceptedDir = null;
+      calibration.registeredRays = [];
     }
     raysCountSpan.textContent = "0";
     pinkDirectedCountSpan.textContent = "0";
     rotatedCountSpan.textContent = "0";
     acceptedCountSpan.textContent = "0";
+    registered3DCountSpan.textContent = "0";
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
   }
@@ -341,7 +345,6 @@ calibrateBtn.addEventListener('click', () => {
   if (inputMinMove !== null) {
     const v = parseFloat(inputMinMove);
     if (!Number.isNaN(v) && v >= 0) minMoveVal = v;
-    // se usuário digitou inválido, mantém padrão
   }
 
   if (!lastDetectedPoints || !lastDetectedPoints.origin || !lastDetectedPoints.bluePt || !lastDetectedPoints.greenPt) {
@@ -379,20 +382,19 @@ calibrateBtn.addEventListener('click', () => {
   const vWorldG = applyMat3(Rcal, vCamG);
 
   // Monta matriz homogênea da câmera inicial no mundo fixo
-  // posição da câmera no mundo no instante da calibração: (0,0,zCal)
   const tCal = [0, 0, zCal];
   const camMatrixCal = buildHomogeneousMatrix(Rcal, tCal);
   const invCamMatrixCal = inverseRigid4x4(camMatrixCal);
 
   // construir base ortonormal do referencial fixo (xAxis, yAxis, zAxis)
-  const xAxis = norm(vWorldCal);      // +X (a partir do vetor azul)
-  const tempY = vWorldG;              // direção aproximada para +Y
+  const xAxis = norm(vWorldCal);
+  const tempY = vWorldG;
   let zAxis = norm(cross(xAxis, tempY));
   if (Math.hypot(zAxis[0],zAxis[1],zAxis[2]) < 1e-6) {
     const camForward = applyMat3(Rcal, [0,0,1]);
     zAxis = norm(camForward);
   }
-  const yAxis = norm(cross(zAxis, xAxis)); // ensure orthonormal right-handed
+  const yAxis = norm(cross(zAxis, xAxis));
 
   const basisMatrix = [
     [xAxis[0], yAxis[0], zAxis[0]],
@@ -410,23 +412,25 @@ calibrateBtn.addEventListener('click', () => {
     originPixelCal: { x: origin.x, y: origin.y },
     camMatrixCal,
     invCamMatrixCal,
-    rays: [], // lista com todos os raios detectados
+    rays: [],
     basisMatrix,
     basisMatrixT,
     minCameraMoveMm: minMoveVal,
     acceptedRays: [],
     lastAcceptedPos: null,
-    lastAcceptedDir: null
+    lastAcceptedDir: null,
+    registeredRays: []
   };
 
   // inicia gravação dos frames da calibração
   isRecordingCalibration = true;
-  calibrationFrames = []; // limpa
+  calibrationFrames = [];
   calibrateBtn.textContent = "Finalizar Calib.";
   raysCountSpan.textContent = "0";
   pinkDirectedCountSpan.textContent = "0";
   rotatedCountSpan.textContent = "0";
   acceptedCountSpan.textContent = "0";
+  registered3DCountSpan.textContent = "0";
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
 
@@ -463,7 +467,6 @@ function processFrame() {
       sumGreenX += x; sumGreenY += y; countGreen++;
     }
     else if (r > 150 && g < 100 && b < 100) {
-      // detecta pixels vermelhos
       sumRedX += x; sumRedY += y; countRed++;
     }
   }
@@ -477,7 +480,6 @@ function processFrame() {
 
   if (countBlack) {
     origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
-    // drawPoint será chamado mais abaixo
   }
 
   if (countBlue) {
@@ -490,13 +492,12 @@ function processFrame() {
 
   if (countRed) {
     redPt = { x: sumRedX / countRed, y: sumRedY / countRed };
-    // desenha ponto rosa no centro da área vermelha (como antes)
     drawPoint(redPt.x, redPt.y, "#FF69B4");
   }
 
   lastDetectedPoints = { origin, bluePt, greenPt, redPt };
 
-  // cálculo da escala (px/mm) com base em vetor azul (len px corresponde a 100 mm)
+  // cálculo da escala (px/mm)
   if (origin && bluePt) {
     const dx = bluePt.x - origin.x;
     const dy = bluePt.y - origin.y;
@@ -518,7 +519,7 @@ function processFrame() {
     }
   }
 
-  // --- desenha o plano XY durante calibração (se aplicável)
+  // desenha plano XY se aplicável
   if (calibration && origin && bluePt && greenPt) {
     const cornerA = origin;
     const cornerB = bluePt;
@@ -532,19 +533,19 @@ function processFrame() {
     ctx.lineTo(cornerC.x, cornerC.y);
     ctx.lineTo(cornerD.x, cornerD.y);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(173,216,230,0.35)'; // lightblue semi-transparent
+    ctx.fillStyle = 'rgba(173,216,230,0.35)';
     ctx.fill();
     ctx.restore();
   }
 
-  // desenha pontos e setas como antes (sobre o preenchimento)
+  // desenha pontos e setas (sobre o preenchimento)
   if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
   if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
   if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
   if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
 
-  // Cálculo de +Z (mantido)
+  // cálculo de +Z
   let camZ_mm = NaN;
   if (calibration && origin && calibration.lockedScalePxPerMm) {
     if (origin && lastDetectedPoints.bluePt) {
@@ -575,7 +576,7 @@ function processFrame() {
     zSpan.textContent = "--";
   }
 
-  // cálculo da translação da câmera em +X e +Y (mantido)
+  // cálculo da translação da câmera em +X e +Y
   let camX_mm = NaN, camY_mm = NaN;
   if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
     const originCalPx = calibration.originPixelCal;
@@ -585,7 +586,6 @@ function processFrame() {
     const dx_mm = dx_px / calibration.lockedScalePxPerMm;
     const dy_mm = dy_px / calibration.lockedScalePxPerMm;
 
-    // convenção: vCam = [-dx_mm, dy_mm, 0]
     const vCamForXY = [-dx_mm, dy_mm, 0];
 
     const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
@@ -619,7 +619,7 @@ function processFrame() {
     lastTransformedMatrix = null;
   }
 
-  // se estamos gravando a calibração, registremos os valores deste frame (mantido)
+  // se estamos gravando a calibração, registremos os valores deste frame
   if (isRecordingCalibration) {
     const ts = new Date().toISOString();
     const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
@@ -667,7 +667,7 @@ function processFrame() {
       // direction in camera coordinates
       let dirCam = [x_norm, y_norm, 1.0];
       const lenDirCam = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
-      if (lenDirCam <= 0) return; // safety
+      if (lenDirCam <= 0) return;
 
       dirCam = [dirCam[0]/lenDirCam, dirCam[1]/lenDirCam, dirCam[2]/lenDirCam];
 
@@ -680,7 +680,7 @@ function processFrame() {
         ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))]
         : null;
 
-      // adiciona o raio (direção no world antes de rotacionar)
+      // adiciona o raio (antes de rotacionar para base fixa)
       const rayEntry = {
         timestamp: ts,
         origin: originWorld,
@@ -691,9 +691,9 @@ function processFrame() {
 
       calibration.rays.push(rayEntry);
       raysCountSpan.textContent = String(calibration.rays.length);
-      pinkDirectedCountSpan.textContent = String(calibration.rays.length); // cada ray corresponde a um ponto rosa definido
+      pinkDirectedCountSpan.textContent = String(calibration.rays.length);
 
-      // --- rotacionar o vetor dirWorld para o referencial fixo definido na calibração
+      // rotacionar o vetor dirWorld para o referencial fixo definido na calibração (world->fixed coords)
       if (calibration && calibration.basisMatrixT) {
         const dirRot = mul3x3Vec(calibration.basisMatrixT, dirWorld);
         const dirRotNorm = norm(dirRot);
@@ -701,25 +701,20 @@ function processFrame() {
         rotatedCountSpan.textContent = String(calibration.rays.filter(r => r.dir_rotated !== null).length);
       }
 
-      // --- NOVO: verificação para aceitar este raio para triangulação
-      // regras: precisa ter posição da câmera conhecida; precisa ter se movido >= min; e não ser quase paralelo ao último aceito.
+      // lógica de aceitação para triangulação (mantida)
       let accepted = false;
       const minMove = (calibration && calibration.minCameraMoveMm != null) ? calibration.minCameraMoveMm : DEFAULT_MIN_CAMERA_MOVE_MM;
 
       if (originWorld && calibration.lastAcceptedPos == null) {
-        // primeiro raio aceito
         accepted = true;
       } else if (originWorld && calibration.lastAcceptedPos != null) {
-        // calcula deslocamento da câmera desde o último aceito
         const dx = originWorld[0] - calibration.lastAcceptedPos[0];
         const dy = originWorld[1] - calibration.lastAcceptedPos[1];
         const dz = originWorld[2] - calibration.lastAcceptedPos[2];
         const dist = Math.hypot(dx, dy, dz);
 
-        // verifica paralelismo com último aceito (se houver)
         let notParallel = true;
         if (calibration.lastAcceptedDir) {
-          // angle = arccos( dot / (|a||b|) )
           const a = calibration.lastAcceptedDir;
           const b = dirWorld;
           const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
@@ -738,13 +733,11 @@ function processFrame() {
           accepted = false;
         }
       } else {
-        // origemWorld não disponível -> não aceitamos para triangulação
         accepted = false;
       }
 
       if (accepted) {
         rayEntry.accepted = true;
-        // atualiza estruturas de controle
         calibration.acceptedRays.push(rayEntry);
         calibration.lastAcceptedPos = originWorld ? [originWorld[0], originWorld[1], originWorld[2]] : null;
         calibration.lastAcceptedDir = [dirWorld[0], dirWorld[1], dirWorld[2]];
@@ -752,6 +745,24 @@ function processFrame() {
       } else {
         rayEntry.accepted = false;
         acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
+      }
+
+      // --- NOVO (pedido): registrar apenas um RAIO 3D real por ponto rosa/frame,
+      // expressando origem e direção no sistema de coordenadas do mundo fixo.
+      // Registramos somente se:
+      //  - originWorld conhecido (posição da câmera no mundo fixo),
+      //  - dir_rotated disponível (direção expressa no referencial fixo),
+      //  - e então empurramos para calibration.registeredRays.
+      if (originWorld && rayEntry.dir_rotated && calibration) {
+        // direction in fixed coordinates is rayEntry.dir_rotated (unit vector)
+        const dr = rayEntry.dir_rotated;
+        const reg = {
+          origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
+          direction: { dx: Number(dr[0]), dy: Number(dr[1]), dz: Number(dr[2]) }
+        };
+        calibration.registeredRays.push(reg);
+        // atualiza contador cumulativo
+        registered3DCountSpan.textContent = String(calibration.registeredRays.length);
       }
     }
   }
