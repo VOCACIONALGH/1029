@@ -739,8 +739,29 @@ function processFrame() {
         }));
         const X = triangulateFromRays(raysForTri);
         if (X) {
-          // store triangulated point (cumulative)
-          calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRaysStartIndex: startIndex });
+          // ***** NEW BEHAVIOR: register point applying translation of the origin marker *****
+          // Compute origin position from calibration.camMatrixCal translation (this is the camera translation used at calibration)
+          // Subtract this origin translation so the calibration origin marker becomes (0,0,0).
+          const originWorldCal = calibration && calibration.camMatrixCal
+            ? [calibration.camMatrixCal[0][3], calibration.camMatrixCal[1][3], calibration.camMatrixCal[2][3]]
+            : [0,0,0];
+
+          const registeredTranslated = {
+            x: X.x - originWorldCal[0],
+            y: X.y - originWorldCal[1],
+            z: X.z - originWorldCal[2]
+          };
+
+          // store triangulated point (original + registered translated coordinates, and index info)
+          calibration.triangulatedPoints.push({
+            x: X.x,
+            y: X.y,
+            z: X.z,
+            registered_x: registeredTranslated.x,
+            registered_y: registeredTranslated.y,
+            registered_z: registeredTranslated.z,
+            usedRaysStartIndex: startIndex
+          });
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
         } else {
           // triangulation failed (ill-conditioned) — skip silently (no other behavior changed)
