@@ -34,7 +34,7 @@ button {
   width: 100%;
 }
 
-#scaleInfo {
+#scaleInfo, #orientationInfo {
   margin-bottom: 10px;
   font-size: 14px;
 }
