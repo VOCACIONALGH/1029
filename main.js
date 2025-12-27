@@ -177,7 +177,6 @@ function applyMat3(mat, vec) {
 
 // Matriz homogênea 4x4 para R(3x3) e t(3)
 function buildHomogeneousMatrix(R, t) {
-  // R is 3x3 array, t is [x,y,z]
   return [
     [R[0][0], R[0][1], R[0][2], t[0]],
     [R[1][0], R[1][1], R[1][2], t[1]],
@@ -188,20 +187,17 @@ function buildHomogeneousMatrix(R, t) {
 
 // Inversa de uma transformação rígida 4x4 (R,t) -> (R^T, -R^T t)
 function inverseRigid4x4(T) {
-  // T is 4x4
   const R = [
     [T[0][0], T[0][1], T[0][2]],
     [T[1][0], T[1][1], T[1][2]],
     [T[2][0], T[2][1], T[2][2]]
   ];
   const t = [T[0][3], T[1][3], T[2][3]];
-  // R^T
   const Rt = [
     [R[0][0], R[1][0], R[2][0]],
     [R[0][1], R[1][1], R[2][1]],
     [R[0][2], R[1][2], R[2][2]]
   ];
-  // -R^T * t
   const nt0 = -(Rt[0][0]*t[0] + Rt[0][1]*t[1] + Rt[0][2]*t[2]);
   const nt1 = -(Rt[1][0]*t[0] + Rt[1][1]*t[1] + Rt[1][2]*t[2]);
   const nt2 = -(Rt[2][0]*t[0] + Rt[2][1]*t[1] + Rt[2][2]*t[2]);
@@ -259,8 +255,8 @@ calibrateBtn.addEventListener('click', () => {
     return;
   }
 
-  if (!lastDetectedPoints || !lastDetectedPoints.origin || !lastDetectedPoints.bluePt) {
-    alert("Calibração falhou: origem e ponto azul não detectados no momento.");
+  if (!lastDetectedPoints || !lastDetectedPoints.origin || !lastDetectedPoints.bluePt || !lastDetectedPoints.greenPt) {
+    alert("Calibração falhou: origem, ponto azul e ponto verde devem estar detectados no momento.");
     scaleLocked = false;
     lockedScalePxPerMm = null;
     scaleLockedLabel.style.display = "none";
@@ -269,6 +265,7 @@ calibrateBtn.addEventListener('click', () => {
 
   const origin = lastDetectedPoints.origin;
   const bluePt = lastDetectedPoints.bluePt;
+  const greenPt = lastDetectedPoints.greenPt;
   const lenPxCal = Math.hypot(bluePt.x - origin.x, bluePt.y - origin.y);
 
   const orient = {
@@ -351,17 +348,15 @@ function processFrame() {
 
   if (countBlack) {
     origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
-    drawPoint(origin.x, origin.y, "#FFFFFF");
+    // drawPoint will be called later (after plane)
   }
 
   if (countBlue) {
     bluePt = { x: sumBlueX / countBlue, y: sumBlueY / countBlue };
-    drawPoint(bluePt.x, bluePt.y, "#0000FF");
   }
 
   if (countGreen) {
     greenPt = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
-    drawPoint(greenPt.x, greenPt.y, "#00FF00");
   }
 
   if (countRed) {
@@ -383,8 +378,6 @@ function processFrame() {
       currentScalePxPerMm = lockedScalePxPerMm;
       scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
     }
-
-    drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   } else {
     if (!scaleLocked) {
       scaleValue.textContent = "--";
@@ -394,6 +387,46 @@ function processFrame() {
     }
   }
 
+  // --- NOVO: se estamos calibrados (calibration existe) e temos origin, bluePt, greenPt,
+  // desenhamos o plano XY definido pela origem e vetores.
+  // Construímos os quatro cantos na tela: origin, bluePt, corner4 = bluePt + (greenPt - origin), greenPt.
+  // Preenchimento azul-claro; depois redesenhamos pontos e setas por cima.
+  if (calibration && origin && bluePt && greenPt) {
+    const cornerA = origin;
+    const cornerB = bluePt;
+    const cornerD = greenPt;
+    const cornerC = { x: bluePt.x + (greenPt.x - origin.x), y: bluePt.y + (greenPt.y - origin.y) };
+
+    // fill light-blue with slight transparency
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cornerA.x, cornerA.y);
+    ctx.lineTo(cornerB.x, cornerB.y);
+    ctx.lineTo(cornerC.x, cornerC.y);
+    ctx.lineTo(cornerD.x, cornerD.y);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(173,216,230,0.35)'; // lightblue semi-transparent
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // desenha pontos e setas como antes (sobre o preenchimento)
+  if (origin) {
+    drawPoint(origin.x, origin.y, "#FFFFFF");
+  }
+
+  if (bluePt) {
+    drawPoint(bluePt.x, bluePt.y, "#0000FF");
+  }
+
+  if (greenPt) {
+    drawPoint(greenPt.x, greenPt.y, "#00FF00");
+  }
+
+  // desenha setas (se origem e pts existirem)
+  if (origin && bluePt) {
+    drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
+  }
   if (origin && greenPt) {
     drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
   }
@@ -428,7 +461,7 @@ function processFrame() {
     zSpan.textContent = "--";
   }
 
-  // --- cálculo da translação da câmera em +X e +Y (mantido)
+  // cálculo da translação da câmera em +X e +Y (mantido)
   if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
     const originCalPx = calibration.originPixelCal;
     const dx_px = origin.x - originCalPx.x;
@@ -454,30 +487,21 @@ function processFrame() {
   }
 
   // --- NOVO: montagem da matriz homogênea da pose atual da câmera e transformação para o referencial do mundo fixo
-  // Só se houver calibração inicial (camMatrixCal e sua inversa) e valores válidos de X,Y,Z e orientação
   if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
-    // precisamos da pose atual da câmera no referencial do mundo: tNow = [camX_mm, camY_mm, zNow]
-    // obtém camX_mm, camY_mm (calculados acima) e zNow (calculado no bloco de +Z)
     const camX = (xSpan.textContent !== "--") ? parseFloat(xSpan.textContent) : NaN;
     const camY = (ySpan.textContent !== "--") ? parseFloat(ySpan.textContent) : NaN;
     const camZ = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
 
     if (!Number.isNaN(camX) && !Number.isNaN(camY) && !Number.isNaN(camZ)) {
-      // Rnow já calculado acima when needed; recompute here to be explicit
       const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
       const tNow = [camX, camY, camZ];
 
       const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
 
-      // transform to world-fixed referential using inverse of cam matrix at calibration:
-      // T_transformed = inv(T_cam_cal) * TcamNow
       const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
 
       lastTransformedMatrix = Ttrans;
 
-      // opcional: log para inspeção
-      // (isso não altera comportamento; remove se preferir silencioso)
-      // console.clear();
       console.log("Tcamera_now_in_world_fixed (4x4):", Ttrans);
     } else {
       lastTransformedMatrix = null;
