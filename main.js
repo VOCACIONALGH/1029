@@ -1,7 +1,5 @@
 // main.js — inclui atualização da Posição 3D atual do ponto rosa na UI
-// e comportamento: criar nova entrada na nuvem quando fora da norma de convergência,
-// ou atualizar posição do ponto existente quando dentro da norma.
-
+// e adiciona: durante calibração, define um ponto rosa quando ele APAGA (visível -> apagado).
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -76,6 +74,10 @@ let calibration = null;
 // Convergence threshold (norma do deslocamento em mm).
 // Ajuste este valor conforme necessário.
 const CONVERGENCE_NORM_MM = 2.0; // padrão: 2 mm
+
+// Estado para detectar aparecimento/desaparecimento do ponto rosa durante calibração
+let prevPinkVisible = false;
+let pendingPinkRay = null; // armazena o último raio enquanto o ponto rosa estiver visível
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -328,7 +330,8 @@ calibrateBtn.addEventListener('click', () => {
       frames: calibrationFrames.slice(),
       rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
       registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : [],
-      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : []
+      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : [],
+      definedPoints: (calibration && calibration.definedPoints) ? calibration.definedPoints.slice() : []
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -348,6 +351,7 @@ calibrateBtn.addEventListener('click', () => {
       calibration.lastAcceptedPos = null;
       calibration.lastAcceptedDir = null;
       calibration.lastTriangulatedPoint = null;
+      calibration.definedPoints = [];
     }
     raysCountSpan.textContent = "0";
     pinkDirectedCountSpan.textContent = "0";
@@ -359,6 +363,10 @@ calibrateBtn.addEventListener('click', () => {
     triXSpan.textContent = "--";
     triYSpan.textContent = "--";
     triZSpan.textContent = "--";
+
+    // reset pink visibility helper
+    prevPinkVisible = false;
+    pendingPinkRay = null;
 
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
@@ -474,7 +482,8 @@ calibrateBtn.addEventListener('click', () => {
     lastAcceptedDir: null,
     registeredRays: [],
     triangulatedPoints: [],
-    lastTriangulatedPoint: null, // guarda última triangulação aceita (para retrocompatibilidade)
+    lastTriangulatedPoint: null, // guarda última triangulação aceita
+    definedPoints: [], // pontos definidos por ciclo on/off do rosa
     numRaysNeeded
   };
 
@@ -492,6 +501,10 @@ calibrateBtn.addEventListener('click', () => {
   triXSpan.textContent = "--";
   triYSpan.textContent = "--";
   triZSpan.textContent = "--";
+
+  // reset pink visibility helper
+  prevPinkVisible = false;
+  pendingPinkRay = null;
 
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
@@ -642,8 +655,11 @@ function processFrame() {
     };
     calibrationFrames.push(rec);
 
-    // process pink point: generate ray (pinhole), rotate, register, possibly accept, and attempt triangulation
-    if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
+    // process pink point: generate ray (pinhole), rotate, possibly accept, and attempt triangulation
+    // NOTE: durante calibração, o registro 3D por frame foi adaptado para definir pontos no momento em que o rosa APAGA.
+    const pinkVisibleNow = !!(lastDetectedPoints && lastDetectedPoints.redPt);
+
+    if (lastDetectedPoints && pinkVisibleNow && calibration && calibration.lockedScalePxPerMm) {
       const px = lastDetectedPoints.redPt.x;
       const py = lastDetectedPoints.redPt.y;
       const cx = canvas.width / 2, cy = canvas.height / 2;
@@ -679,6 +695,7 @@ function processFrame() {
         accepted: false
       };
 
+      // registra o fluxo de rays (por frame) como antes (histórico)
       calibration.rays.push(rayEntry);
       raysCountSpan.textContent = String(calibration.rays.length);
       pinkDirectedCountSpan.textContent = String(calibration.rays.length);
@@ -727,79 +744,96 @@ function processFrame() {
         acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
       }
 
-      // register a 3D ray in world fixed (only one per pink/frame)
+      // nova lógica: enquanto ponto rosa VISÍVEL durante calibração,
+      // mantém o último raio válido em `pendingPinkRay` (a cada frame é atualizado).
+      // Quando o ponto rosa APAGA (visível->apagado), esse pendingPinkRay será
+      // efetivamente definido (pushed para calibration.registeredRays).
       if (originWorld && rayEntry.dir_rotated && calibration) {
         const dr = rayEntry.dir_rotated;
         const reg = {
           origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
           direction: { dx: Number(dr[0]), dy: Number(dr[1]), dz: Number(dr[2]) }
         };
-        calibration.registeredRays.push(reg);
-        registered3DCountSpan.textContent = String(calibration.registeredRays.length);
+
+        // comportamento adaptado somente durante gravação/calibração:
+        if (isRecordingCalibration) {
+          // atualizar pendingPinkRay enquanto o rosa estiver visível
+          pendingPinkRay = reg;
+          // não empurramos imediatamente para registeredRays aqui;
+          // empurramos somente quando o rosa APAGAR (transição visível->apagado),
+          // correspondendo à "definição" do ponto.
+        } else {
+          // fora da calibração mantemos o comportamento antigo (registro por frame)
+          calibration.registeredRays.push(reg);
+          registered3DCountSpan.textContent = String(calibration.registeredRays.length);
+        }
       }
+    } // end if pink visible now
 
-      // attempt triangulation when we have at least calibration.numRaysNeeded registeredRays
-      if (calibration && calibration.registeredRays && calibration.registeredRays.length >= calibration.numRaysNeeded) {
-        const startIndex = calibration.registeredRays.length - calibration.numRaysNeeded;
-        const subset = calibration.registeredRays.slice(startIndex, startIndex + calibration.numRaysNeeded);
-        const raysForTri = subset.map(r => ({
-          origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
-          direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
-        }));
-        const X = triangulateFromRays(raysForTri);
-        if (X) {
-          // NOVO COMPORTAMENTO: procurar ponto existente dentro da norma de convergência
-          let foundIndex = -1;
-          for (let i = 0; i < calibration.triangulatedPoints.length; i++) {
-            const p = calibration.triangulatedPoints[i];
-            const dx = X.x - p.x;
-            const dy = X.y - p.y;
-            const dz = X.z - p.z;
-            const d = Math.hypot(dx, dy, dz);
-            if (d <= CONVERGENCE_NORM_MM) {
-              foundIndex = i;
-              break;
-            }
-          }
+    // detectar transição visível -> apagado para "definir" o ponto
+    if (isRecordingCalibration) {
+      const pinkVisibleNow = !!(lastDetectedPoints && lastDetectedPoints.redPt);
+      if (prevPinkVisible && !pinkVisibleNow) {
+        // ponto rosa acabou de apagar — definir (registrar) o pendingPinkRay como ponto definido
+        if (pendingPinkRay && calibration) {
+          calibration.registeredRays.push(pendingPinkRay);
+          // também armazenamos em definedPoints para referência
+          calibration.definedPoints.push({
+            timestamp: new Date().toISOString(),
+            origin: pendingPinkRay.origin,
+            direction: pendingPinkRay.direction
+          });
+          registered3DCountSpan.textContent = String(calibration.registeredRays.length);
+        }
+        // limpar pending
+        pendingPinkRay = null;
+      }
+      // atualizar prevPinkVisible para próximo frame
+      prevPinkVisible = pinkVisibleNow;
+    }
 
-          if (foundIndex >= 0) {
-            // atualiza ponto existente
-            const old = calibration.triangulatedPoints[foundIndex];
-            old.x = X.x;
-            old.y = X.y;
-            old.z = X.z;
-            old.usedRaysStartIndex = startIndex;
-            old.lastUpdated = ts;
-            old.hits = (old.hits || 0) + 1;
-          } else {
-            // cria nova entrada na nuvem
-            calibration.triangulatedPoints.push({
-              x: X.x,
-              y: X.y,
-              z: X.z,
-              usedRaysStartIndex: startIndex,
-              createdAt: ts,
-              lastUpdated: ts,
-              hits: 1
-            });
-          }
+    // attempt triangulation when we have at least calibration.numRaysNeeded registeredRays
+    if (calibration && calibration.registeredRays && calibration.registeredRays.length >= calibration.numRaysNeeded) {
+      const startIndex = calibration.registeredRays.length - calibration.numRaysNeeded;
+      const subset = calibration.registeredRays.slice(startIndex, startIndex + calibration.numRaysNeeded);
+      const raysForTri = subset.map(r => ({
+        origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
+        direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
+      }));
+      const X = triangulateFromRays(raysForTri);
+      if (X) {
+        // Aplica critério de convergência pela norma do deslocamento (em mm)
+        let acceptTriangulation = false;
+        const lastTri = calibration.lastTriangulatedPoint;
+        if (!lastTri) {
+          // primeira triangulação aceita automaticamente
+          acceptTriangulation = true;
+        } else {
+          const dx = X.x - lastTri.x;
+          const dy = X.y - lastTri.y;
+          const dz = X.z - lastTri.z;
+          const disp = Math.hypot(dx, dy, dz);
+          if (disp <= CONVERGENCE_NORM_MM) acceptTriangulation = true;
+          else acceptTriangulation = false;
+        }
 
-          // atualiza contador (número de entradas únicas na nuvem)
+        if (acceptTriangulation) {
+          calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRaysStartIndex: startIndex });
+          calibration.lastTriangulatedPoint = { x: X.x, y: X.y, z: X.z };
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
-
           // atualizar posição 3D atual na tela (mostrando o último triangulado)
           triXSpan.textContent = Number(X.x).toFixed(3);
           triYSpan.textContent = Number(X.y).toFixed(3);
           triZSpan.textContent = Number(X.z).toFixed(3);
-
-          // guarda última triangulação para retrocompatibilidade
-          calibration.lastTriangulatedPoint = { x: X.x, y: X.y, z: X.z };
         } else {
-          // triangulation failed (ill-conditioned) — do not update current 3D position
+          // triangulação rejeitada por não convergência: não atualiza contadores nem triX/triY/triZ
+          // mantém última triangulação aceita visível
         }
+      } else {
+        // triangulation failed (ill-conditioned) — do not update current 3D position
       }
     }
-  }
+  } // end if isRecordingCalibration
 
   requestAnimationFrame(processFrame);
 }
