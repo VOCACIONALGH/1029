@@ -1,14 +1,9 @@
-// main.js — inclui triangulação por múltiplos raios no referencial fixo (mínimos quadrados)
-// alterações adicionadas: flash rosa-claro de pontos triangulados + mini-canvas de visualização rápida da nuvem
+// main.js — atualizado para aplicar a translação da origem e usar o primeiro ponto triangulado como referência
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
-const downloadBtn = document.getElementById('downloadBtn');
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
-
-const miniCanvas = document.getElementById('miniCloud');
-const miniCtx = miniCanvas ? miniCanvas.getContext('2d') : null;
 
 const scaleValue = document.getElementById('scaleValue');
 const scaleLockedLabel = document.getElementById('scaleLockedLabel');
@@ -69,9 +64,7 @@ let isRecordingCalibration = false;
 let calibrationFrames = [];
 
 let calibration = null; 
-// calibration fields include registeredRays and triangulatedPoints (see below)
-
-let flashPoints = []; // { x, y, until } — used to draw temporary pink highlight
+// calibration will hold fields like: registeredRays, triangulatedPoints, originWorld, referenceOffset, numRaysNeeded, ...
 
 scanBtn.addEventListener('click', async () => {
   try {
@@ -100,14 +93,6 @@ scanBtn.addEventListener('click', async () => {
     video.addEventListener('loadedmetadata', () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-
-      // mini canvas physical pixel sizing (kept small)
-      if (miniCanvas) {
-        // keep logical size small (160x120) — CSS controls display size
-        miniCanvas.width = 160;
-        miniCanvas.height = 120;
-      }
-
       processFrame();
     });
 
@@ -245,18 +230,6 @@ function inverseRigid4x4(T) {
     [0,0,0,1]
   ];
 }
-function multiply4x4(A,B) {
-  const C = [];
-  for (let i=0;i<4;i++) {
-    C[i]=[];
-    for (let j=0;j<4;j++) {
-      let s=0;
-      for (let k=0;k<4;k++) s += A[i][k]*B[k][j];
-      C[i][j]=s;
-    }
-  }
-  return C;
-}
 
 // small matrix inverse for 3x3 using adjugate (returns null if near-singular)
 function invert3x3(M) {
@@ -286,7 +259,6 @@ function invert3x3(M) {
 // solves sum (I - d d^T) X = sum (I - d d^T) o
 function triangulateFromRays(rays) {
   if (!rays || rays.length === 0) return null;
-  // build A and b
   let A = [[0,0,0],[0,0,0],[0,0,0]];
   let b = [0,0,0];
   for (const r of rays) {
@@ -295,15 +267,12 @@ function triangulateFromRays(rays) {
     const dn = Math.hypot(d[0],d[1],d[2]);
     if (dn <= 1e-9) return null;
     const dd = [d[0]/dn, d[1]/dn, d[2]/dn];
-    // P = I - d d^T
     const P = [
       [1 - dd[0]*dd[0],   -dd[0]*dd[1],   -dd[0]*dd[2]],
       [-dd[1]*dd[0],   1 - dd[1]*dd[1],   -dd[1]*dd[2]],
       [-dd[2]*dd[0],     -dd[2]*dd[1], 1 - dd[2]*dd[2]]
     ];
-    // A += P
     for (let row=0; row<3; row++) for (let col=0; col<3; col++) A[row][col] += P[row][col];
-    // b += P * o
     const Po = [
       P[0][0]*o[0] + P[0][1]*o[1] + P[0][2]*o[2],
       P[1][0]*o[0] + P[1][1]*o[1] + P[1][2]*o[2],
@@ -311,10 +280,8 @@ function triangulateFromRays(rays) {
     ];
     b[0] += Po[0]; b[1] += Po[1]; b[2] += Po[2];
   }
-  // invert A
   const Ainv = invert3x3(A);
   if (!Ainv) return null;
-  // X = Ainv * b
   const X = [
     Ainv[0][0]*b[0] + Ainv[0][1]*b[1] + Ainv[0][2]*b[2],
     Ainv[1][0]*b[0] + Ainv[1][1]*b[1] + Ainv[1][2]*b[2],
@@ -323,7 +290,7 @@ function triangulateFromRays(rays) {
   return { x: X[0], y: X[1], z: X[2] };
 }
 
-// parameters for acceptance (kept from previous behavior)
+// parameters for acceptance (kept)
 const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
 const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
@@ -336,17 +303,14 @@ calibrateBtn.addEventListener('click', () => {
     // finalize: include triangulatedPoints in JSON too
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
-
-    // hide download button when calibration finalizada
-    downloadBtn.style.display = "none";
-    if (miniCanvas) miniCanvas.style.display = "none";
-
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
       rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
       registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : [],
-      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : []
+      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : [],
+      originWorld: (calibration && calibration.originWorld) ? calibration.originWorld : null,
+      referenceOffset: (calibration && calibration.referenceOffset) ? calibration.referenceOffset : null
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -365,6 +329,8 @@ calibrateBtn.addEventListener('click', () => {
       calibration.acceptedRays = [];
       calibration.lastAcceptedPos = null;
       calibration.lastAcceptedDir = null;
+      calibration.originWorld = null;
+      calibration.referenceOffset = null;
     }
     raysCountSpan.textContent = "0";
     pinkDirectedCountSpan.textContent = "0";
@@ -372,11 +338,6 @@ calibrateBtn.addEventListener('click', () => {
     acceptedCountSpan.textContent = "0";
     registered3DCountSpan.textContent = "0";
     triangulatedCountSpan.textContent = "0";
-
-    flashPoints = [];
-    if (miniCtx) {
-      miniCtx.clearRect(0,0,miniCanvas.width, miniCanvas.height);
-    }
 
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
@@ -416,7 +377,7 @@ calibrateBtn.addEventListener('click', () => {
     if (!Number.isNaN(v) && v >= 0) minMoveVal = v;
   }
 
-  // NEW: ask user for number of rays needed for triangulation
+  // ask user for number of rays needed for triangulation (kept behavior)
   const inputNumRays = prompt("Informe a quantidade de raios necessária para triangular o ponto rosa (inteiro >=2). Padrão 3:");
   let numRaysNeeded = 3;
   if (inputNumRays !== null) {
@@ -476,6 +437,47 @@ calibrateBtn.addEventListener('click', () => {
   ];
   const basisMatrixT = transpose3(basisMatrix);
 
+  // compute originWorld: backproject the origin pixel (originPixelCal) at calibration time to plane z=0 in world fixed
+  let originWorld = null;
+  try {
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    // estimate f_px same way used elsewhere
+    let f_px = Math.max(canvas.width, canvas.height);
+    if (lenPxCal && worldLenCal && zCal && worldLenCal > 1e-6) {
+      const candidate = (lenPxCal * zCal) / worldLenCal;
+      if (isFinite(candidate) && candidate > 1e-6) f_px = candidate;
+    }
+    const ux_px = origin.x - cx;
+    const uy_px = origin.y - cy;
+    const ux_norm = ux_px / f_px;
+    const uy_norm = uy_px / f_px;
+    let dirCam = [ux_norm, uy_norm, 1.0];
+    const lenDirCam = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
+    if (lenDirCam > 1e-9) {
+      dirCam = [dirCam[0]/lenDirCam, dirCam[1]/lenDirCam, dirCam[2]/lenDirCam];
+      const dirWorld = applyMat3(Rcal, dirCam);
+      const Cz = zCal;
+      // intersect ray C + s * dirWorld with plane z=0 => s = -Cz / dirWorld_z
+      if (Math.abs(dirWorld[2]) > 1e-9) {
+        const s = -Cz / dirWorld[2];
+        originWorld = [
+          0 + s * dirWorld[0],
+          0 + s * dirWorld[1],
+          Cz + s * dirWorld[2] // should be ~= 0
+        ];
+        originWorld = { x: originWorld[0], y: originWorld[1], z: originWorld[2] };
+      } else {
+        // fallback: place originWorld at (0,0,0)
+        originWorld = { x: 0, y: 0, z: 0 };
+      }
+    } else {
+      originWorld = { x: 0, y: 0, z: 0 };
+    }
+  } catch (e) {
+    originWorld = { x: 0, y: 0, z: 0 };
+  }
+
   calibration = {
     lockedScalePxPerMm,
     lenPxCal,
@@ -483,6 +485,7 @@ calibrateBtn.addEventListener('click', () => {
     worldLenCal,
     zCalMm: zCal,
     originPixelCal: { x: origin.x, y: origin.y },
+    originWorld,                // posição 3D da origem no referencial do mundo fixo
     camMatrixCal,
     invCamMatrixCal,
     rays: [],
@@ -492,7 +495,7 @@ calibrateBtn.addEventListener('click', () => {
     acceptedRays: [],
     lastAcceptedPos: null,
     lastAcceptedDir: null,
-    registeredRays: [], // now includes pixel coords for quick visualization
+    registeredRays: [],
     triangulatedPoints: [],
     numRaysNeeded
   };
@@ -500,11 +503,6 @@ calibrateBtn.addEventListener('click', () => {
   isRecordingCalibration = true;
   calibrationFrames = [];
   calibrateBtn.textContent = "Finalizar Calib.";
-
-  // mostrar botão de download da nuvem enquanto grava
-  downloadBtn.style.display = "inline-block";
-  if (miniCanvas) miniCanvas.style.display = "block";
-
   raysCountSpan.textContent = "0";
   pinkDirectedCountSpan.textContent = "0";
   rotatedCountSpan.textContent = "0";
@@ -512,81 +510,8 @@ calibrateBtn.addEventListener('click', () => {
   registered3DCountSpan.textContent = "0";
   triangulatedCountSpan.textContent = "0";
 
-  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
+  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nOrigem (mundo) estimada em: x=${originWorld.x.toFixed(3)}, y=${originWorld.y.toFixed(3)}, z=${originWorld.z.toFixed(3)}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
-
-// evento do botão Download — gera arquivo .json contendo a nuvem de pontos triangulados (referencial registrado)
-// usa registered_x/y/z (se disponíveis) — isto cria a nuvem com origem em (0,0,0) conforme alteração anterior.
-downloadBtn.addEventListener('click', () => {
-  if (!calibration) return;
-  const pts = (calibration.triangulatedPoints || []).map(p => {
-    const x = (p.registered_x !== undefined) ? p.registered_x : p.x;
-    const y = (p.registered_y !== undefined) ? p.registered_y : p.y;
-    const z = (p.registered_z !== undefined) ? p.registered_z : p.z;
-    return { x, y, z };
-  });
-  const data = {
-    recordedAt: new Date().toISOString(),
-    pointCloud: pts
-  };
-  const fname = `pointcloud-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
-  // prefer utility from export.js se existir
-  if (window.createPointCloudBlob && window.downloadBlob) {
-    const blob = window.createPointCloudBlob(data);
-    window.downloadBlob(blob, fname);
-  } else {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = fname;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-});
-
-function updateMiniCloud() {
-  if (!miniCtx || !calibration) return;
-  const pts = calibration.triangulatedPoints || [];
-  miniCtx.clearRect(0,0,miniCanvas.width, miniCanvas.height);
-  if (!pts.length) return;
-
-  // get registered coordinates (use registered_* if available)
-  const coords = pts.map(p => {
-    return {
-      x: (p.registered_x !== undefined) ? p.registered_x : p.x,
-      y: (p.registered_y !== undefined) ? p.registered_y : p.y
-    };
-  });
-
-  // compute bounds
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  coords.forEach(p => {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  });
-
-  // ensure a small range to avoid divide by zero
-  if (!isFinite(minX)) return;
-  if (Math.abs(maxX - minX) < 1e-6) { maxX = minX + 1; minX = minX - 1; }
-  if (Math.abs(maxY - minY) < 1e-6) { maxY = minY + 1; minY = minY - 1; }
-
-  const w = miniCanvas.width, h = miniCanvas.height;
-
-  // background
-  miniCtx.fillStyle = 'rgba(0,0,0,0.0)'; // keep transparent
-  miniCtx.fillRect(0,0,w,h);
-
-  // draw points (small squares)
-  miniCtx.fillStyle = 'rgba(255,255,255,0.9)';
-  for (let i=0;i<coords.length;i++) {
-    const p = coords[i];
-    const sx = ((p.x - minX) / (maxX - minX)) * (w-4) + 2;
-    const sy = (1 - ((p.y - minY) / (maxY - minY))) * (h-4) + 2; // invert Y so higher Y goes upwards visually
-    miniCtx.fillRect(Math.round(sx), Math.round(sy), 2, 2);
-  }
-}
 
 function processFrame() {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -625,7 +550,7 @@ function processFrame() {
   if (countBlack) origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
   if (countBlue)  bluePt = { x: sumBlueX / countBlue, y: sumBlueY / countBlue };
   if (countGreen) greenPt = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
-  if (countRed)   redPt = { x: sumRedX / countRed, y: sumRedY / countRed, count: countRed, cx: sumRedX/countRed, cy: sumRedY/countRed };
+  if (countRed)   redPt = { x: sumRedX / countRed, y: sumRedY / countRed, count: countRed };
 
   if (countRed) drawPoint(redPt.x, redPt.y, "#FF69B4");
   lastDetectedPoints = { origin, bluePt, greenPt, redPt };
@@ -646,7 +571,7 @@ function processFrame() {
     else scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
   }
 
-  // plano XY
+  // desenha plano XY
   if (calibration && origin && bluePt && greenPt) {
     const cornerA = origin;
     const cornerB = bluePt;
@@ -669,18 +594,6 @@ function processFrame() {
   if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
   if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
-
-  // desenha flashes rosa-claro temporários para pontos triangulados
-  const now = Date.now();
-  flashPoints = flashPoints.filter(fp => fp.until > now);
-  for (const fp of flashPoints) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.fillStyle = 'rgba(255,182,193,0.9)'; // lightpink
-    ctx.arc(fp.x, fp.y, 8, 0, Math.PI*2);
-    ctx.fill();
-    ctx.restore();
-  }
 
   // +Z
   let camZ_mm = NaN;
@@ -716,58 +629,17 @@ function processFrame() {
     ySpan.textContent = camY_mm.toFixed(2);
   } else { xSpan.textContent="--"; ySpan.textContent="--"; }
 
-// === substitua aqui o bloco "pose transform (kept)" por este ===
-if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
-  const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
-
-  // apenas continua se tivermos valores razoáveis para X,Y,Z
-  if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
-    // matriz de pose da câmera atual (em mm)
-    const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
-    const tNow = [camX_mm, camY_mm, camZval];
-    const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
-
-    // tentativa 1: usar invCamMatrixCal * TcamNow (comportamento original)
-    const Ttrans1 = multiply4x4(calibration.invCamMatrixCal, TcamNow);
-    const o1 = [Ttrans1[0][3], Ttrans1[1][3], Ttrans1[2][3]];
-    const norm1 = Math.hypot(o1[0], o1[1], o1[2]);
-
-    // tentativa 2 (fallback): usar camMatrixCal * TcamNow (caso ordem invertida)
-    const Ttrans2 = multiply4x4(calibration.camMatrixCal, TcamNow);
-    const o2 = [Ttrans2[0][3], Ttrans2[1][3], Ttrans2[2][3]];
-    const norm2 = Math.hypot(o2[0], o2[1], o2[2]);
-
-    console.debug("Pose debug: camX_mm,camY_mm,camZ_mm =", camX_mm, camY_mm, camZval);
-    console.debug("TcamNow translation:", tNow);
-    console.debug("Try inv*pose origin:", o1, "norm:", norm1);
-    console.debug("Try cam*pose origin:", o2, "norm:", norm2);
-
-    // escolha a transform com maior norma de translação (mais informativa) — evita ficar tudo no zero
-    // mas também evita escolher algo absurdo: aceitaremos apenas se norma > epsilon
-    const EPS = 1e-6;
-    if (isFinite(norm1) && norm1 > 1e-3 && norm1 >= norm2) {
-      lastTransformedMatrix = Ttrans1;
-    } else if (isFinite(norm2) && norm2 > 1e-3) {
-      console.warn("Using camMatrixCal * TcamNow fallback (order swap).");
-      lastTransformedMatrix = Ttrans2;
-    } else {
-      // ambos muito pequenos: marcar null (evita usar origem degenerada).
-      console.warn("Both transforms have tiny translation (possible scale/orientation issue). lastTransformedMatrix set to null.");
-      lastTransformedMatrix = null;
-    }
-  } else {
-    lastTransformedMatrix = null;
-  }
-} else {
-  lastTransformedMatrix = null;
-}
-// === fim do bloco substituído ===
-
-
-  // update mini-cloud view each frame (if visible)
-  if (isRecordingCalibration && miniCanvas && miniCtx) {
-    updateMiniCloud();
-  }
+  // pose transform (kept)
+  if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
+    const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
+    if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
+      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+      const tNow = [camX_mm, camY_mm, camZval];
+      const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
+      const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
+      lastTransformedMatrix = Ttrans;
+    } else lastTransformedMatrix = null;
+  } else lastTransformedMatrix = null;
 
   // recording/calibration logic
   if (isRecordingCalibration) {
@@ -788,141 +660,153 @@ if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
     calibrationFrames.push(rec);
 
     // process pink point: generate ray (pinhole), rotate, register, possibly accept, and attempt triangulation
-// process pink point: generate ray (pinhole), rotate, register, possibly accept, and attempt triangulation
-if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
-  const px = lastDetectedPoints.redPt.x;
-  const py = lastDetectedPoints.redPt.y;
-  const cx = canvas.width / 2, cy = canvas.height / 2;
+    if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
+      const px = lastDetectedPoints.redPt.x;
+      const py = lastDetectedPoints.redPt.y;
+      const cx = canvas.width / 2, cy = canvas.height / 2;
 
-  // focal (px) guess as before
-  let f_px = Math.max(canvas.width, canvas.height);
-  try {
-    if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
-      if (calibration.worldLenCal > 1e-6) {
-        f_px = (calibration.lenPxCal * calibration.zCalMm) / calibration.worldLenCal;
-        if (!isFinite(f_px) || f_px <= 1e-3) f_px = Math.max(canvas.width, canvas.height);
+      let f_px = Math.max(canvas.width, canvas.height);
+      try {
+        if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
+          if (calibration.worldLenCal > 1e-6) {
+            f_px = (calibration.lenPxCal * calibration.zCalMm) / calibration.worldLenCal;
+            if (!isFinite(f_px) || f_px <= 1e-3) f_px = Math.max(canvas.width, canvas.height);
+          }
+        }
+      } catch (e) { f_px = Math.max(canvas.width, canvas.height); }
+
+      const x_norm = (px - cx) / f_px;
+      const y_norm = (py - cy) / f_px;
+      let dirCam = [x_norm, y_norm, 1.0];
+      const lenDirCam = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
+      if (lenDirCam <= 0) { requestAnimationFrame(processFrame); return; }
+      dirCam = [dirCam[0]/lenDirCam, dirCam[1]/lenDirCam, dirCam[2]/lenDirCam];
+
+      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+      const dirWorld = applyMat3(Rnow, dirCam);
+
+      const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
+        ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))] : null;
+
+      const rayEntry = {
+        timestamp: ts,
+        origin: originWorld,
+        dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))],
+        dir_rotated: null,
+        accepted: false
+      };
+
+      calibration.rays.push(rayEntry);
+      raysCountSpan.textContent = String(calibration.rays.length);
+      pinkDirectedCountSpan.textContent = String(calibration.rays.length);
+
+      if (calibration && calibration.basisMatrixT) {
+        const dirRot = mul3x3Vec(calibration.basisMatrixT, dirWorld);
+        const dirRotNorm = norm(dirRot);
+        rayEntry.dir_rotated = [Number(dirRotNorm[0].toFixed(6)), Number(dirRotNorm[1].toFixed(6)), Number(dirRotNorm[2].toFixed(6))];
+        rotatedCountSpan.textContent = String(calibration.rays.filter(r => r.dir_rotated !== null).length);
+      }
+
+      // acceptance logic (keeps original behavior)
+      let accepted = false;
+      const minMove = (calibration && calibration.minCameraMoveMm != null) ? calibration.minCameraMoveMm : DEFAULT_MIN_CAMERA_MOVE_MM;
+      if (originWorld && calibration.lastAcceptedPos == null) {
+        accepted = true;
+      } else if (originWorld && calibration.lastAcceptedPos != null) {
+        const dx = originWorld[0] - calibration.lastAcceptedPos[0];
+        const dy = originWorld[1] - calibration.lastAcceptedPos[1];
+        const dz = originWorld[2] - calibration.lastAcceptedPos[2];
+        const dist = Math.hypot(dx, dy, dz);
+        let notParallel = true;
+        if (calibration.lastAcceptedDir) {
+          const a = calibration.lastAcceptedDir;
+          const b = dirWorld;
+          const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+          const la = Math.hypot(a[0],a[1],a[2]);
+          const lb = Math.hypot(b[0],b[1],b[2]);
+          if (la > 1e-9 && lb > 1e-9) {
+            const cosang = Math.max(-1, Math.min(1, dot / (la*lb)));
+            const ang = Math.acos(cosang);
+            if (ang < PARALLEL_ANGLE_RAD) notParallel = false;
+          }
+        }
+        if (dist >= minMove && notParallel) accepted = true; else accepted = false;
+      } else accepted = false;
+
+      if (accepted) {
+        rayEntry.accepted = true;
+        calibration.acceptedRays.push(rayEntry);
+        calibration.lastAcceptedPos = originWorld ? [originWorld[0], originWorld[1], originWorld[2]] : null;
+        calibration.lastAcceptedDir = [dirWorld[0], dirWorld[1], dirWorld[2]];
+        acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
+      } else {
+        rayEntry.accepted = false;
+        acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
+      }
+
+      // register a 3D ray in world fixed (one per pink/frame)
+      if (originWorld && rayEntry.dir_rotated && calibration) {
+        const dr = rayEntry.dir_rotated;
+        const reg = {
+          origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
+          direction: { dx: Number(dr[0]), dy: Number(dr[1]), dz: Number(dr[2]) }
+        };
+        calibration.registeredRays.push(reg);
+        registered3DCountSpan.textContent = String(calibration.registeredRays.length);
+      }
+
+      // attempt triangulation using last numRaysNeeded registered rays
+      if (calibration && calibration.registeredRays && calibration.registeredRays.length >= calibration.numRaysNeeded) {
+        const startIndex = calibration.registeredRays.length - calibration.numRaysNeeded;
+        const subset = calibration.registeredRays.slice(startIndex, startIndex + calibration.numRaysNeeded);
+        const raysForTri = subset.map(r => ({
+          origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
+          direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
+        }));
+        const X = triangulateFromRays(raysForTri);
+        if (X) {
+          // world coordinates from triangulation
+          const Xworld = { x: X.x, y: X.y, z: X.z };
+
+          // originWorld should have been estimated at calibration start; fallback if missing
+          const originW = (calibration && calibration.originWorld) ? calibration.originWorld : { x: 0, y: 0, z: 0 };
+
+          // originFixed: translate by -originWorld so that marker origin becomes (0,0,0)
+          const XoriginFixed = {
+            x: Xworld.x - originW.x,
+            y: Xworld.y - originW.y,
+            z: Xworld.z - originW.z
+          };
+
+          // if this is the first triangulated point, set it as referenceOffset
+          if (!calibration.referenceOffset) {
+            calibration.referenceOffset = { x: XoriginFixed.x, y: XoriginFixed.y, z: XoriginFixed.z };
+          }
+
+          // relativeToFirst: express XoriginFixed relative to first triangulated point
+          const ref = calibration.referenceOffset || { x: 0, y: 0, z: 0 };
+          const Xrelative = {
+            x: XoriginFixed.x - ref.x,
+            y: XoriginFixed.y - ref.y,
+            z: XoriginFixed.z - ref.z
+          };
+
+          // store triangulated point with all representations
+          const triEntry = {
+            timestamp: new Date().toISOString(),
+            usedRaysStartIndex: startIndex,
+            world: Xworld,
+            originFixed: XoriginFixed,
+            relativeToFirst: Xrelative
+          };
+
+          calibration.triangulatedPoints.push(triEntry);
+          triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
+        } else {
+          // triangulation numerically unstable / failed => skip
+        }
       }
     }
-  } catch (e) { f_px = Math.max(canvas.width, canvas.height); }
-
-  // direction in camera coordinates (pinhole model), normalized
-  const x_norm = (px - cx) / f_px;
-  const y_norm = (py - cy) / f_px;
-  let dirCam = [x_norm, y_norm, 1.0];
-  const lenDirCam = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
-  if (lenDirCam <= 0) { requestAnimationFrame(processFrame); return; }
-  dirCam = [dirCam[0]/lenDirCam, dirCam[1]/lenDirCam, dirCam[2]/lenDirCam];
-
-  // precisamos do lastTransformedMatrix (pose da câmera no mundo fixo)
-  if (!lastTransformedMatrix) {
-    requestAnimationFrame(processFrame);
-    return;
-  }
-
-  // origem da câmera no referencial mundo (pega a translação da lastTransformedMatrix)
-  const originWorld = [
-    lastTransformedMatrix[0][3],
-    lastTransformedMatrix[1][3],
-    lastTransformedMatrix[2][3]
-  ];
-
-  // extraia a rotação (3x3) da lastTransformedMatrix — esta é a rotação que coloca vetores de câmera -> mundo
-  const Rworld = [
-    [lastTransformedMatrix[0][0], lastTransformedMatrix[0][1], lastTransformedMatrix[0][2]],
-    [lastTransformedMatrix[1][0], lastTransformedMatrix[1][1], lastTransformedMatrix[1][2]],
-    [lastTransformedMatrix[2][0], lastTransformedMatrix[2][1], lastTransformedMatrix[2][2]]
-  ];
-
-  // direção do raio no mundo (aplica a rotação inteira do pose)
-  let dirWorld = applyMat3(Rworld, dirCam);
-  dirWorld = norm(dirWorld); // garantimos normalização
-
-  // constrói e registra o rayEntry (raw)
-  const rayEntry = {
-    timestamp: new Date().toISOString(),
-    origin: originWorld,
-    dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))],
-    dir_rotated: null,
-    accepted: false
-  };
-
-  calibration.rays.push(rayEntry);
-  raysCountSpan.textContent = String(calibration.rays.length);
-  pinkDirectedCountSpan.textContent = String(calibration.rays.length);
-
-  // compute rotated direction in calibration basis (same as before)
-  if (calibration && calibration.basisMatrixT) {
-    const dirRot = mul3x3Vec(calibration.basisMatrixT, dirWorld);
-    const dirRotNorm = norm(dirRot);
-    rayEntry.dir_rotated = [Number(dirRotNorm[0].toFixed(6)), Number(dirRotNorm[1].toFixed(6)), Number(dirRotNorm[2].toFixed(6))];
-    rotatedCountSpan.textContent = String(calibration.rays.filter(r => r.dir_rotated !== null).length);
-  }
-
-  // acceptance logic (mantém comportamento original) — usa dirWorld normalizado
-  let accepted = false;
-  const minMove = (calibration && calibration.minCameraMoveMm != null) ? calibration.minCameraMoveMm : DEFAULT_MIN_CAMERA_MOVE_MM;
-  if (originWorld && calibration.lastAcceptedPos == null) {
-    accepted = true;
-  } else if (originWorld && calibration.lastAcceptedPos != null) {
-    const dx = originWorld[0] - calibration.lastAcceptedPos[0];
-    const dy = originWorld[1] - calibration.lastAcceptedPos[1];
-    const dz = originWorld[2] - calibration.lastAcceptedPos[2];
-    const dist = Math.hypot(dx, dy, dz);
-    let notParallel = true;
-    if (calibration.lastAcceptedDir) {
-      const a = calibration.lastAcceptedDir;
-      const b = dirWorld;
-      const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
-      const la = Math.hypot(a[0],a[1],a[2]);
-      const lb = Math.hypot(b[0],b[1],b[2]);
-      if (la > 1e-9 && lb > 1e-9) {
-        const cosang = Math.max(-1, Math.min(1, dot / (la*lb)));
-        const ang = Math.acos(cosang);
-        if (ang < PARALLEL_ANGLE_RAD) notParallel = false;
-      }
-    }
-    accepted = (dist >= minMove && notParallel);
-  } else accepted = false;
-
-  if (accepted) {
-    rayEntry.accepted = true;
-    calibration.acceptedRays.push(rayEntry);
-    calibration.lastAcceptedPos = originWorld ? [originWorld[0], originWorld[1], originWorld[2]] : null;
-    calibration.lastAcceptedDir = [dirWorld[0], dirWorld[1], dirWorld[2]];
-    acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
-  } else {
-    rayEntry.accepted = false;
-    acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
-  }
-
-  // register a 3D ray in world fixed (only one per pink/frame)
-  if (originWorld && rayEntry.dir_rotated && calibration) {
-    const reg = {
-      origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
-      direction: { dx: Number(dirWorld[0].toFixed(6)), dy: Number(dirWorld[1].toFixed(6)), dz: Number(dirWorld[2].toFixed(6)) },
-      pixel: { x: px, y: py } // pixel used for mini-cloud / flash averaging
-    };
-    calibration.registeredRays.push(reg);
-    registered3DCountSpan.textContent = String(calibration.registeredRays.length);
-  }
-
-// tentar triangulação se houver raios suficientes
-if (calibration.registeredRays.length >= calibration.numRaysNeeded) {
-  const recentRays = calibration.registeredRays.slice(-calibration.numRaysNeeded);
-  const tri = triangulateFromRays(recentRays.map(r => ({
-    origin: r.origin,
-    direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
-  })));
-  if (tri) {
-    calibration.triangulatedPoints.push(tri);
-    triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
-    // flash rosa maior para triangulado
-    flashPoints.push({ x: lastDetectedPoints.redPt.x, y: lastDetectedPoints.redPt.y, until: Date.now()+300 });
-  }
-}
-
-}
-
   }
 
   requestAnimationFrame(processFrame);
