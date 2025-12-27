@@ -778,16 +778,7 @@ function processFrame() {
   requestAnimationFrame(processFrame);
   return;
 }
-
-const Rworld = [
-  [lastTransformedMatrix[0][0], lastTransformedMatrix[0][1], lastTransformedMatrix[0][2]],
-  [lastTransformedMatrix[1][0], lastTransformedMatrix[1][1], lastTransformedMatrix[1][2]],
-  [lastTransformedMatrix[2][0], lastTransformedMatrix[2][1], lastTransformedMatrix[2][2]]
-];
-
-const dirWorld = applyMat3(Rworld, dirCam);
-
-
+      // origem real da câmera no mundo fixo
 const originWorld = lastTransformedMatrix
   ? [
       lastTransformedMatrix[0][3],
@@ -795,6 +786,16 @@ const originWorld = lastTransformedMatrix
       lastTransformedMatrix[2][3]
     ]
   : null;
+
+
+// direção do raio no mundo fixo (referencial ancorado pela calibração)
+const Rworld = [
+  [lastTransformedMatrix[0][0], lastTransformedMatrix[0][1], lastTransformedMatrix[0][2]],
+  [lastTransformedMatrix[1][0], lastTransformedMatrix[1][1], lastTransformedMatrix[1][2]],
+  [lastTransformedMatrix[2][0], lastTransformedMatrix[2][1], lastTransformedMatrix[2][2]]
+];
+
+const dirWorld = applyMat3(Rworld, dirCam);
 
 
       const rayEntry = {
@@ -853,17 +854,26 @@ const originWorld = lastTransformedMatrix
         acceptedCountSpan.textContent = String(calibration.acceptedRays.length);
       }
 
-      // register a 3D ray in world fixed (only one per pink/frame) — kept behavior
-      if (originWorld && rayEntry.dir_rotated && calibration) {
-        const dr = rayEntry.dir_rotated;
-        const reg = {
-          origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
-          direction: { dx: Number(dr[0]), dy: Number(dr[1]), dz: Number(dr[2]) },
-          pixel: { x: px, y: py } // <-- store pixel for quick visualization/flash and mini-cloud mapping
-        };
-        calibration.registeredRays.push(reg);
-        registered3DCountSpan.textContent = String(calibration.registeredRays.length);
-      }
+// register a 3D ray in world fixed (only one per pink/frame)
+if (originWorld && calibration) {
+  const reg = {
+    origin: {
+      x: originWorld[0],
+      y: originWorld[1],
+      z: originWorld[2]
+    },
+    direction: {
+      dx: Number(dirWorld[0].toFixed(6)),
+      dy: Number(dirWorld[1].toFixed(6)),
+      dz: Number(dirWorld[2].toFixed(6))
+    },
+    pixel: { x: px, y: py }
+  };
+
+  calibration.registeredRays.push(reg);
+  registered3DCountSpan.textContent = String(calibration.registeredRays.length);
+}
+
 
       // --- NEW: attempt triangulation when we have at least calibration.numRaysNeeded registeredRays
       if (calibration && calibration.registeredRays && calibration.registeredRays.length >= calibration.numRaysNeeded) {
