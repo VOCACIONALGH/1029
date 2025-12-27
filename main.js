@@ -1,4 +1,4 @@
-// (Arquivo main.js completo atualizado)
+// main.js (com adição da aproximação pinhole para os pontos rosas)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
@@ -21,11 +21,12 @@ const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
 const rollSpan  = document.getElementById('rollValue');
 
-// ZXY UI + Raios count
+// ZXY UI + Raios count + Pink-directed count
 const zSpan = document.getElementById('zValue');
 const xSpan = document.getElementById('xValue');
 const ySpan = document.getElementById('yValue');
 const raysCountSpan = document.getElementById('raysCount');
+const pinkDirectedCountSpan = document.getElementById('pinkDirectedCount');
 
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
@@ -242,7 +243,7 @@ calibrateBtn.addEventListener('click', () => {
     // finalizar gravação
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
-    // gera JSON e baixa (mantivemos comportamento anterior)
+    // gera JSON e baixa (inclui rays)
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
@@ -259,6 +260,7 @@ calibrateBtn.addEventListener('click', () => {
     calibrationFrames = [];
     if (calibration && calibration.rays) calibration.rays = [];
     raysCountSpan.textContent = "0";
+    pinkDirectedCountSpan.textContent = "0";
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
   }
@@ -341,6 +343,7 @@ calibrateBtn.addEventListener('click', () => {
   calibrationFrames = []; // limpa
   calibrateBtn.textContent = "Finalizar Calib.";
   raysCountSpan.textContent = "0";
+  pinkDirectedCountSpan.textContent = "0";
   alert("Calibração iniciada e gravação de frames ativada. Clique em 'Finalizar Calib.' para encerrar e baixar o .json.");
 });
 
@@ -552,39 +555,48 @@ function processFrame() {
 
     calibrationFrames.push(rec);
 
-    // --- NOVO: se houver ponto rosa neste frame, definimos um raio 3D saindo da câmera
+    // --- PINHOLE: se houver ponto rosa neste frame, definimos direção do raio usando aproximação pinhole
     if (lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
-      // use escala travada da calibração
-      const scale = calibration.lockedScalePxPerMm;
-
-      // coordenadas do ponto rosa em pixels
       const px = lastDetectedPoints.redPt.x;
       const py = lastDetectedPoints.redPt.y;
 
-      // coordenadas relativas ao centro da imagem (origem da câmera no plano da imagem)
+      // centro da imagem (principal point approximated as image center)
       const cx = canvas.width / 2;
       const cy = canvas.height / 2;
-      const ux_px = px - cx;
-      const uy_px = py - cy;
 
-      // converte para mm usando escala (px/mm)
-      const ux_mm = ux_px / scale;
-      const uy_mm = uy_px / scale;
+      // estimativa de focal length em pixels:
+      // - Tentamos estimar f_px usando calibração se disponível:
+      //   f_px ≈ (lenPxCal * zCal) / worldLenCal  (heurística baseada em relação projeção),
+      //   caso contrário usa fallback = max(width,height)
+      let f_px = Math.max(canvas.width, canvas.height); // fallback
+      try {
+        if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
+          // evitar 0/NaN
+          if (calibration.worldLenCal > 1e-6) {
+            f_px = (calibration.lenPxCal * calibration.zCalMm) / calibration.worldLenCal;
+            // se f_px for muito pequeno/estranho, usar fallback
+            if (!isFinite(f_px) || f_px <= 1e-3) f_px = Math.max(canvas.width, canvas.height);
+          }
+        }
+      } catch (e) {
+        f_px = Math.max(canvas.width, canvas.height);
+      }
 
-      // define direcção no referencial da câmera (z = 1 arbitrary unit in front of camera)
-      let dirCam = [ux_mm, uy_mm, 1.0];
+      // coordenadas de imagem normalizadas (pinhole)
+      const x_norm = (px - cx) / f_px;
+      const y_norm = (py - cy) / f_px;
 
-      // normaliza direção
+      // direção no sistema da câmera (pinhole): [x_norm, y_norm, 1], depois normalizar
+      let dirCam = [x_norm, y_norm, 1.0];
       const len = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
       if (len > 0) {
         dirCam = [dirCam[0]/len, dirCam[1]/len, dirCam[2]/len];
 
-        // transforma direção para o referencial do mundo usando a rotação atual
+        // transforma direção da câmera para o referencial do mundo via rotação atual
         const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
         const dirWorld = applyMat3(Rnow, dirCam);
 
-        // origem do raio = posição da câmera no mundo (camX_mm, camY_mm, camZ_mm)
-        // camX_mm/camY_mm/camZ_mm podem ser NaN se não calculados; só armazenamos se forem finitos
+        // origem do raio = posição da câmera no mundo (camX_mm, camY_mm, camZ_mm) se disponíveis
         const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
           ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))]
           : null;
@@ -592,12 +604,17 @@ function processFrame() {
         // adiciona o raio à lista de calibração
         const rayEntry = {
           timestamp: ts,
-          origin: originWorld, // pode ser null se não conhecido
+          origin: originWorld, // pode ser null
           dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))]
         };
 
         calibration.rays.push(rayEntry);
         raysCountSpan.textContent = String(calibration.rays.length);
+
+        // atualiza contagem de pontos rosas com direção definida
+        // (aqui consideramos que cada raio corresponde a um ponto rosa definido nesse frame)
+        const pinkDirectedCount = calibration.rays.length;
+        pinkDirectedCountSpan.textContent = String(pinkDirectedCount);
       }
     }
   }
