@@ -84,6 +84,7 @@ button {
 #viewer {
   position: relative;
   width: 100%;
+  max-width: 900px;
 }
 
 video,
@@ -91,11 +92,40 @@ canvas {
   width: 100%;
   height: auto;
   max-height: 100vh;
-  display: none;
+  display: none; /* shown once camera starts */
 }
 
-canvas {
+#overlay {
   position: absolute;
   top: 0;
   left: 0;
 }
+
+/* mini cloud wrapper in bottom-right of viewer */
+#miniCloudWrap {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  width: 240px;
+  height: 160px;
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 4px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* mini canvas itself */
+#miniCloud {
+  width: 100%;
+  height: 100%;
+  background: rgba(255,255,255,0.02);
+  image-rendering: pixelated;
+  border-radius: 4px;
+}
+
+/* color for triangulated marker (will be drawn programmatically) */
+/* no extra CSS required for drawing on canvas */
