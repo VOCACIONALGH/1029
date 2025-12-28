@@ -10,6 +10,7 @@
 
   <button id="scanBtn">ESCÂNER</button>
   <button id="calibrateBtn">Calibrar</button>
+  <!-- novo botão Download (visível somente durante calibração) -->
   <button id="downloadBtn" style="display:none">Download</button>
 
   <div id="calibration">
@@ -31,7 +32,7 @@
     </label>
     <input type="range" id="greenSlider" min="0" max="255" value="150">
 
-    <!-- Nova barra para calibrar vermelho -->
+    <!-- NOVA: slider para calibrar a detecção do vermelho -->
     <label>
       Calibração do vermelho:
       <span id="redValue">150</span>
