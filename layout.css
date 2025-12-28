@@ -25,8 +25,16 @@ button {
   border-radius: 6px;
 }
 
+/* estilo do botão Confirmar Ponto (visível só durante calibração) */
+#confirmPointBtn {
+  background: linear-gradient(#3a8c3a, #2f6e2f);
+  color: white;
+  border: none;
+  border-radius: 6px;
+}
+
 /* pequeno espaçamento caso apareça ao lado dos outros botões */
-#scanBtn, #calibrateBtn, #downloadBtn { vertical-align: middle; }
+#scanBtn, #calibrateBtn, #downloadBtn, #confirmPointBtn { vertical-align: middle; }
 
 #calibration {
   margin-bottom: 10px;
