@@ -32,7 +32,7 @@
     </label>
     <input type="range" id="greenSlider" min="0" max="255" value="150">
 
-    <!-- slider vermelho (adicionado previamente) -->
+    <!-- BARRA: calibração do vermelho -->
     <label>
       Calibração do vermelho:
       <span id="redValue">150</span>
@@ -66,6 +66,15 @@
 
     <div>Pontos triangulados: <span id="triangulatedCount">0</span></div>
     <div>Estado ponto rosa: <span id="pinkState">IDLE</span></div>
+
+    <!-- Nova área: distância entre par selecionado (mini-cloud) -->
+    <div id="pairDistance">
+      <div><strong>Par selecionado:</strong> <span id="pairInfo">nenhum</span></div>
+      <div>ΔX: <span id="dxVal">--</span> mm</div>
+      <div>ΔY: <span id="dyVal">--</span> mm</div>
+      <div>ΔZ: <span id="dzVal">--</span> mm</div>
+      <div>Distância (euclidiana): <span id="dMagVal">--</span> mm</div>
+    </div>
   </div>
 
   <div id="viewer">
@@ -75,30 +84,9 @@
     <!-- mini cloud canvas (visualização rápida da nuvem triangulada) -->
     <div id="miniCloudWrap">
       <canvas id="miniCloud" width="240" height="160"></canvas>
+      <!-- instrução breve -->
+      <div id="miniHint">Clique em 2 pontos na nuvem</div>
     </div>
-  </div>
-
-  <!-- NOVOS: área fora da câmera com 3 mini canvases para planos XY, XZ, YZ -->
-  <div id="miniPlanesSection">
-    <div class="miniPlane">
-      <div class="miniPlaneLabel">Plano XY</div>
-      <canvas id="miniXY" width="320" height="200"></canvas>
-    </div>
-    <div class="miniPlane">
-      <div class="miniPlaneLabel">Plano XZ</div>
-      <canvas id="miniXZ" width="320" height="200"></canvas>
-    </div>
-    <div class="miniPlane">
-      <div class="miniPlaneLabel">Plano YZ</div>
-      <canvas id="miniYZ" width="320" height="200"></canvas>
-    </div>
-  </div>
-
-  <!-- área que mostra as diferenças entre o par selecionado -->
-  <div id="distanceInfo">
-    <strong>Par selecionado:</strong>
-    <div id="selectedPairInfo">Nenhum</div>
-    <div id="deltaInfo">ΔX: -- mm &nbsp; ΔY: -- mm &nbsp; ΔZ: -- mm</div>
   </div>
 
   <script src="main.js"></script>
