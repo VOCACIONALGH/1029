@@ -338,19 +338,33 @@ scanBtn.addEventListener('click', async () => {
 
 // Download button handler: baixa apenas a nuvem de pontos triangulados (JSON)
 downloadBtn.addEventListener('click', () => {
-  if (!calibration || !calibration.triangulatedPoints) {
+  if (!calibration || !Array.isArray(calibration.triangulatedPoints) || calibration.triangulatedPoints.length === 0) {
     alert("Nenhum ponto triangulado disponível para download.");
     return;
   }
-  const cloud = calibration.triangulatedPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
-  const blob = new Blob([JSON.stringify(cloud, null, 2)], { type: "application/json" });
+
+  // cria uma CÓPIA estável da nuvem (não altera o estado vivo)
+  const cloudSnapshot = calibration.triangulatedPoints.map(p => ({
+    x: p.x,
+    y: p.y,
+    z: p.z
+  }));
+
+  const blob = new Blob(
+    [JSON.stringify(cloudSnapshot, null, 2)],
+    { type: "application/json" }
+  );
+
   const fname = `pointcloud-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = fname;
   a.click();
-  URL.revokeObjectURL(a.href);
+
+  // revoke apenas após o clique ter sido despachado
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
 });
+
 
 // Download malha handler: chama função em export.js para converter para malha e baixar (.ply)
 downloadMeshBtn.addEventListener('click', () => {
