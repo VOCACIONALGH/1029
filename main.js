@@ -17,7 +17,6 @@ const blueSlider  = document.getElementById('blueSlider');
 const greenSlider = document.getElementById('greenSlider');
 // NOVO: slider para calibrar vermelho
 const redSlider   = document.getElementById('redSlider');
-
 // NOVO: slider para estabilidade
 const stabilitySlider = document.getElementById('stabilitySlider');
 
@@ -26,7 +25,7 @@ const blueValue  = document.getElementById('blueValue');
 const greenValue = document.getElementById('greenValue');
 // NOVO: display do valor do vermelho
 const redValue   = document.getElementById('redValue');
-// NOVO: display estabilidade
+// NOVO: display do valor de estabilidade
 const stabilityValue = document.getElementById('stabilityValue');
 
 const pitchSpan = document.getElementById('pitchValue');
@@ -58,14 +57,19 @@ let greenThreshold = Number(greenSlider.value);
 // NOVO: threshold para vermelho
 let redThreshold   = Number(redSlider.value);
 
-// NOVO: estabilidade (número de frames a considerar para média móvel)
-let stabilityFrames = Math.max(1, Number(stabilitySlider.value));
+// NOVO: estabilidade (n últimas posições para média)
+let stabilityFrames = Number(stabilitySlider.value);
+stabilityValue.textContent = String(stabilityFrames);
+
+// Históricos para média (origem = preto/orange, azul, verde). Não incluir ponto rosa.
+const blackHistory = []; // origin history
+const blueHistory = [];  // +X
+const greenHistory = []; // +Y
 
 blackValue.textContent = blackThreshold;
 blueValue.textContent  = blueThreshold;
 greenValue.textContent = greenThreshold;
 redValue.textContent   = redThreshold;
-stabilityValue.textContent = stabilityFrames;
 
 blackSlider.addEventListener('input', () => {
   blackThreshold = Number(blackSlider.value);
@@ -84,13 +88,14 @@ redSlider.addEventListener('input', () => {
   redThreshold = Number(redSlider.value);
   redValue.textContent = redThreshold;
 });
-// NOVO: listener do slider estabilidade
+// NOVO: listener do slider de estabilidade
 stabilitySlider.addEventListener('input', () => {
-  const v = Math.max(1, parseInt(stabilitySlider.value, 10) || 1);
-  stabilityFrames = v;
-  stabilityValue.textContent = stabilityFrames;
-  // ajusta buffers de acordo com novo tamanho
-  trimAllBuffersTo(stabilityFrames);
+  stabilityFrames = Number(stabilitySlider.value);
+  stabilityValue.textContent = String(stabilityFrames);
+  // trim existing histories to new length
+  while (blackHistory.length > stabilityFrames) blackHistory.shift();
+  while (blueHistory.length > stabilityFrames) blueHistory.shift();
+  while (greenHistory.length > stabilityFrames) greenHistory.shift();
 });
 
 let orientationListenerAdded = false;
@@ -117,6 +122,19 @@ function handleOrientation(event) {
   yawSpan.textContent = (alpha != null) ? alpha.toFixed(2) : "--";
   pitchSpan.textContent = (beta  != null) ? beta.toFixed(2)  : "--";
   rollSpan.textContent = (gamma != null) ? gamma.toFixed(2) : "--";
+}
+
+// helper for histories (NOVO)
+function pushHistory(histArr, pt) {
+  if (!pt) return;
+  histArr.push({ x: pt.x, y: pt.y });
+  while (histArr.length > stabilityFrames) histArr.shift();
+}
+function averageHistory(histArr) {
+  if (!histArr || histArr.length === 0) return null;
+  let sx = 0, sy = 0;
+  for (const p of histArr) { sx += p.x; sy += p.y; }
+  return { x: sx / histArr.length, y: sy / histArr.length };
 }
 
 // --- helper math functions (kept) ---
@@ -321,36 +339,63 @@ function setPinkState(s) {
   pinkStateSpan.textContent = s;
 }
 
-// --- NOVO: buffers de média móvel para estabilidade dos pontos ---
-// Cada buffer é um array de {x,y} (ou vazio). Mantemos buffers para:
-// black (origem), blue (+X), green (+Y) e red (ponto rosa).
-let bufBlack = [];
-let bufBlue = [];
-let bufGreen = [];
-let bufRed = [];
+// selection state for mini-cloud pair clicks
+let selectedMiniIndices = []; // up to 2 indices
 
-function pushToBuf(buf, pt) {
-  if (!pt || typeof pt.x !== 'number' || typeof pt.y !== 'number') return;
-  buf.push({ x: pt.x, y: pt.y });
-  if (buf.length > stabilityFrames) buf.shift();
+function clearMiniSelection() {
+  selectedMiniIndices = [];
+  updatePairDistanceDisplay();
 }
-function avgBuf(buf) {
-  if (!buf || buf.length === 0) return null;
-  let sx = 0, sy = 0;
-  for (const p of buf) { sx += p.x; sy += p.y; }
-  return { x: sx / buf.length, y: sy / buf.length };
+function setMiniSelection(firstIdx, secondIdx) {
+  selectedMiniIndices = [];
+  if (typeof firstIdx === 'number') selectedMiniIndices.push(firstIdx);
+  if (typeof secondIdx === 'number') selectedMiniIndices.push(secondIdx);
+  updatePairDistanceDisplay();
 }
-function trimBuf(buf, n) {
-  if (buf.length > n) {
-    // keep last n
-    buf.splice(0, buf.length - n);
+
+function updatePairDistanceDisplay() {
+  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
+    pairInfoSpan.textContent = "nenhum";
+    dxValSpan.textContent = "--";
+    dyValSpan.textContent = "--";
+    dzValSpan.textContent = "--";
+    dMagValSpan.textContent = "--";
+    return;
   }
-}
-function trimAllBuffersTo(n) {
-  trimBuf(bufBlack, n);
-  trimBuf(bufBlue, n);
-  trimBuf(bufGreen, n);
-  trimBuf(bufRed, n);
+  if (selectedMiniIndices.length === 0) {
+    pairInfoSpan.textContent = "nenhum";
+    dxValSpan.textContent = "--";
+    dyValSpan.textContent = "--";
+    dzValSpan.textContent = "--";
+    dMagValSpan.textContent = "--";
+  } else if (selectedMiniIndices.length === 1) {
+    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
+    pairInfoSpan.textContent = `1: idx ${selectedMiniIndices[0]}`;
+    dxValSpan.textContent = "--";
+    dyValSpan.textContent = "--";
+    dzValSpan.textContent = "--";
+    dMagValSpan.textContent = "--";
+  } else if (selectedMiniIndices.length === 2) {
+    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
+    const b = calibration.triangulatedPoints[selectedMiniIndices[1]];
+    if (!a || !b) {
+      pairInfoSpan.textContent = "nenhum";
+      dxValSpan.textContent = "--";
+      dyValSpan.textContent = "--";
+      dzValSpan.textContent = "--";
+      dMagValSpan.textContent = "--";
+      return;
+    }
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dz = b.z - a.z;
+    const mag = Math.hypot(dx, dy, dz);
+    pairInfoSpan.textContent = `idx ${selectedMiniIndices[0]} ↔ idx ${selectedMiniIndices[1]}`;
+    dxValSpan.textContent = dx.toFixed(4);
+    dyValSpan.textContent = dy.toFixed(4);
+    dzValSpan.textContent = dz.toFixed(4);
+    dMagValSpan.textContent = mag.toFixed(4);
+  }
 }
 
 // start camera
@@ -590,13 +635,13 @@ calibrateBtn.addEventListener('click', () => {
   registered3DCountSpan.textContent = "0";
   triangulatedCountSpan.textContent = "0";
 
-  // limpa seleção mini-cloud ao iniciar nova calibração
+  // limpa seleção mini-cloud ao iniciar uma nova calibração
   clearMiniSelection();
 
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
 
-// processFrame (mantido) — inclui toda a lógica anterior (detecção, pinhole, registro de raios, triangulação, estado do ponto rosa, desenho, mini-cloud)
+// processFrame (mantido) — agora com suavização (média móvel) para origem/azul/verde (sem incluir ponto rosa)
 function processFrame() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -625,44 +670,47 @@ function processFrame() {
       data[i]=128; data[i+1]=0; data[i+2]=128;
       sumGreenX += x; sumGreenY += y; countGreen++;
     } else if (r > redThreshold && g < redThreshold && b < redThreshold) {
-      // usa o redThreshold configurado pelo usuário
+      // usa o redThreshold configurado pelo usuário (ponto rosa continua sem suavização)
       sumRedX += x; sumRedY += y; countRed++;
     }
   }
 
-  // atualiza imagem processada no canvas
   ctx.putImageData(frame, 0, 0);
 
-  // calculamos as posições detectadas neste frame (centróides)
-  let detectedBlack = null, detectedBlue = null, detectedGreen = null, detectedRed = null;
-  if (countBlack) detectedBlack = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
-  if (countBlue)  detectedBlue  = { x: sumBlueX / countBlue,  y: sumBlueY / countBlue };
-  if (countGreen) detectedGreen = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
-  if (countRed)   detectedRed   = { x: sumRedX / countRed,     y: sumRedY / countRed };
+  // raw centroids for this frame
+  const rawOrigin = (countBlack) ? { x: sumBlackX / countBlack, y: sumBlackY / countBlack } : null;
+  const rawBlue   = (countBlue)  ? { x: sumBlueX  / countBlue,  y: sumBlueY  / countBlue } : null;
+  const rawGreen  = (countGreen) ? { x: sumGreenX / countGreen, y: sumGreenY / countGreen } : null;
+  const rawRed    = (countRed)   ? { x: sumRedX / countRed, y: sumRedY / countRed, count: countRed } : null;
 
-  // --- NOVO: empurra valores nos buffers de estabilidade somente quando detectados ---
-  if (detectedBlack) pushToBuf(bufBlack, detectedBlack);
-  if (detectedBlue)  pushToBuf(bufBlue, detectedBlue);
-  if (detectedGreen) pushToBuf(bufGreen, detectedGreen);
-  if (detectedRed)   pushToBuf(bufRed, detectedRed);
+  // push to histories (only when detected this frame). NOTE: pink/red is NOT included.
+  if (rawOrigin) pushHistory(blackHistory, rawOrigin);
+  if (rawBlue)   pushHistory(blueHistory, rawBlue);
+  if (rawGreen)  pushHistory(greenHistory, rawGreen);
 
-  // calcula posições atuais como média dos buffers
-  const avgBlack = avgBuf(bufBlack);
-  const avgBlue  = avgBuf(bufBlue);
-  const avgGreen = avgBuf(bufGreen);
-  const avgRed   = avgBuf(bufRed);
+  // compute smoothed positions (average of histories). If history empty => null
+  const originSmoothed = averageHistory(blackHistory);
+  const blueSmoothed   = averageHistory(blueHistory);
+  const greenSmoothed  = averageHistory(greenHistory);
 
-  // estas posições médias substituem as posições instantâneas para uso pelo resto do programa
-  let origin = avgBlack ? { x: avgBlack.x, y: avgBlack.y } : null;
-  let bluePt = avgBlue ? { x: avgBlue.x, y: avgBlue.y } : null;
-  let greenPt = avgGreen ? { x: avgGreen.x, y: avgGreen.y } : null;
-  let redPt = avgRed ? { x: avgRed.x, y: avgRed.y, count: bufRed.length } : null;
+  // use smoothed points as current points (pink/red remains raw)
+  let origin = originSmoothed ? { x: originSmoothed.x, y: originSmoothed.y } : null;
+  let bluePt = blueSmoothed   ? { x: blueSmoothed.x,  y: blueSmoothed.y }  : null;
+  let greenPt = greenSmoothed ? { x: greenSmoothed.x, y: greenSmoothed.y } : null;
+  let redPt = rawRed ? { x: rawRed.x, y: rawRed.y, count: rawRed.count } : null;
 
-  // desenha marcadores no overlay usando as posições médias (se houver)
+  // draw on canvas: origin/blue/green from smoothed positions
+  if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
+  if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
+  if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
+  if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
+  if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
+
+  // pink/red point: keep previous behaviour (no smoothing; allow it to disappear/reappear)
   if (redPt) drawPoint(redPt.x, redPt.y, "#FF69B4");
   lastDetectedPoints = { origin, bluePt, greenPt, redPt };
 
-  // scale
+  // scale (uses origin & bluePt smoothed)
   if (origin && bluePt) {
     const dx = bluePt.x - origin.x, dy = bluePt.y - origin.y;
     const lenPx = Math.hypot(dx,dy);
@@ -678,7 +726,7 @@ function processFrame() {
     else scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
   }
 
-  // draw plane
+  // draw plane (if calibration active and smoothed positions available)
   if (calibration && origin && bluePt && greenPt) {
     const cornerA = origin;
     const cornerB = bluePt;
@@ -696,13 +744,7 @@ function processFrame() {
     ctx.restore();
   }
 
-  if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
-  if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
-  if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
-  if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
-  if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
-
-  // cam Z, X, Y (kept)
+  // cam Z, X, Y (kept) — uses smoothed origin/blue for calculations
   let camZ_mm = NaN;
   if (calibration && origin && calibration.lockedScalePxPerMm) {
     if (origin && lastDetectedPoints.bluePt) {
@@ -746,7 +788,7 @@ function processFrame() {
     } else lastTransformedMatrix = null;
   } else lastTransformedMatrix = null;
 
-  // state machine for pink point (kept)
+  // state machine for pink point (kept; pink not smoothed)
   const pinkDetected = !!(lastDetectedPoints && lastDetectedPoints.redPt);
   if (pinkState === PINK_STATE.IDLE) {
     if (pinkDetected) {
@@ -1056,65 +1098,7 @@ function drawMiniCloud() {
   updatePairDistanceDisplay();
 }
 
-// --- seleção/medição no mini canvas (mantido) ---
-let selectedMiniIndices = []; // up to 2 indices
-
-function clearMiniSelection() {
-  selectedMiniIndices = [];
-  updatePairDistanceDisplay();
-}
-function setMiniSelection(firstIdx, secondIdx) {
-  selectedMiniIndices = [];
-  if (typeof firstIdx === 'number') selectedMiniIndices.push(firstIdx);
-  if (typeof secondIdx === 'number') selectedMiniIndices.push(secondIdx);
-  updatePairDistanceDisplay();
-}
-
-function updatePairDistanceDisplay() {
-  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
-    pairInfoSpan.textContent = "nenhum";
-    dxValSpan.textContent = "--";
-    dyValSpan.textContent = "--";
-    dzValSpan.textContent = "--";
-    dMagValSpan.textContent = "--";
-    return;
-  }
-  if (selectedMiniIndices.length === 0) {
-    pairInfoSpan.textContent = "nenhum";
-    dxValSpan.textContent = "--";
-    dyValSpan.textContent = "--";
-    dzValSpan.textContent = "--";
-    dMagValSpan.textContent = "--";
-  } else if (selectedMiniIndices.length === 1) {
-    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
-    pairInfoSpan.textContent = `1: idx ${selectedMiniIndices[0]}`;
-    dxValSpan.textContent = "--";
-    dyValSpan.textContent = "--";
-    dzValSpan.textContent = "--";
-    dMagValSpan.textContent = "--";
-  } else if (selectedMiniIndices.length === 2) {
-    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
-    const b = calibration.triangulatedPoints[selectedMiniIndices[1]];
-    if (!a || !b) {
-      pairInfoSpan.textContent = "nenhum";
-      dxValSpan.textContent = "--";
-      dyValSpan.textContent = "--";
-      dzValSpan.textContent = "--";
-      dMagValSpan.textContent = "--";
-      return;
-    }
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dz = b.z - a.z;
-    const mag = Math.hypot(dx, dy, dz);
-    pairInfoSpan.textContent = `idx ${selectedMiniIndices[0]} ↔ idx ${selectedMiniIndices[1]}`;
-    dxValSpan.textContent = dx.toFixed(4);
-    dyValSpan.textContent = dy.toFixed(4);
-    dzValSpan.textContent = dz.toFixed(4);
-    dMagValSpan.textContent = mag.toFixed(4);
-  }
-}
-
+// enable clicking on mini canvas to select points (pair)
 miniCanvas.addEventListener('click', (ev) => {
   if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) return;
 
