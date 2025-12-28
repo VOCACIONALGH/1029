@@ -89,6 +89,18 @@
       <div>ΔZ: <span id="dzVal">--</span> mm</div>
       <div>Distância (euclidiana): <span id="dMagVal">--</span> mm</div>
     </div>
+
+    <!-- NOVO: Qualidade do último ponto triangulado -->
+    <div id="qualityBlock" style="display:none">
+      <div><strong>Qualidade do último ponto:</strong> <span id="qualityLabel">--</span></div>
+      <div id="qualityMetrics">
+        <div>Nº raios: <span id="qualityNumRays">--</span></div>
+        <div>Erro médio (mm): <span id="qualityMeanDist">--</span></div>
+        <div>Maior ângulo (°): <span id="qualityMaxAngle">--</span></div>
+        <div>Espalhamento origens (mm): <span id="qualitySpread">--</span></div>
+      </div>
+    </div>
+
   </div>
 
   <div id="viewer">
