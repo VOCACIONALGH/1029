@@ -1,9 +1,7 @@
 // main.js — inclui botão Download para baixar a nuvem de pontos triangulada (arquivo .json)
-// e integração com export.js para gerar/baixar malha (.ply)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
-const downloadBtn = document.getElementById('downloadBtn'); // novo botão para JSON da gravação
-const downloadMeshBtn = document.getElementById('downloadMeshBtn'); // novo botão para a malha
+const downloadBtn = document.getElementById('downloadBtn'); // novo botão
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
@@ -11,19 +9,26 @@ const ctx = canvas.getContext('2d');
 const miniCanvas = document.getElementById('miniCloud');
 const miniCtx = miniCanvas.getContext('2d');
 
+// NOVOS: canvases para planos XY, XZ, YZ
+const miniXY = document.getElementById('miniXY');
+const miniXZ = document.getElementById('miniXZ');
+const miniYZ = document.getElementById('miniYZ');
+const miniXYCtx = miniXY.getContext('2d');
+const miniXZCtx = miniXZ.getContext('2d');
+const miniYZCtx = miniYZ.getContext('2d');
+
 const scaleValue = document.getElementById('scaleValue');
 const scaleLockedLabel = document.getElementById('scaleLockedLabel');
 
 const blackSlider = document.getElementById('blackSlider');
 const blueSlider  = document.getElementById('blueSlider');
 const greenSlider = document.getElementById('greenSlider');
-// NOVO: slider para calibrar vermelho
+// red slider (adicionado anteriormente)
 const redSlider   = document.getElementById('redSlider');
 
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
 const greenValue = document.getElementById('greenValue');
-// NOVO: display do valor do vermelho
 const redValue   = document.getElementById('redValue');
 
 const pitchSpan = document.getElementById('pitchValue');
@@ -42,10 +47,13 @@ const registered3DCountSpan = document.getElementById('registered3DCount');
 const triangulatedCountSpan = document.getElementById('triangulatedCount');
 const pinkStateSpan = document.getElementById('pinkState');
 
+const selectedPairInfo = document.getElementById('selectedPairInfo');
+const deltaInfo = document.getElementById('deltaInfo');
+
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
 let greenThreshold = Number(greenSlider.value);
-// NOVO: threshold para vermelho
+// red threshold
 let redThreshold   = Number(redSlider.value);
 
 blackValue.textContent = blackThreshold;
@@ -65,7 +73,6 @@ greenSlider.addEventListener('input', () => {
   greenThreshold = Number(greenSlider.value);
   greenValue.textContent = greenThreshold;
 });
-// NOVO: listener do slider vermelho
 redSlider.addEventListener('input', () => {
   redThreshold = Number(redSlider.value);
   redValue.textContent = redThreshold;
@@ -310,6 +317,9 @@ scanBtn.addEventListener('click', async () => {
     video.style.display = "block";
     canvas.style.display = "block";
     miniCanvas.style.display = "block";
+    miniXY.style.display = "block";
+    miniXZ.style.display = "block";
+    miniYZ.style.display = "block";
     scanBtn.style.display = "none";
 
     try {
@@ -338,51 +348,18 @@ scanBtn.addEventListener('click', async () => {
 
 // Download button handler: baixa apenas a nuvem de pontos triangulados (JSON)
 downloadBtn.addEventListener('click', () => {
-  if (!calibration || !Array.isArray(calibration.triangulatedPoints) || calibration.triangulatedPoints.length === 0) {
+  if (!calibration || !calibration.triangulatedPoints) {
     alert("Nenhum ponto triangulado disponível para download.");
     return;
   }
-
-  // cria uma CÓPIA estável da nuvem (não altera o estado vivo)
-  const cloudSnapshot = calibration.triangulatedPoints.map(p => ({
-    x: p.x,
-    y: p.y,
-    z: p.z
-  }));
-
-  const blob = new Blob(
-    [JSON.stringify(cloudSnapshot, null, 2)],
-    { type: "application/json" }
-  );
-
+  const cloud = calibration.triangulatedPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
+  const blob = new Blob([JSON.stringify(cloud, null, 2)], { type: "application/json" });
   const fname = `pointcloud-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = fname;
   a.click();
-
-  // revoke apenas após o clique ter sido despachado
-  setTimeout(() => URL.revokeObjectURL(a.href), 0);
-});
-
-
-// Download malha handler: chama função em export.js para converter para malha e baixar (.ply)
-downloadMeshBtn.addEventListener('click', () => {
-  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
-    alert("Nenhuma nuvem triangulada disponível para converter em malha.");
-    return;
-  }
-  if (typeof window.convertPointCloudToMeshAndDownload === 'function') {
-    // passa uma cópia segura apenas com {x,y,z}
-    const pts = calibration.triangulatedPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
-    try {
-      window.convertPointCloudToMeshAndDownload(pts);
-    } catch (e) {
-      alert("Erro ao gerar a malha: " + (e && e.message ? e.message : String(e)));
-    }
-  } else {
-    alert("Exportador de malha não disponível.");
-  }
+  URL.revokeObjectURL(a.href);
 });
 
 // calibrate button: starts/stops calibration (kept), now shows/hides the Download button
@@ -409,8 +386,6 @@ calibrateBtn.addEventListener('click', () => {
 
     // esconde botão Download ao finalizar calibração
     downloadBtn.style.display = "none";
-    // esconde botão Download malha ao finalizar calibração
-    downloadMeshBtn.style.display = "none";
 
     // limpeza de buffers (mantida)
     calibrationFrames = [];
@@ -432,6 +407,9 @@ calibrateBtn.addEventListener('click', () => {
     setPinkState(PINK_STATE.IDLE);
     pinkStableCounter = 0;
     pinkLockedPixel = null;
+
+    // clear selections when calibration ends
+    clearSelectedPair();
 
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
@@ -551,9 +529,8 @@ calibrateBtn.addEventListener('click', () => {
     currentPoint: null
   };
 
-  // mostra botões Download enquanto calibração ativa
+  // mostra botão Download enquanto calibração ativa
   downloadBtn.style.display = "inline-block";
-  downloadMeshBtn.style.display = "inline-block";
 
   setPinkState(PINK_STATE.IDLE);
   pinkStableCounter = 0;
@@ -571,6 +548,90 @@ calibrateBtn.addEventListener('click', () => {
 
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
+
+// --- seleção de par de pontos (compartilhado entre os 3 mini-canvases) ---
+let selectedPair = []; // armazenará até 2 elementos: { idx: number, point: {x,y,z} }
+function clearSelectedPair() {
+  selectedPair = [];
+  selectedPairInfo.textContent = "Nenhum";
+  deltaInfo.textContent = "ΔX: -- mm \u00A0 ΔY: -- mm \u00A0 ΔZ: -- mm";
+}
+function setSelectedPairFromIndices(i1, i2) {
+  if (!calibration || !calibration.triangulatedPoints) { clearSelectedPair(); return; }
+  const pts = calibration.triangulatedPoints;
+  if (i1 == null || i2 == null || !pts[i1] || !pts[i2]) { clearSelectedPair(); return; }
+  selectedPair = [
+    { idx: i1, point: pts[i1] },
+    { idx: i2, point: pts[i2] }
+  ];
+  selectedPairInfo.textContent = `#${i1} ↔ #${i2}`;
+  const dx = selectedPair[1].point.x - selectedPair[0].point.x;
+  const dy = selectedPair[1].point.y - selectedPair[0].point.y;
+  const dz = selectedPair[1].point.z - selectedPair[0].point.z;
+  deltaInfo.textContent = `ΔX: ${dx.toFixed(3)} mm \u00A0 ΔY: ${dy.toFixed(3)} mm \u00A0 ΔZ: ${dz.toFixed(3)} mm`;
+}
+
+// função utilitária que encontra o índice do ponto mais próximo do clique em uma projeção (mapFunc)
+function findNearestPointIndexOnCanvas(canvasEl, ctx2d, projPoints, clickX, clickY, maxPickPx = 12) {
+  // projPoints: [{sx, sy, idx}]
+  let best = -1;
+  let bestDist2 = (maxPickPx * maxPickPx) + 1;
+  for (const p of projPoints) {
+    const dx = clickX - p.sx;
+    const dy = clickY - p.sy;
+    const d2 = dx*dx + dy*dy;
+    if (d2 < bestDist2) {
+      bestDist2 = d2;
+      best = p.idx;
+    }
+  }
+  return (best >= 0) ? best : null;
+}
+
+// clique -> seleção (comportamento: adicionar/remover; manter até 2; se já 2 -> remove primeiro)
+function handlePlaneClick(canvasEl, projPoints, evt) {
+  const rect = canvasEl.getBoundingClientRect();
+  const cx = (evt.clientX - rect.left) * (canvasEl.width / rect.width);
+  const cy = (evt.clientY - rect.top) * (canvasEl.height / rect.height);
+  const idx = findNearestPointIndexOnCanvas(canvasEl, canvasEl.getContext('2d'), projPoints, cx, cy, 12);
+  if (idx == null) {
+    // clique em vazio: clear selection
+    clearSelectedPair();
+    return;
+  }
+  // toggle / manage selection
+  const already = selectedPair.find(s => s.idx === idx);
+  if (already) {
+    // remove it
+    selectedPair = selectedPair.filter(s => s.idx !== idx);
+    if (selectedPair.length === 1) {
+      selectedPairInfo.textContent = `#${selectedPair[0].idx}`;
+      deltaInfo.textContent = "ΔX: -- mm \u00A0 ΔY: -- mm \u00A0 ΔZ: -- mm";
+    } else {
+      clearSelectedPair();
+    }
+  } else {
+    if (selectedPair.length < 2) {
+      selectedPair.push({ idx, point: calibration.triangulatedPoints[idx] });
+    } else {
+      // replace the first and keep second as the new pair (shift)
+      selectedPair.shift();
+      selectedPair.push({ idx, point: calibration.triangulatedPoints[idx] });
+    }
+    if (selectedPair.length === 1) {
+      selectedPairInfo.textContent = `#${selectedPair[0].idx}`;
+      deltaInfo.textContent = "ΔX: -- mm \u00A0 ΔY: -- mm \u00A0 ΔZ: -- mm";
+    } else if (selectedPair.length === 2) {
+      const p1 = selectedPair[0].point;
+      const p2 = selectedPair[1].point;
+      selectedPairInfo.textContent = `#${selectedPair[0].idx} ↔ #${selectedPair[1].idx}`;
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const dz = p2.z - p1.z;
+      deltaInfo.textContent = `ΔX: ${dx.toFixed(3)} mm \u00A0 ΔY: ${dy.toFixed(3)} mm \u00A0 ΔZ: ${dz.toFixed(3)} mm`;
+    }
+  }
+}
 
 // processFrame (mantido) — inclui toda a lógica anterior (detecção, pinhole, registro de raios, triangulação, estado do ponto rosa, desenho, mini-cloud)
 function processFrame() {
@@ -885,6 +946,8 @@ function processFrame() {
           cp.triangulated = true;
           drawTriangulatedMarkers();
           drawMiniCloud();
+          // update the 3 planar mini canvases
+          drawMiniPlanes();
           setPinkState(PINK_STATE.LOCKED);
         } else {
           setPinkState(PINK_STATE.CAPTURING);
@@ -896,6 +959,8 @@ function processFrame() {
   // draw persistent triangulated markers and mini cloud
   drawTriangulatedMarkers();
   drawMiniCloud();
+  // atualizar os 3 mini planos sempre que desenharmos frame
+  drawMiniPlanes();
 
   requestAnimationFrame(processFrame);
 }
@@ -974,6 +1039,159 @@ function drawMiniCloud() {
   miniCtx.strokeRect(0.5,0.5,miniCanvas.width-1,miniCanvas.height-1);
 }
 
+// --- NEW: Draw the 3 mini plane projections (XY, XZ, YZ) ---
+// Each draw function will return the projected points array [{sx, sy, idx}] so the click handlers can use it.
+
+function drawMiniPlanes() {
+  const pts = (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints : [];
+  const projXY = drawPlaneProjection(miniXY, miniXYCtx, pts, 'x', 'y');
+  const projXZ = drawPlaneProjection(miniXZ, miniXZCtx, pts, 'x', 'z');
+  const projYZ = drawPlaneProjection(miniYZ, miniYZCtx, pts, 'y', 'z');
+
+  // attach/update event listeners with closure of proj arrays (we rebind once)
+  // To avoid reattaching many listeners over time, attach only the first time
+  if (!miniXY._listenerBound) {
+    miniXY.addEventListener('click', (e) => handlePlaneClick(miniXY, projXY, e));
+    miniXY._listenerBound = true;
+  } else {
+    // update handler data by overriding stored proj reference
+    miniXY._lastProj = projXY;
+  }
+  if (!miniXZ._listenerBound) {
+    miniXZ.addEventListener('click', (e) => handlePlaneClick(miniXZ, projXZ, e));
+    miniXZ._listenerBound = true;
+  } else {
+    miniXZ._lastProj = projXZ;
+  }
+  if (!miniYZ._listenerBound) {
+    miniYZ.addEventListener('click', (e) => handlePlaneClick(miniYZ, projYZ, e));
+    miniYZ._listenerBound = true;
+  } else {
+    miniYZ._lastProj = projYZ;
+  }
+
+  // draw selection markers/lines on canvases (if selected)
+  drawSelectionOnPlane(miniXY, miniXYCtx, projXY);
+  drawSelectionOnPlane(miniXZ, miniXZCtx, projXZ);
+  drawSelectionOnPlane(miniYZ, miniYZCtx, projYZ);
+}
+
+// generic plane projection drawer
+function drawPlaneProjection(canvasEl, ctx2d, pts, axA, axB) {
+  const W = canvasEl.width;
+  const H = canvasEl.height;
+  ctx2d.clearRect(0,0,W,H);
+  ctx2d.fillStyle = "rgba(0,0,0,0.02)";
+  ctx2d.fillRect(0,0,W,H);
+
+  if (!pts || pts.length === 0) {
+    ctx2d.fillStyle = "rgba(255,255,255,0.4)";
+    ctx2d.font = "12px system-ui, Arial";
+    ctx2d.fillText("Nuvem de pontos (vazia)", 10, 18);
+    return [];
+  }
+
+  // compute min/max along chosen axes
+  let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+  for (let i=0;i<pts.length;i++) {
+    const p = pts[i];
+    const a = (axA === 'x') ? p.x : (axA === 'y' ? p.y : p.z);
+    const b = (axB === 'x') ? p.x : (axB === 'y' ? p.y : p.z);
+    if (!isFinite(a) || !isFinite(b)) continue;
+    if (a < minA) minA = a;
+    if (a > maxA) maxA = a;
+    if (b < minB) minB = b;
+    if (b > maxB) maxB = b;
+  }
+  if (minA === Infinity) return [];
+
+  // avoid zero ranges
+  if (Math.abs(maxA - minA) < 1e-6) { minA -= 1; maxA += 1; }
+  if (Math.abs(maxB - minB) < 1e-6) { minB -= 1; maxB += 1; }
+
+  const pad = 10;
+  const w = W - pad*2;
+  const h = H - pad*2;
+
+  // draw grid
+  ctx2d.strokeStyle = "rgba(255,255,255,0.06)";
+  ctx2d.lineWidth = 1;
+  ctx2d.beginPath();
+  for (let i=1;i<=3;i++) {
+    const gx = pad + (w/4)*i;
+    ctx2d.moveTo(gx, pad);
+    ctx2d.lineTo(gx, pad + h);
+    const gy = pad + (h/4)*i;
+    ctx2d.moveTo(pad, gy);
+    ctx2d.lineTo(pad + w, gy);
+  }
+  ctx2d.stroke();
+
+  // project points
+  const proj = [];
+  for (let i=0;i<pts.length;i++) {
+    const p = pts[i];
+    const a = (axA === 'x') ? p.x : (axA === 'y' ? p.y : p.z);
+    const b = (axB === 'x') ? p.x : (axB === 'y' ? p.y : p.z);
+    if (!isFinite(a) || !isFinite(b)) continue;
+    const sx = pad + ((a - minA) / (maxA - minA)) * w;
+    // invert vertical axis so larger B is up visually (consistent with miniCloud)
+    const sy = pad + (1 - (b - minB) / (maxB - minB)) * h;
+    proj.push({ sx, sy, idx: i });
+  }
+
+  // draw points
+  for (const pr of proj) {
+    ctx2d.beginPath();
+    ctx2d.fillStyle = "#8B1455";
+    ctx2d.arc(pr.sx, pr.sy, 4, 0, Math.PI*2);
+    ctx2d.fill();
+  }
+
+  // border
+  ctx2d.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx2d.lineWidth = 1;
+  ctx2d.strokeRect(0.5,0.5,W-1,H-1);
+
+  return proj;
+}
+
+// draw selection markers/lines on a given plane canvas using its projPoints
+function drawSelectionOnPlane(canvasEl, ctx2d, projPoints) {
+  // highlight selected points if present
+  if (!projPoints || projPoints.length === 0) return;
+  // draw circle highlights
+  for (const s of selectedPair) {
+    const found = projPoints.find(p => p.idx === s.idx);
+    if (found) {
+      ctx2d.beginPath();
+      ctx2d.strokeStyle = "#FFFF66";
+      ctx2d.lineWidth = 2;
+      ctx2d.arc(found.sx, found.sy, 7, 0, Math.PI*2);
+      ctx2d.stroke();
+
+      ctx2d.beginPath();
+      ctx2d.fillStyle = "#FFFFAA";
+      ctx2d.arc(found.sx, found.sy, 3, 0, Math.PI*2);
+      ctx2d.fill();
+    }
+  }
+
+  // if two selected, draw connecting line (projected)
+  if (selectedPair.length === 2) {
+    const pA = projPoints.find(p => p.idx === selectedPair[0].idx);
+    const pB = projPoints.find(p => p.idx === selectedPair[1].idx);
+    if (pA && pB) {
+      ctx2d.beginPath();
+      ctx2d.strokeStyle = "#FF99C8";
+      ctx2d.lineWidth = 2;
+      ctx2d.moveTo(pA.sx, pA.sy);
+      ctx2d.lineTo(pB.sx, pB.sy);
+      ctx2d.stroke();
+    }
+  }
+}
+
 // small drawing helpers (kept)
 function drawPoint(x, y, color) {
   ctx.fillStyle = color;
@@ -998,3 +1216,22 @@ function drawArrow(x1, y1, x2, y2, color) {
   ctx.fillStyle = color;
   ctx.fill();
 }
+
+// bind click handlers once to the 3 new canvases to use the latest project arrays
+miniXY.addEventListener('click', function(evt){
+  // use the latest proj stored (if any) or recompute
+  const proj = miniXY._lastProj || drawPlaneProjection(miniXY, miniXYCtx, (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints : [], 'x','y');
+  handlePlaneClick(miniXY, proj, evt);
+});
+miniXZ.addEventListener('click', function(evt){
+  const proj = miniXZ._lastProj || drawPlaneProjection(miniXZ, miniXZCtx, (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints : [], 'x','z');
+  handlePlaneClick(miniXZ, proj, evt);
+});
+miniYZ.addEventListener('click', function(evt){
+  const proj = miniYZ._lastProj || drawPlaneProjection(miniYZ, miniYZCtx, (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints : [], 'y','z');
+  handlePlaneClick(miniYZ, proj, evt);
+});
+
+// inicializa seleção vazia
+clearSelectedPair();
+
