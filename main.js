@@ -19,6 +19,8 @@ const greenSlider = document.getElementById('greenSlider');
 const redSlider   = document.getElementById('redSlider');
 // NOVO: slider para estabilidade
 const stabilitySlider = document.getElementById('stabilitySlider');
+// NOVO: slider para margem de borda ignorada
+const edgeMarginSlider = document.getElementById('edgeMarginSlider');
 
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
@@ -27,6 +29,8 @@ const greenValue = document.getElementById('greenValue');
 const redValue   = document.getElementById('redValue');
 // NOVO: display do valor de estabilidade
 const stabilityValue = document.getElementById('stabilityValue');
+// NOVO: display do valor da margem de borda
+const edgeMarginValue = document.getElementById('edgeMarginValue');
 
 const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
@@ -60,6 +64,10 @@ let redThreshold   = Number(redSlider.value);
 // NOVO: estabilidade (n últimas posições para média)
 let stabilityFrames = Number(stabilitySlider.value);
 stabilityValue.textContent = String(stabilityFrames);
+
+// NOVO: margem em pixels ignorada nas 4 bordas
+let edgeMargin = Number(edgeMarginSlider.value);
+edgeMarginValue.textContent = String(edgeMargin);
 
 // Históricos para média (origem = preto/orange, azul, verde). Não incluir ponto rosa.
 const blackHistory = []; // origin history
@@ -96,6 +104,11 @@ stabilitySlider.addEventListener('input', () => {
   while (blackHistory.length > stabilityFrames) blackHistory.shift();
   while (blueHistory.length > stabilityFrames) blueHistory.shift();
   while (greenHistory.length > stabilityFrames) greenHistory.shift();
+});
+// NOVO: listener do slider de margem de borda
+edgeMarginSlider.addEventListener('input', () => {
+  edgeMargin = Number(edgeMarginSlider.value);
+  edgeMarginValue.textContent = String(edgeMargin);
 });
 
 let orientationListenerAdded = false;
@@ -642,6 +655,7 @@ calibrateBtn.addEventListener('click', () => {
 });
 
 // processFrame (mantido) — agora com suavização (média móvel) para origem/azul/verde (sem incluir ponto rosa)
+// e com margem de borda ignorada: pixels nas 4 bordas dentro de edgeMargin não serão processados nem contados.
 function processFrame() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -654,11 +668,19 @@ function processFrame() {
   let sumGreenX = 0, sumGreenY = 0, countGreen = 0;
   let sumRedX   = 0, sumRedY   = 0, countRed   = 0;
 
+  // local copy of margin for this frame (allow slider changes on the fly)
+  const margin = Math.max(0, Math.floor(edgeMargin));
+
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i+1], b = data[i+2];
     const p = i / 4;
     const x = p % canvas.width;
     const y = Math.floor(p / canvas.width);
+
+    // IGNORA pixels dentro da margem das bordas
+    if (x < margin || x >= canvas.width - margin || y < margin || y >= canvas.height - margin) {
+      continue;
+    }
 
     if (r < blackThreshold && g < blackThreshold && b < blackThreshold) {
       data[i]=255; data[i+1]=165; data[i+2]=0;
