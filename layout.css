@@ -31,7 +31,7 @@ button {
 #calibration {
   margin-bottom: 10px;
   width: 80%;
-  max-width: 420px;
+  max-width: 460px;
   text-align: center;
 }
 
@@ -46,6 +46,36 @@ button {
   width: 100%;
 }
 
+#savePositions {
+  margin-top: 10px;
+  text-align: left;
+  background: rgba(255,255,255,0.01);
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+#savePositions button {
+  padding: 6px 10px;
+  font-size: 14px;
+  border-radius: 5px;
+}
+
+#savedRedStatus, #savedBlueStatus, #savedGreenStatus {
+  font-size: 13px;
+  color: #dcdcdc;
+}
+
+/* pequeno detalhe do valor do raio */
+#savePositions label { margin-top: 6px; font-size: 13px; }
+
+/* scale info */
 #scaleInfo {
   margin-bottom: 6px;
   font-size: 14px;
@@ -186,20 +216,7 @@ canvas {
   color: rgba(255,255,255,0.5);
 }
 
-/* save controls */
-#saveControls .save-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 6px;
-}
-#saveControls .saved-info {
-  margin-left: 6px;
-  font-size: 13px;
-  color: rgba(255,255,255,0.8);
-}
-
-/* saved marker styles (drawn by canvas) - no CSS class needed but kept for reference */
+/* selected point highlight (drawn by canvas, but keep some CSS fallback) */
 .selected-point {
   box-shadow: 0 0 6px rgba(255,153,200,0.6);
 }
