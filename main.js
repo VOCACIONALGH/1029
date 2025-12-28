@@ -1272,6 +1272,59 @@ function drawTriangulatedMarkers() {
   }
 }
 
+// --- NOVA ADIÇÃO: permitir clique no canvas para deletar ponto triangulado ---
+// função utilitária que remove um ponto triangulado pelo índice e atualiza UI/seleção
+function removeTriangulatedIndex(idx) {
+  if (!calibration || !Array.isArray(calibration.triangulatedPoints)) return;
+  if (idx < 0 || idx >= calibration.triangulatedPoints.length) return;
+  // remove
+  calibration.triangulatedPoints.splice(idx, 1);
+  // ajustar seleção mini-cloud: remover índices iguais e decrementar os maiores
+  const newSel = [];
+  for (const s of selectedMiniIndices) {
+    if (s === idx) continue; // removed
+    else if (s > idx) newSel.push(s - 1);
+    else newSel.push(s);
+  }
+  selectedMiniIndices = newSel;
+  // atualizar contadores e desenhar
+  triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
+  drawTriangulatedMarkers();
+  drawMiniCloud();
+  updatePairDistanceDisplay();
+}
+
+// handler de clique no canvas principal
+canvas.addEventListener('click', (ev) => {
+  if (!calibration || !Array.isArray(calibration.triangulatedPoints) || calibration.triangulatedPoints.length === 0) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = (ev.clientX - rect.left) * scaleX;
+  const cy = (ev.clientY - rect.top) * scaleY;
+
+  // busca o ponto triangulado mais próximo (em pixels do canvas) — usa p.pixel
+  let nearestIdx = -1;
+  let bestDistSq = Infinity;
+  for (let i = 0; i < calibration.triangulatedPoints.length; i++) {
+    const p = calibration.triangulatedPoints[i];
+    if (!p.pixel || !isFinite(p.pixel.x) || !isFinite(p.pixel.y)) continue;
+    const dx = p.pixel.x - cx;
+    const dy = p.pixel.y - cy;
+    const dsq = dx*dx + dy*dy;
+    if (dsq < bestDistSq) {
+      bestDistSq = dsq;
+      nearestIdx = i;
+    }
+  }
+  if (nearestIdx === -1) return;
+  const CLICK_DELETE_THRESHOLD_PX = 10; // raio de clique sensível (em pixels do canvas)
+  if (bestDistSq <= CLICK_DELETE_THRESHOLD_PX * CLICK_DELETE_THRESHOLD_PX) {
+    // excluir imediatamente
+    removeTriangulatedIndex(nearestIdx);
+  }
+});
+
 // mini cloud drawing (keeps showing triangulatedPoints)
 // agora também destaca pontos selecionados e desenha linha entre o par
 function drawMiniCloud() {
