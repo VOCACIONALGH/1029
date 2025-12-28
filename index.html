@@ -52,6 +52,32 @@
       <span id="marginValue">5%</span>
     </label>
     <input type="range" id="marginSlider" min="0" max="20" value="5">
+
+    <!-- NOVO: Salvar posições e raio máximo -->
+    <div id="saveControls" style="margin-top:10px; text-align:left;">
+      <label>
+        Raio máximo aceito:
+        <span id="maxRadiusValue">20</span> mm
+      </label>
+      <input type="range" id="maxRadiusSlider" min="1" max="200" value="20">
+
+      <div class="save-row">
+        <button id="saveRedBtn" disabled>Salvar vermelho</button>
+        <button id="clearRedBtn" disabled>Limpar vermelho salvo</button>
+        <span class="saved-info">Salvo: <span id="savedRedInfo">—</span></span>
+      </div>
+      <div class="save-row">
+        <button id="saveBlueBtn" disabled>Salvar azul</button>
+        <button id="clearBlueBtn" disabled>Limpar azul salvo</button>
+        <span class="saved-info">Salvo: <span id="savedBlueInfo">—</span></span>
+      </div>
+      <div class="save-row">
+        <button id="saveGreenBtn" disabled>Salvar verde</button>
+        <button id="clearGreenBtn" disabled>Limpar verde salvo</button>
+        <span class="saved-info">Salvo: <span id="savedGreenInfo">—</span></span>
+      </div>
+    </div>
+
   </div>
 
   <div id="scaleInfo">
