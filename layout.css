@@ -17,6 +17,17 @@ button {
   cursor: pointer;
 }
 
+#downloadBtn {
+  /* botão Download com aparência consistente */
+  background: linear-gradient(#0b79d0, #0961a8);
+  color: white;
+  border: none;
+  border-radius: 6px;
+}
+
+/* pequeno espaçamento caso apareça ao lado dos outros botões */
+#scanBtn, #calibrateBtn, #downloadBtn { vertical-align: middle; }
+
 #calibration {
   margin-bottom: 10px;
   width: 80%;
@@ -126,6 +137,3 @@ canvas {
   image-rendering: pixelated;
   border-radius: 4px;
 }
-
-/* color for triangulated marker (will be drawn programmatically) */
-/* no extra CSS required for drawing on canvas */
