@@ -55,6 +55,14 @@ const dyValSpan = document.getElementById('dyVal');
 const dzValSpan = document.getElementById('dzVal');
 const dMagValSpan = document.getElementById('dMagVal');
 
+// elementos da nova UI de qualidade
+const qualityBlock = document.getElementById('qualityBlock');
+const qualityLabel = document.getElementById('qualityLabel');
+const qualityNumRays = document.getElementById('qualityNumRays');
+const qualityMeanDist = document.getElementById('qualityMeanDist');
+const qualityMaxAngle = document.getElementById('qualityMaxAngle');
+const qualitySpread = document.getElementById('qualitySpread');
+
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
 let greenThreshold = Number(greenSlider.value);
@@ -148,6 +156,72 @@ function averageHistory(histArr) {
   let sx = 0, sy = 0;
   for (const p of histArr) { sx += p.x; sy += p.y; }
   return { x: sx / histArr.length, y: sy / histArr.length };
+}
+
+// --- Quality computation helper (NOVO) ---
+// subset: array of registered rays { origin:{x,y,z}, direction:{dx,dy,dz}, pixel:{x,y} }
+// X: triangulated point {x,y,z}
+function computePointQuality(subset, X) {
+  if (!subset || subset.length === 0 || !X) return null;
+  const n = subset.length;
+  // normalize directions and compute distances from X to each ray
+  const dists = [];
+  const dirs = [];
+  const origins = [];
+  for (let i=0;i<n;i++) {
+    const r = subset[i];
+    const o = [r.origin.x, r.origin.y, r.origin.z];
+    const d = [r.direction.dx, r.direction.dy, r.direction.dz];
+    const ld = Math.hypot(d[0],d[1],d[2]);
+    let dn = ld > 1e-9 ? [d[0]/ld, d[1]/ld, d[2]/ld] : [0,0,0];
+    dirs.push(dn);
+    origins.push(o);
+    // distance point-to-line: || ( (X - o) x dn ) ||
+    const vx = [X.x - o[0], X.y - o[1], X.z - o[2]];
+    const cx = [
+      vx[1]*dn[2] - vx[2]*dn[1],
+      vx[2]*dn[0] - vx[0]*dn[2],
+      vx[0]*dn[1] - vx[1]*dn[0]
+    ];
+    const dist = Math.hypot(cx[0], cx[1], cx[2]);
+    dists.push(dist);
+  }
+  // mean distance
+  const meanDist = dists.reduce((a,b)=>a+b,0)/dists.length;
+
+  // pairwise angles (in degrees) - find maximum angle between any pair
+  let maxAngleRad = 0;
+  for (let i=0;i<n;i++) {
+    for (let j=i+1;j<n;j++) {
+      const a = dirs[i], b = dirs[j];
+      const dot = Math.max(-1, Math.min(1, a[0]*b[0] + a[1]*b[1] + a[2]*b[2]));
+      const ang = Math.acos(dot);
+      if (ang > maxAngleRad) maxAngleRad = ang;
+    }
+  }
+  const maxAngleDeg = maxAngleRad * 180 / Math.PI;
+
+  // spread of origins: compute centroid and average distance to centroid
+  let cx=0, cy=0, cz=0;
+  for (const o of origins) { cx += o[0]; cy += o[1]; cz += o[2]; }
+  cx /= origins.length; cy /= origins.length; cz /= origins.length;
+  let sumd=0;
+  for (const o of origins) sumd += Math.hypot(o[0]-cx, o[1]-cy, o[2]-cz);
+  const spread = sumd / origins.length;
+
+  // Decide level (thresholds chosen conservatively)
+  let level = "Baixa";
+  if (n >= 4 && meanDist <= 2.0 && maxAngleDeg >= 20 && spread >= 12) level = "Alta";
+  else if (n >= 3 && meanDist <= 5.0 && maxAngleDeg >= 8 && spread >= 6) level = "Média";
+  else level = "Baixa";
+
+  return {
+    level,
+    meanDist: Number(meanDist.toFixed(4)),
+    maxAngleDeg: Number(maxAngleDeg.toFixed(2)),
+    spread: Number(spread.toFixed(4)),
+    numRays: n
+  };
 }
 
 // --- helper math functions (kept) ---
@@ -655,7 +729,7 @@ calibrateBtn.addEventListener('click', () => {
 });
 
 // processFrame (mantido) — agora com suavização (média móvel) para origem/azul/verde (sem incluir ponto rosa)
-// E também ignora pixels nas bordas conforme marginPercent e pinta a área sombreada.
+// E também ignora pixels nas bordas conforme marginPercent e pinta a área sombreada na tela.
 function processFrame() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -1000,7 +1074,8 @@ function processFrame() {
         const subset = cp.registeredRays.slice(-calibration.numRaysNeeded);
         const raysForTri = subset.map(r => ({
           origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
-          direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
+          direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz },
+          pixel: { x: r.pixel.x, y: r.pixel.y }
         }));
         const X = triangulateFromRays(raysForTri);
         if (X) {
@@ -1009,7 +1084,36 @@ function processFrame() {
           for (const r of subset) { avgX += (r.pixel && r.pixel.x) || 0; avgY += (r.pixel && r.pixel.y) || 0; }
           avgX /= subset.length; avgY /= subset.length;
           const tri = { x: X.x, y: X.y, z: X.z, pixel: { x: avgX, y: avgY } };
+
+          // --- NOVO: compute quality metrics for this triangulated point ---
+          const quality = computePointQuality(raysForTri, tri);
+          tri.quality = quality;
+          // store tri (with quality) in calibration
           calibration.triangulatedPoints.push(tri);
+
+          // update UI with quality message
+          if (quality) {
+            qualityBlock.style.display = "block";
+            qualityNumRays.textContent = quality.numRays;
+            qualityMeanDist.textContent = quality.meanDist;
+            qualityMaxAngle.textContent = quality.maxAngleDeg;
+            qualitySpread.textContent = quality.spread;
+
+            // set label and color class
+            qualityLabel.textContent = quality.level;
+            qualityLabel.classList.remove('quality-high','quality-medium','quality-low');
+            if (quality.level === "Alta") qualityLabel.classList.add('quality-high');
+            else if (quality.level === "Média") qualityLabel.classList.add('quality-medium');
+            else qualityLabel.classList.add('quality-low');
+
+            // opcional: esconder mensagem após alguns segundos (8s)
+            clearTimeout(qualityBlock._hideTO);
+            qualityBlock._hideTO = setTimeout(() => {
+              // keep visible but fade out: simply hide
+              qualityBlock.style.display = "none";
+            }, 8000);
+          }
+
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
           cp.triangulated = true;
           drawTriangulatedMarkers();
