@@ -1,7 +1,9 @@
 // main.js — inclui botão Download para baixar a nuvem de pontos triangulada (arquivo .json)
+// e integração com export.js para gerar/baixar malha (.ply)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
-const downloadBtn = document.getElementById('downloadBtn'); // novo botão
+const downloadBtn = document.getElementById('downloadBtn'); // novo botão para JSON da gravação
+const downloadMeshBtn = document.getElementById('downloadMeshBtn'); // novo botão para a malha
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
@@ -350,6 +352,25 @@ downloadBtn.addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
+// Download malha handler: chama função em export.js para converter para malha e baixar (.ply)
+downloadMeshBtn.addEventListener('click', () => {
+  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
+    alert("Nenhuma nuvem triangulada disponível para converter em malha.");
+    return;
+  }
+  if (typeof window.convertPointCloudToMeshAndDownload === 'function') {
+    // passa uma cópia segura apenas com {x,y,z}
+    const pts = calibration.triangulatedPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
+    try {
+      window.convertPointCloudToMeshAndDownload(pts);
+    } catch (e) {
+      alert("Erro ao gerar a malha: " + (e && e.message ? e.message : String(e)));
+    }
+  } else {
+    alert("Exportador de malha não disponível.");
+  }
+});
+
 // calibrate button: starts/stops calibration (kept), now shows/hides the Download button
 calibrateBtn.addEventListener('click', () => {
   if (isRecordingCalibration) {
@@ -374,6 +395,8 @@ calibrateBtn.addEventListener('click', () => {
 
     // esconde botão Download ao finalizar calibração
     downloadBtn.style.display = "none";
+    // esconde botão Download malha ao finalizar calibração
+    downloadMeshBtn.style.display = "none";
 
     // limpeza de buffers (mantida)
     calibrationFrames = [];
@@ -514,8 +537,9 @@ calibrateBtn.addEventListener('click', () => {
     currentPoint: null
   };
 
-  // mostra botão Download enquanto calibração ativa
+  // mostra botões Download enquanto calibração ativa
   downloadBtn.style.display = "inline-block";
+  downloadMeshBtn.style.display = "inline-block";
 
   setPinkState(PINK_STATE.IDLE);
   pinkStableCounter = 0;
