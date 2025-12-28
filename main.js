@@ -1,10 +1,12 @@
-// main.js — com máquina de estados do ponto rosa (IDLE, ARMED, CAPTURING, TRIANGULATING, LOCKED)
-// Mantive toda a lógica já existente (detecção, pinhole, rotação, registros, triangulação).
+// main.js — atualizado para destacar pontos triangulados (rosa escuro) e mostrar mini cloud
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
+
+const miniCanvas = document.getElementById('miniCloud');
+const miniCtx = miniCanvas.getContext('2d');
 
 const scaleValue = document.getElementById('scaleValue');
 const scaleLockedLabel = document.getElementById('scaleLockedLabel');
@@ -31,7 +33,6 @@ const rotatedCountSpan = document.getElementById('rotatedCount');
 const acceptedCountSpan = document.getElementById('acceptedCount');
 const registered3DCountSpan = document.getElementById('registered3DCount');
 const triangulatedCountSpan = document.getElementById('triangulatedCount');
-
 const pinkStateSpan = document.getElementById('pinkState');
 
 let blackThreshold = Number(blackSlider.value);
@@ -81,7 +82,7 @@ function handleOrientation(event) {
   rollSpan.textContent = (gamma != null) ? gamma.toFixed(2) : "--";
 }
 
-// --- transforms, helpers (kept from previous implementations)
+// --- transforms and helpers (kept)
 function rotationMatrixFromAlphaBetaGamma(alphaDeg, betaDeg, gammaDeg) {
   const a = (alphaDeg || 0) * Math.PI / 180;
   const b = (betaDeg  || 0) * Math.PI / 180;
@@ -194,7 +195,7 @@ function multiply4x4(A,B) {
   return C;
 }
 
-// invert3x3 (adjugate) used by triangulation; return null if near-singular
+// small matrix inverse for triangulation
 function invert3x3(M) {
   const a=M[0][0], b=M[0][1], c=M[0][2];
   const d=M[1][0], e=M[1][1], f=M[1][2];
@@ -218,7 +219,6 @@ function invert3x3(M) {
   ];
 }
 
-// triangulateFromRays (least squares intersection of lines)
 function triangulateFromRays(rays) {
   if (!rays || rays.length === 0) return null;
   let A = [[0,0,0],[0,0,0],[0,0,0]];
@@ -252,13 +252,12 @@ function triangulateFromRays(rays) {
   return { x: X[0], y: X[1], z: X[2] };
 }
 
-// parameters
+// params and program state (kept)
 const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
 const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
-const STABLE_FRAMES_FOR_ARM = 3; // how many consecutive frames of detection to consider "stable" -> ARMED
+const STABLE_FRAMES_FOR_ARM = 3;
 
-// program state
 let currentScalePxPerMm = null;
 let scaleLocked = false;
 let lockedScalePxPerMm = null;
@@ -268,7 +267,7 @@ let calibration = null;
 let lastDetectedPoints = null;
 let lastTransformedMatrix = null;
 
-// --- Ponto rosa state machine
+// point state machine
 const PINK_STATE = {
   IDLE: "IDLE",
   ARMED: "ARMED",
@@ -277,11 +276,9 @@ const PINK_STATE = {
   LOCKED: "LOCKED"
 };
 let pinkState = PINK_STATE.IDLE;
-let pinkStableCounter = 0; // counts consecutive frames where pink detected (used to go ARMED)
-let pinkLockedPixel = null; // when entering CAPTURING we lock pixel coordinates
-// calibration.currentPoint will hold per-point cycle data (registered rays, accepted rays, lastAccepted etc.)
+let pinkStableCounter = 0;
+let pinkLockedPixel = null;
 
-// UI update helper for state
 function setPinkState(s) {
   pinkState = s;
   pinkStateSpan.textContent = s;
@@ -297,6 +294,7 @@ scanBtn.addEventListener('click', async () => {
     video.srcObject = stream;
     video.style.display = "block";
     canvas.style.display = "block";
+    miniCanvas.style.display = "block";
     scanBtn.style.display = "none";
 
     try {
@@ -315,6 +313,9 @@ scanBtn.addEventListener('click', async () => {
     video.addEventListener('loadedmetadata', () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
+      // ensure overlay size matches
+      canvas.style.width = video.clientWidth + "px";
+      canvas.style.height = video.clientHeight + "px";
       processFrame();
     });
 
@@ -323,10 +324,9 @@ scanBtn.addEventListener('click', async () => {
   }
 });
 
-// Calibrate button toggles as before, but now collects minMove and numRaysNeeded and initializes calibration.currentPoint fields
+// calibrate button (kept behavior) — initializes calibration structure (unchanged except adding registeredRays pixel)
 calibrateBtn.addEventListener('click', () => {
   if (isRecordingCalibration) {
-    // finalize: include triangulatedPoints and registeredRays in JSON
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
     const data = {
@@ -344,7 +344,6 @@ calibrateBtn.addEventListener('click', () => {
     a.click();
     URL.revokeObjectURL(a.href);
 
-    // cleanup (keep other program state intact)
     calibrationFrames = [];
     if (calibration) {
       calibration.rays = [];
@@ -369,7 +368,6 @@ calibrateBtn.addEventListener('click', () => {
     return;
   }
 
-  // starting calibration
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
     return;
@@ -395,7 +393,6 @@ calibrateBtn.addEventListener('click', () => {
     return;
   }
 
-  // ask for MIN_CAMERA_MOVE_MM
   const inputMinMove = prompt(`Informe MIN_CAMERA_MOVE_MM (mm). Padrão ${DEFAULT_MIN_CAMERA_MOVE_MM} mm:`);
   let minMoveVal = DEFAULT_MIN_CAMERA_MOVE_MM;
   if (inputMinMove !== null) {
@@ -403,7 +400,6 @@ calibrateBtn.addEventListener('click', () => {
     if (!Number.isNaN(v) && v >= 0) minMoveVal = v;
   }
 
-  // ask for number of rays needed for triangulation
   const inputNumRays = prompt("Informe a quantidade de raios necessária para triangular o ponto rosa (inteiro >=2). Padrão 3:");
   let numRaysNeeded = 3;
   if (inputNumRays !== null) {
@@ -482,11 +478,9 @@ calibrateBtn.addEventListener('click', () => {
     registeredRays: [],
     triangulatedPoints: [],
     numRaysNeeded,
-    // per-point data (current cycle)
     currentPoint: null
   };
 
-  // init point machine
   setPinkState(PINK_STATE.IDLE);
   pinkStableCounter = 0;
   pinkLockedPixel = null;
@@ -504,9 +498,10 @@ calibrateBtn.addEventListener('click', () => {
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
 
-// frame processing and state machine
 function processFrame() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = frame.data;
 
@@ -586,7 +581,7 @@ function processFrame() {
   if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
 
-  // compute camZ and cam X,Y as before
+  // cam Z, X, Y calculations (kept)
   let camZ_mm = NaN;
   if (calibration && origin && calibration.lockedScalePxPerMm) {
     if (origin && lastDetectedPoints.bluePt) {
@@ -619,7 +614,6 @@ function processFrame() {
     ySpan.textContent = camY_mm.toFixed(2);
   } else { xSpan.textContent="--"; ySpan.textContent="--"; }
 
-  // pose transform (kept)
   if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
     const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
     if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
@@ -631,14 +625,12 @@ function processFrame() {
     } else lastTransformedMatrix = null;
   } else lastTransformedMatrix = null;
 
-  // --- HANDLE point state machine transitions based on detection
+  // --- State machine for pink point (kept behavior)
   const pinkDetected = !!(lastDetectedPoints && lastDetectedPoints.redPt);
-
   if (pinkState === PINK_STATE.IDLE) {
     if (pinkDetected) {
       pinkStableCounter = 1;
-      setPinkState(PINK_STATE.ARMED); // go to ARMED as soon as detection starts but require stability to progress
-      // Keep ARMED until stable frames reached
+      setPinkState(PINK_STATE.ARMED);
     } else {
       pinkStableCounter = 0;
     }
@@ -646,9 +638,7 @@ function processFrame() {
     if (pinkDetected) {
       pinkStableCounter++;
       if (pinkStableCounter >= STABLE_FRAMES_FOR_ARM) {
-        // lock pixel and start capturing
         pinkLockedPixel = { x: lastDetectedPoints.redPt.x, y: lastDetectedPoints.redPt.y };
-        // initialize per-point structure in calibration.currentPoint
         if (calibration) {
           calibration.currentPoint = {
             lockedPixel: { ...pinkLockedPixel },
@@ -662,34 +652,28 @@ function processFrame() {
         setPinkState(PINK_STATE.CAPTURING);
       }
     } else {
-      // lost detection before stable -> back to IDLE
       pinkStableCounter = 0;
       setPinkState(PINK_STATE.IDLE);
     }
   } else if (pinkState === PINK_STATE.CAPTURING) {
     if (!pinkDetected) {
-      // point disappeared mid-capture: reset state
       pinkStableCounter = 0;
       pinkLockedPixel = null;
       if (calibration && calibration.currentPoint) calibration.currentPoint = null;
       setPinkState(PINK_STATE.IDLE);
     }
-    // else remain capturing and allow generating rays below
   } else if (pinkState === PINK_STATE.TRIANGULATING) {
-    // we are performing triangulation instantly when transition happens (handled below), after triangulate -> LOCKED
-    // keep detection; if pink disappears we will reset once LOCKED ended by disappearance
+    // handled during triangulation
   } else if (pinkState === PINK_STATE.LOCKED) {
     if (!pinkDetected) {
-      // reset for next cycle
       pinkStableCounter = 0;
       pinkLockedPixel = null;
       if (calibration && calibration.currentPoint) calibration.currentPoint = null;
       setPinkState(PINK_STATE.IDLE);
     }
-    // else remain LOCKED ignoring new rays
   }
 
-  // --- RECORD frame data (as before)
+  // --- record frame and (if capturing) generate ray (kept behavior) but now store pixel in registeredRays
   if (isRecordingCalibration) {
     const ts = new Date().toISOString();
     const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
@@ -707,12 +691,11 @@ function processFrame() {
     };
     calibrationFrames.push(rec);
 
-    // If we're in CAPTURING, attempt to produce up to one ray this frame for the current point
     if (pinkState === PINK_STATE.CAPTURING && lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
-      // Build ray using pinhole
       const px = lastDetectedPoints.redPt.x;
       const py = lastDetectedPoints.redPt.y;
       const cx = canvas.width / 2, cy = canvas.height / 2;
+
       let f_px = Math.max(canvas.width, canvas.height);
       try {
         if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
@@ -722,6 +705,7 @@ function processFrame() {
           }
         }
       } catch (e) { f_px = Math.max(canvas.width, canvas.height); }
+
       const x_norm = (px - cx) / f_px;
       const y_norm = (py - cy) / f_px;
       let dirCam = [x_norm, y_norm, 1.0];
@@ -735,19 +719,19 @@ function processFrame() {
       const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
         ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))] : null;
 
-      // add to global rays list (keeps history)
       const rayEntry = {
         timestamp: ts,
         origin: originWorld,
         dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))],
-        dir_rotated: null, // will be filled if basis available
-        accepted: false
+        dir_rotated: null,
+        accepted: false,
+        pixel: { x: px, y: py } // store image pixel for this ray (used to display triangulated marker)
       };
+
       calibration.rays.push(rayEntry);
       raysCountSpan.textContent = String(calibration.rays.length);
       pinkDirectedCountSpan.textContent = String(calibration.rays.length);
 
-      // rotate to fixed basis (if available)
       if (calibration && calibration.basisMatrixT) {
         const dirRot = mul3x3Vec(calibration.basisMatrixT, dirWorld);
         const dirRotNorm = norm(dirRot);
@@ -755,13 +739,13 @@ function processFrame() {
         rotatedCountSpan.textContent = String(calibration.rays.filter(r => r.dir_rotated !== null).length);
       }
 
-      // ACCEPTANCE logic for capturing ray: must respect min camera move and angle against last accepted within this point
+      // acceptance per current point
       let accepted = false;
       const minMove = (calibration && calibration.minCameraMoveMm != null) ? calibration.minCameraMoveMm : DEFAULT_MIN_CAMERA_MOVE_MM;
       const cp = calibration.currentPoint;
       if (originWorld && cp) {
         if (cp.lastAcceptedPos == null) {
-          accepted = true; // first accepted in this point cycle
+          accepted = true;
         } else {
           const dx = originWorld[0] - cp.lastAcceptedPos[0];
           const dy = originWorld[1] - cp.lastAcceptedPos[1];
@@ -791,13 +775,15 @@ function processFrame() {
         cp.acceptedRays.push(rayEntry);
         cp.lastAcceptedPos = originWorld ? [originWorld[0], originWorld[1], originWorld[2]] : null;
         cp.lastAcceptedDir = [dirWorld[0], dirWorld[1], dirWorld[2]];
-        // also append to cp.registeredRays (world-fixed rays)
+        // append registered ray in world-fixed coordinates AND include pixel
         if (rayEntry.dir_rotated && originWorld) {
-          cp.registeredRays.push({
+          const reg = {
             origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
-            direction: { dx: rayEntry.dir_rotated[0], dy: rayEntry.dir_rotated[1], dz: rayEntry.dir_rotated[2] }
-          });
-          calibration.registeredRays.push(cp.registeredRays[cp.registeredRays.length-1]); // global list too
+            direction: { dx: rayEntry.dir_rotated[0], dy: rayEntry.dir_rotated[1], dz: rayEntry.dir_rotated[2] },
+            pixel: { x: rayEntry.pixel.x, y: rayEntry.pixel.y }
+          };
+          cp.registeredRays.push(reg);
+          calibration.registeredRays.push(reg);
           registered3DCountSpan.textContent = String((calibration.registeredRays || []).length);
         }
         acceptedCountSpan.textContent = String((cp.acceptedRays || []).length);
@@ -805,31 +791,135 @@ function processFrame() {
         rayEntry.accepted = false;
       }
 
-      // At most one ray registered per frame (we already only append one)
-      // Check if we reached enough registered rays for triangulation for this point
+      // at most one ray per frame already ensured
+
+      // if enough registered rays for this point, triangulate (and then draw)
       if (cp && cp.registeredRays.length >= calibration.numRaysNeeded && !cp.triangulated) {
         setPinkState(PINK_STATE.TRIANGULATING);
-        // use last N rays of cp.registeredRays to triangulate
         const subset = cp.registeredRays.slice(-calibration.numRaysNeeded);
-        const X = triangulateFromRays(subset);
+        const raysForTri = subset.map(r => ({
+          origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
+          direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
+        }));
+        const X = triangulateFromRays(raysForTri);
         if (X) {
-          calibration.triangulatedPoints.push({ x: X.x, y: X.y, z: X.z, usedRays: calibration.numRaysNeeded });
+          // compute average pixel position from used rays to place 2D marker
+          let avgX = 0, avgY = 0;
+          for (const r of subset) { avgX += (r.pixel && r.pixel.x) || 0; avgY += (r.pixel && r.pixel.y) || 0; }
+          avgX /= subset.length; avgY /= subset.length;
+          // store triangulated point with pixel2D for overlay plotting
+          const tri = { x: X.x, y: X.y, z: X.z, pixel: { x: avgX, y: avgY } };
+          calibration.triangulatedPoints.push(tri);
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
           cp.triangulated = true;
+          // draw immediate marker (persistence will be handled each frame)
+          drawTriangulatedMarkers();
+          // update mini cloud
+          drawMiniCloud();
           // move to LOCKED
           setPinkState(PINK_STATE.LOCKED);
         } else {
-          // triangulation numerically failed; stay in CAPTURING to collect more rays
+          // failed numerically: remain in CAPTURING
           setPinkState(PINK_STATE.CAPTURING);
         }
       }
     } // end CAPTURING ray generation
   } // end isRecordingCalibration
 
+  // draw persisted triangulated markers each frame (rose dark)
+  drawTriangulatedMarkers();
+
+  // update mini cloud continuously (cheap)
+  drawMiniCloud();
+
   requestAnimationFrame(processFrame);
 }
 
-// drawing helpers
+// draw triangulated points on overlay in dark pink and keep them persistent
+function drawTriangulatedMarkers() {
+  if (!calibration || !calibration.triangulatedPoints) return;
+  for (const p of calibration.triangulatedPoints) {
+    if (p.pixel && Number.isFinite(p.pixel.x) && Number.isFinite(p.pixel.y)) {
+      // dark pink marker
+      ctx.beginPath();
+      ctx.fillStyle = "#8B1455"; // dark pink / magenta
+      ctx.strokeStyle = "#FF99C8";
+      ctx.lineWidth = 1;
+      ctx.arc(p.pixel.x, p.pixel.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+}
+
+// mini cloud drawing: map world X,Y -> mini canvas
+function drawMiniCloud() {
+  // clear
+  miniCtx.clearRect(0,0,miniCanvas.width,miniCanvas.height);
+  // background
+  miniCtx.fillStyle = "rgba(0,0,0,0.02)";
+  miniCtx.fillRect(0,0,miniCanvas.width,miniCanvas.height);
+
+  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
+    // show placeholder text
+    miniCtx.fillStyle = "rgba(255,255,255,0.4)";
+    miniCtx.font = "12px system-ui, Arial";
+    miniCtx.fillText("Nuvem de pontos (vazia)", 10, 18);
+    return;
+  }
+
+  // compute bounds on X and Y (world coords)
+  const pts = calibration.triangulatedPoints;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  // if degenerate, expand small
+  if (minX === Infinity) return;
+  if (Math.abs(maxX - minX) < 1e-6) { minX -= 1; maxX += 1; }
+  if (Math.abs(maxY - minY) < 1e-6) { minY -= 1; maxY += 1; }
+
+  const pad = 6;
+  const w = miniCanvas.width - pad*2;
+  const h = miniCanvas.height - pad*2;
+
+  // draw axes background grid
+  miniCtx.strokeStyle = "rgba(255,255,255,0.06)";
+  miniCtx.lineWidth = 1;
+  miniCtx.beginPath();
+  for (let i=1;i<=3;i++) {
+    const gx = pad + (w/4)*i;
+    miniCtx.moveTo(gx, pad);
+    miniCtx.lineTo(gx, pad + h);
+    const gy = pad + (h/4)*i;
+    miniCtx.moveTo(pad, gy);
+    miniCtx.lineTo(pad + w, gy);
+  }
+  miniCtx.stroke();
+
+  // draw points
+  for (const p of pts) {
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    const sx = pad + ((p.x - minX) / (maxX - minX)) * w;
+    // invert Y for display (optional) — choose mapping so higher world Y appears upward in mini display
+    const sy = pad + (1 - (p.y - minY) / (maxY - minY)) * h;
+    miniCtx.fillStyle = "#8B1455"; // same dark pink
+    miniCtx.beginPath();
+    miniCtx.arc(sx, sy, 3, 0, Math.PI*2);
+    miniCtx.fill();
+  }
+
+  // draw border
+  miniCtx.strokeStyle = "rgba(255,255,255,0.12)";
+  miniCtx.lineWidth = 1;
+  miniCtx.strokeRect(0.5,0.5,miniCanvas.width-1,miniCanvas.height-1);
+}
+
+// drawing helpers (kept)
 function drawPoint(x, y, color) {
   ctx.fillStyle = color;
   ctx.beginPath();
