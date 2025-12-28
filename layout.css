@@ -72,17 +72,20 @@ button {
   box-sizing: border-box;
 }
 
-#zxyInfo div { margin: 2px 0; }
+#zxyInfo div { margin: 4px 0; }
+
+/* highlight for state */
+#pinkState {
+  font-weight: 700;
+  color: #ffd54f;
+}
 
 /* viewer */
 #viewer {
   position: relative;
   width: 100%;
-  max-width: 960px;
-  margin-top: 8px;
 }
 
-/* video and overlay */
 video,
 canvas {
   width: 100%;
@@ -91,27 +94,8 @@ canvas {
   display: none;
 }
 
-#overlay {
+canvas {
   position: absolute;
   top: 0;
   left: 0;
-  pointer-events: none;
 }
-
-/* MINI CLOUD canvas — canto inferior direito do viewer */
-#miniCloud {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  width: 220px;    /* CSS pixel size */
-  height: 160px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.6);
-  border-radius: 6px;
-  background: rgba(0,0,0,0.6);
-  border: 1px solid rgba(255,255,255,0.06);
-  z-index: 30;
-  pointer-events: none; /* não interativo */
-}
-
-/* reduz a nitidez de porta-vozes autoresizing */
-#miniCloud[hidden] { display: none; }
