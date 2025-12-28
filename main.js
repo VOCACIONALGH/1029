@@ -19,8 +19,8 @@ const greenSlider = document.getElementById('greenSlider');
 const redSlider   = document.getElementById('redSlider');
 // NOVO: slider para estabilidade
 const stabilitySlider = document.getElementById('stabilitySlider');
-// NOVO: slider para margem de borda ignorada
-const edgeMarginSlider = document.getElementById('edgeMarginSlider');
+// NOVO: slider para margem ignorada
+const marginSlider = document.getElementById('marginSlider');
 
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
@@ -29,8 +29,8 @@ const greenValue = document.getElementById('greenValue');
 const redValue   = document.getElementById('redValue');
 // NOVO: display do valor de estabilidade
 const stabilityValue = document.getElementById('stabilityValue');
-// NOVO: display do valor da margem de borda
-const edgeMarginValue = document.getElementById('edgeMarginValue');
+// NOVO: display do valor da margem
+const marginValue = document.getElementById('marginValue');
 
 const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
@@ -65,9 +65,9 @@ let redThreshold   = Number(redSlider.value);
 let stabilityFrames = Number(stabilitySlider.value);
 stabilityValue.textContent = String(stabilityFrames);
 
-// NOVO: margem em pixels ignorada nas 4 bordas
-let edgeMargin = Number(edgeMarginSlider.value);
-edgeMarginValue.textContent = String(edgeMargin);
+// NOVO: margem ignorada (percentual do menor lado)
+let marginPercent = Number(marginSlider.value);
+marginValue.textContent = `${marginPercent}%`;
 
 // Históricos para média (origem = preto/orange, azul, verde). Não incluir ponto rosa.
 const blackHistory = []; // origin history
@@ -105,10 +105,10 @@ stabilitySlider.addEventListener('input', () => {
   while (blueHistory.length > stabilityFrames) blueHistory.shift();
   while (greenHistory.length > stabilityFrames) greenHistory.shift();
 });
-// NOVO: listener do slider de margem de borda
-edgeMarginSlider.addEventListener('input', () => {
-  edgeMargin = Number(edgeMarginSlider.value);
-  edgeMarginValue.textContent = String(edgeMargin);
+// NOVO: listener do slider de margem
+marginSlider.addEventListener('input', () => {
+  marginPercent = Number(marginSlider.value);
+  marginValue.textContent = `${marginPercent}%`;
 });
 
 let orientationListenerAdded = false;
@@ -655,7 +655,7 @@ calibrateBtn.addEventListener('click', () => {
 });
 
 // processFrame (mantido) — agora com suavização (média móvel) para origem/azul/verde (sem incluir ponto rosa)
-// e com margem de borda ignorada: pixels nas 4 bordas dentro de edgeMargin não serão processados nem contados.
+// E também ignora pixels nas bordas conforme marginPercent e pinta a área sombreada.
 function processFrame() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -663,13 +663,18 @@ function processFrame() {
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = frame.data;
 
+  // compute margin in pixels (uniform around): percentage of the smaller canvas dimension
+  const minDim = Math.min(canvas.width, canvas.height);
+  const marginPx = Math.round((marginPercent / 100) * minDim);
+  const leftMargin = marginPx;
+  const rightMargin = canvas.width - marginPx;
+  const topMargin = marginPx;
+  const bottomMargin = canvas.height - marginPx;
+
   let sumBlackX = 0, sumBlackY = 0, countBlack = 0;
   let sumBlueX  = 0, sumBlueY  = 0, countBlue  = 0;
   let sumGreenX = 0, sumGreenY = 0, countGreen = 0;
   let sumRedX   = 0, sumRedY   = 0, countRed   = 0;
-
-  // local copy of margin for this frame (allow slider changes on the fly)
-  const margin = Math.max(0, Math.floor(edgeMargin));
 
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i+1], b = data[i+2];
@@ -677,9 +682,9 @@ function processFrame() {
     const x = p % canvas.width;
     const y = Math.floor(p / canvas.width);
 
-    // IGNORA pixels dentro da margem das bordas
-    if (x < margin || x >= canvas.width - margin || y < margin || y >= canvas.height - margin) {
-      continue;
+    // IGNORE border pixels
+    if (x < leftMargin || x >= rightMargin || y < topMargin || y >= bottomMargin) {
+      continue; // leave original pixel values (do not modify), and do not include in detection counts
     }
 
     if (r < blackThreshold && g < blackThreshold && b < blackThreshold) {
@@ -698,6 +703,21 @@ function processFrame() {
   }
 
   ctx.putImageData(frame, 0, 0);
+
+  // draw shaded margins (so user sees ignored borders) — painted over the image but under markers
+  if (marginPx > 0) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    // top
+    if (topMargin > 0) ctx.fillRect(0, 0, canvas.width, topMargin);
+    // bottom
+    if (bottomMargin < canvas.height) ctx.fillRect(0, bottomMargin, canvas.width, canvas.height - bottomMargin);
+    // left
+    if (leftMargin > 0) ctx.fillRect(0, topMargin, leftMargin, bottomMargin - topMargin);
+    // right
+    if (rightMargin < canvas.width) ctx.fillRect(rightMargin, topMargin, canvas.width - rightMargin, bottomMargin - topMargin);
+    ctx.restore();
+  }
 
   // raw centroids for this frame
   const rawOrigin = (countBlack) ? { x: sumBlackX / countBlack, y: sumBlackY / countBlack } : null;
@@ -721,7 +741,7 @@ function processFrame() {
   let greenPt = greenSmoothed ? { x: greenSmoothed.x, y: greenSmoothed.y } : null;
   let redPt = rawRed ? { x: rawRed.x, y: rawRed.y, count: rawRed.count } : null;
 
-  // draw on canvas: origin/blue/green from smoothed positions
+  // draw on canvas: origin/blue/green from smoothed positions (markers drawn AFTER shaded margins so they remain visible)
   if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
   if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
   if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
