@@ -1,5 +1,4 @@
 // main.js — inclui botão Download para baixar a nuvem de pontos triangulada (arquivo .json)
-// e adiciona mecanismo "Salvar posição" para vermelho/azul/verde com raio máximo aceito.
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const downloadBtn = document.getElementById('downloadBtn'); // novo botão
@@ -54,18 +53,6 @@ const realtimeQualityBlock = document.getElementById('realtimeQuality');
 const realtimeQualityLabel = document.getElementById('realtimeQualityLabel');
 const realtimeQualityBarFill = document.getElementById('realtimeQualityBarFill');
 
-// save position UI elements (NOVO)
-const saveRedBtn = document.getElementById('saveRedBtn');
-const saveBlueBtn = document.getElementById('saveBlueBtn');
-const saveGreenBtn = document.getElementById('saveGreenBtn');
-const savedRedStatus = document.getElementById('savedRedStatus');
-const savedBlueStatus = document.getElementById('savedBlueStatus');
-const savedGreenStatus = document.getElementById('savedGreenStatus');
-const maxRadiusSlider = document.getElementById('maxRadiusSlider');
-const maxRadiusValue = document.getElementById('maxRadiusValue');
-
-maxRadiusValue.textContent = maxRadiusSlider.value;
-
 // elementos da nova UI de distância entre pares
 const pairInfoSpan = document.getElementById('pairInfo');
 const dxValSpan = document.getElementById('dxVal');
@@ -88,6 +75,7 @@ let greenThreshold = Number(greenSlider.value);
 let redThreshold   = Number(redSlider.value);
 
 // NOVO: estabilidade (n últimas posições para média)
+// agora também controla o número de frames necessários para considerar o ponto rosa estável
 let stabilityFrames = Number(stabilitySlider.value);
 stabilityValue.textContent = String(stabilityFrames);
 
@@ -99,19 +87,6 @@ marginValue.textContent = `${marginPercent}%`;
 const blackHistory = []; // origin history
 const blueHistory = [];  // +X
 const greenHistory = []; // +Y
-
-// SAVED positions (pixel coords) — when user clicks "Salvar posição"
-let savedRedPos = null;    // { x, y } in pixels (canvas coords)
-let savedBluePos = null;
-let savedGreenPos = null;
-
-// max accept radius in mm (user-configurable); fallback to pixels if scale not available
-let maxAcceptRadiusMm = Number(maxRadiusSlider.value);
-
-maxRadiusSlider.addEventListener('input', () => {
-  maxAcceptRadiusMm = Number(maxRadiusSlider.value);
-  maxRadiusValue.textContent = maxAcceptRadiusMm;
-});
 
 blackValue.textContent = blackThreshold;
 blueValue.textContent  = blueThreshold;
@@ -187,22 +162,13 @@ function averageHistory(histArr) {
   let sx = 0, sy = 0;
   for (const p of histArr) { sx += p.x; sy += p.y; }
   return { x: sx / histArr.length, y: sy / histArr.length };
-}
-
-// helper: compute pixel threshold from mm using current scale (px/mm) or fallback to mm interpreted as pixels
-function radiusMmToPixels(mm) {
-  const pxPerMm = currentScalePxPerMm || lockedScalePxPerMm || null;
-  if (pxPerMm && isFinite(pxPerMm) && pxPerMm > 1e-6) {
-    return mm * pxPerMm;
-  }
-  // fallback: treat mm value as pixels when scale unknown
-  return mm;
-}
-
-// --- Quality computation helpers (kept from prior) ---
+}// --- Quality computation helper (kept) ---
+// subset: array of registered rays { origin:{x,y,z}, direction:{dx,dy,dz}, pixel:{x,y} }
+// X: triangulated point {x,y,z}
 function computePointQuality(subset, X) {
   if (!subset || subset.length === 0 || !X) return null;
   const n = subset.length;
+  // normalize directions and compute distances from X to each ray
   const dists = [];
   const dirs = [];
   const origins = [];
@@ -214,6 +180,7 @@ function computePointQuality(subset, X) {
     let dn = ld > 1e-9 ? [d[0]/ld, d[1]/ld, d[2]/ld] : [0,0,0];
     dirs.push(dn);
     origins.push(o);
+    // distance point-to-line: || ( (X - o) x dn ) ||
     const vx = [X.x - o[0], X.y - o[1], X.z - o[2]];
     const cx = [
       vx[1]*dn[2] - vx[2]*dn[1],
@@ -223,7 +190,10 @@ function computePointQuality(subset, X) {
     const dist = Math.hypot(cx[0], cx[1], cx[2]);
     dists.push(dist);
   }
+  // mean distance
   const meanDist = dists.reduce((a,b)=>a+b,0)/dists.length;
+
+  // pairwise angles (in degrees) - find maximum angle between any pair
   let maxAngleRad = 0;
   for (let i=0;i<n;i++) {
     for (let j=i+1;j<n;j++) {
@@ -234,16 +204,21 @@ function computePointQuality(subset, X) {
     }
   }
   const maxAngleDeg = maxAngleRad * 180 / Math.PI;
+
+  // spread of origins: compute centroid and average distance to centroid
   let cx=0, cy=0, cz=0;
   for (const o of origins) { cx += o[0]; cy += o[1]; cz += o[2]; }
   cx /= origins.length; cy /= origins.length; cz /= origins.length;
   let sumd=0;
   for (const o of origins) sumd += Math.hypot(o[0]-cx, o[1]-cy, o[2]-cz);
   const spread = sumd / origins.length;
+
+  // Decide level (thresholds chosen conservatively)
   let level = "Baixa";
   if (n >= 4 && meanDist <= 2.0 && maxAngleDeg >= 20 && spread >= 12) level = "Alta";
   else if (n >= 3 && meanDist <= 5.0 && maxAngleDeg >= 8 && spread >= 6) level = "Média";
   else level = "Baixa";
+
   return {
     level,
     meanDist: Number(meanDist.toFixed(4)),
@@ -253,8 +228,12 @@ function computePointQuality(subset, X) {
   };
 }
 
+// --- helper that estimates quality from rays even without triangulated X ---
+// tries triangulation first; if fails, uses heuristic from directions/origins
 function estimateQualityFromRays(rays) {
   if (!rays || rays.length === 0) return { level: "Insuficiente", score: 0, details: null };
+
+  // try triangulation
   try {
     const raysForTri = rays.map(r => ({
       origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
@@ -264,15 +243,21 @@ function estimateQualityFromRays(rays) {
     if (X) {
       const q = computePointQuality(raysForTri, X);
       if (q) {
-        const nScore = Math.min(1, q.numRays / 6);
+        // compute a score 0..100 combining numRays, angle and spread and inverse meanDist
+        const nScore = Math.min(1, q.numRays / 6); // upto 6 rays
         const angleScore = Math.min(1, q.maxAngleDeg / 60);
         const spreadScore = Math.min(1, q.spread / 30);
-        const distScore = Math.max(0, 1 - (q.meanDist / 10));
+        const distScore = Math.max(0, 1 - (q.meanDist / 10)); // best when <=0
         const score = Math.round(100 * (0.25*nScore + 0.3*angleScore + 0.25*spreadScore + 0.2*distScore));
         return { level: q.level, score, details: q };
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    // ignore
+  }
+
+  // fallback heuristic (no triangulation or X not available)
+  // compute number of rays, max pair angle between directions and spread of origins
   const n = rays.length;
   const dirs = [];
   const origins = [];
@@ -282,6 +267,7 @@ function estimateQualityFromRays(rays) {
     dirs.push(ld > 1e-9 ? [d[0]/ld, d[1]/ld, d[2]/ld] : [0,0,0]);
     origins.push([r.origin.x, r.origin.y, r.origin.z]);
   }
+  // max angle
   let maxAngRad = 0;
   for (let i=0;i<dirs.length;i++) for (let j=i+1;j<dirs.length;j++) {
     const a = dirs[i], b = dirs[j];
@@ -290,20 +276,26 @@ function estimateQualityFromRays(rays) {
     if (ang > maxAngRad) maxAngRad = ang;
   }
   const maxAngleDeg = maxAngRad * 180 / Math.PI;
+  // spread
   let cx=0, cy=0, cz=0;
   for (const o of origins) { cx += o[0]; cy += o[1]; cz += o[2]; }
   cx /= origins.length; cy /= origins.length; cz /= origins.length;
   let sumd = 0;
   for (const o of origins) sumd += Math.hypot(o[0]-cx, o[1]-cy, o[2]-cz);
   const spread = sumd / origins.length;
+
+  // decide level heuristically (conservative without meanDist)
   let level = "Baixa";
   if (n >= 4 && maxAngleDeg >= 20 && spread >= 12) level = "Alta";
   else if (n >= 3 && maxAngleDeg >= 8 && spread >= 6) level = "Média";
   else level = "Baixa";
+
+  // score composition
   const nScore = Math.min(1, n / 6);
   const angleScore = Math.min(1, maxAngleDeg / 60);
   const spreadScore = Math.min(1, spread / 30);
   const score = Math.round(100 * (0.5*nScore + 0.35*angleScore + 0.15*spreadScore));
+
   return { level, score, details: { numRays: n, maxAngleDeg: Number(maxAngleDeg.toFixed(2)), spread: Number(spread.toFixed(4)) } };
 }
 
@@ -442,9 +434,7 @@ function invert3x3(M) {
     [B*invDet, E*invDet, H*invDet],
     [C*invDet, F*invDet, I*invDet]
   ];
-}
-
-function triangulateFromRays(rays) {
+}function triangulateFromRays(rays) {
   if (!rays || rays.length === 0) return null;
   let A = [[0,0,0],[0,0,0],[0,0,0]];
   let b = [0,0,0];
@@ -481,7 +471,6 @@ function triangulateFromRays(rays) {
 const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
 const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
-const STABLE_FRAMES_FOR_ARM = 3;
 
 let currentScalePxPerMm = null;
 let scaleLocked = false;
@@ -507,10 +496,12 @@ let pinkLockedPixel = null;
 function setPinkState(s) {
   pinkState = s;
   pinkStateSpan.textContent = s;
+  // show/hide realtime quality block depending on state
   if (s === PINK_STATE.CAPTURING) {
     realtimeQualityBlock.style.display = "block";
   } else {
     realtimeQualityBlock.style.display = "none";
+    // reset bar
     realtimeQualityBarFill.style.width = "0%";
     realtimeQualityBarFill.classList.remove('q-low','q-medium','q-high');
     realtimeQualityBarFill.classList.add('q-none');
@@ -577,32 +568,6 @@ function updatePairDistanceDisplay() {
   }
 }
 
-// Save position handlers
-saveRedBtn.addEventListener('click', () => {
-  if (!lastDetectedPoints || !lastDetectedPoints.redPt) {
-    alert("Nenhum ponto vermelho detectado para salvar agora.");
-    return;
-  }
-  savedRedPos = { x: lastDetectedPoints.redPt.x, y: lastDetectedPoints.redPt.y };
-  savedRedStatus.textContent = `Salvo (x:${savedRedPos.x.toFixed(1)}, y:${savedRedPos.y.toFixed(1)})`;
-});
-saveBlueBtn.addEventListener('click', () => {
-  if (!lastDetectedPoints || !lastDetectedPoints.bluePt) {
-    alert("Nenhum ponto azul detectado (suavizado) para salvar agora.");
-    return;
-  }
-  savedBluePos = { x: lastDetectedPoints.bluePt.x, y: lastDetectedPoints.bluePt.y };
-  savedBlueStatus.textContent = `Salvo (x:${savedBluePos.x.toFixed(1)}, y:${savedBluePos.y.toFixed(1)})`;
-});
-saveGreenBtn.addEventListener('click', () => {
-  if (!lastDetectedPoints || !lastDetectedPoints.greenPt) {
-    alert("Nenhum ponto verde detectado (suavizado) para salvar agora.");
-    return;
-  }
-  savedGreenPos = { x: lastDetectedPoints.greenPt.x, y: lastDetectedPoints.greenPt.y };
-  savedGreenStatus.textContent = `Salvo (x:${savedGreenPos.x.toFixed(1)}, y:${savedGreenPos.y.toFixed(1)})`;
-});
-
 // start camera
 scanBtn.addEventListener('click', async () => {
   try {
@@ -638,9 +603,7 @@ scanBtn.addEventListener('click', async () => {
   } catch (err) {
     alert("Não foi possível acessar a câmera traseira.");
   }
-});
-
-// Download button handler: baixa apenas a nuvem de pontos triangulados (JSON)
+}); // Download button handler: baixa apenas a nuvem de pontos triangulados (JSON)
 downloadBtn.addEventListener('click', () => {
   if (!calibration || !calibration.triangulatedPoints) {
     alert("Nenhum ponto triangulado disponível para download.");
@@ -656,12 +619,13 @@ downloadBtn.addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
-// calibrate button (mantido)
+// calibrate button: starts/stops calibration (kept), now shows/hides the Download button
 calibrateBtn.addEventListener('click', () => {
   if (isRecordingCalibration) {
-    // finalizar calibração
+    // finalizar calibração (mantida)
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
+    // monta json completo (mantido)
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
@@ -676,8 +640,11 @@ calibrateBtn.addEventListener('click', () => {
     a.download = fname;
     a.click();
     URL.revokeObjectURL(a.href);
+
+    // esconde botão Download ao finalizar calibração
     downloadBtn.style.display = "none";
 
+    // limpeza de buffers (mantida)
     calibrationFrames = [];
     if (calibration) {
       calibration.rays = [];
@@ -698,12 +665,14 @@ calibrateBtn.addEventListener('click', () => {
     pinkStableCounter = 0;
     pinkLockedPixel = null;
 
+    // limpa seleção mini-cloud
     clearMiniSelection();
 
     alert("Calibração finalizada. Arquivo .json gerado e download iniciado.");
     return;
   }
 
+  // iniciar calibração (mantida)
   if (!currentScalePxPerMm) {
     alert("Escala ainda não determinada — mostre os marcadores +X e +Y para que a escala seja calculada primeiro.");
     return;
@@ -857,9 +826,6 @@ function processFrame() {
   const topMargin = marginPx;
   const bottomMargin = canvas.height - marginPx;
 
-  // threshold in pixels for saved positions
-  const maxRadiusPx = radiusMmToPixels(maxAcceptRadiusMm);
-
   let sumBlackX = 0, sumBlackY = 0, countBlack = 0;
   let sumBlueX  = 0, sumBlueY  = 0, countBlue  = 0;
   let sumGreenX = 0, sumGreenY = 0, countGreen = 0;
@@ -873,69 +839,35 @@ function processFrame() {
 
     // IGNORE border pixels
     if (x < leftMargin || x >= rightMargin || y < topMargin || y >= bottomMargin) {
-      continue; // do not include in detection counts
+      continue; // leave original pixel values (do not modify), and do not include in detection counts
     }
 
-    // BLACK -> origin (smoothed) — apply savedBlue/Green/Red filtering only to their colors, but black remains unaffected.
     if (r < blackThreshold && g < blackThreshold && b < blackThreshold) {
       data[i]=255; data[i+1]=165; data[i+2]=0;
       sumBlackX += x; sumBlackY += y; countBlack++;
     } else if (b > blueThreshold && r < blueThreshold && g < blueThreshold) {
-      // blue pixel candidate — if savedBluePos exists, accept only if within radius
-      if (savedBluePos) {
-        const dx = x - savedBluePos.x;
-        const dy = y - savedBluePos.y;
-        if (Math.hypot(dx,dy) <= maxRadiusPx) {
-          data[i]=255; data[i+1]=255; data[i+2]=255;
-          sumBlueX += x; sumBlueY += y; countBlue++;
-        } else {
-          // ignore pixel (outside saved radius)
-        }
-      } else {
-        data[i]=255; data[i+1]=255; data[i+2]=255;
-        sumBlueX += x; sumBlueY += y; countBlue++;
-      }
+      data[i]=255; data[i+1]=255; data[i+2]=255;
+      sumBlueX += x; sumBlueY += y; countBlue++;
     } else if (g > greenThreshold && r < greenThreshold && b < greenThreshold) {
-      // green pixel candidate — apply savedGreenPos filter if present
-      if (savedGreenPos) {
-        const dx = x - savedGreenPos.x;
-        const dy = y - savedGreenPos.y;
-        if (Math.hypot(dx,dy) <= maxRadiusPx) {
-          data[i]=128; data[i+1]=0; data[i+2]=128;
-          sumGreenX += x; sumGreenY += y; countGreen++;
-        } else {
-          // ignore
-        }
-      } else {
-        data[i]=128; data[i+1]=0; data[i+2]=128;
-        sumGreenX += x; sumGreenY += y; countGreen++;
-      }
+      data[i]=128; data[i+1]=0; data[i+2]=128;
+      sumGreenX += x; sumGreenY += y; countGreen++;
     } else if (r > redThreshold && g < redThreshold && b < redThreshold) {
-      // red/pink candidate (unsmoothed) — apply savedRedPos filter if present
-      if (savedRedPos) {
-        const dx = x - savedRedPos.x;
-        const dy = y - savedRedPos.y;
-        if (Math.hypot(dx,dy) <= maxRadiusPx) {
-          // keep as red candidate
-          sumRedX += x; sumRedY += y; countRed++;
-        } else {
-          // ignore distant red
-        }
-      } else {
-        sumRedX += x; sumRedY += y; countRed++;
-      }
+      // usa o redThreshold configurado pelo usuário (ponto rosa continua sem suavização)
+      sumRedX += x; sumRedY += y; countRed++;
     }
   }
 
-  ctx.putImageData(frame, 0, 0);
-
-  // draw shaded margins (so user sees ignored borders) — painted over the image but under markers
+  ctx.putImageData(frame, 0, 0);// draw shaded margins (so user sees ignored borders) — painted over the image but under markers
   if (marginPx > 0) {
     ctx.save();
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    // top
     if (topMargin > 0) ctx.fillRect(0, 0, canvas.width, topMargin);
+    // bottom
     if (bottomMargin < canvas.height) ctx.fillRect(0, bottomMargin, canvas.width, canvas.height - bottomMargin);
+    // left
     if (leftMargin > 0) ctx.fillRect(0, topMargin, leftMargin, bottomMargin - topMargin);
+    // right
     if (rightMargin < canvas.width) ctx.fillRect(rightMargin, topMargin, canvas.width - rightMargin, bottomMargin - topMargin);
     ctx.restore();
   }
@@ -968,29 +900,6 @@ function processFrame() {
   if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
   if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
   if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
-
-  // if saved positions exist, draw small marker to show them
-  if (savedRedPos) {
-    ctx.beginPath();
-    ctx.strokeStyle = '#FF4444';
-    ctx.lineWidth = 1;
-    ctx.arc(savedRedPos.x, savedRedPos.y, 6, 0, Math.PI*2);
-    ctx.stroke();
-  }
-  if (savedBluePos) {
-    ctx.beginPath();
-    ctx.strokeStyle = '#66CCFF';
-    ctx.lineWidth = 1;
-    ctx.arc(savedBluePos.x, savedBluePos.y, 6, 0, Math.PI*2);
-    ctx.stroke();
-  }
-  if (savedGreenPos) {
-    ctx.beginPath();
-    ctx.strokeStyle = '#66FF66';
-    ctx.lineWidth = 1;
-    ctx.arc(savedGreenPos.x, savedGreenPos.y, 6, 0, Math.PI*2);
-    ctx.stroke();
-  }
 
   // pink/red point: keep previous behaviour (no smoothing; allow it to disappear/reappear)
   if (redPt) drawPoint(redPt.x, redPt.y, "#FF69B4");
@@ -1086,7 +995,8 @@ function processFrame() {
   } else if (pinkState === PINK_STATE.ARMED) {
     if (pinkDetected) {
       pinkStableCounter++;
-      if (pinkStableCounter >= STABLE_FRAMES_FOR_ARM) {
+      // usa stabilityFrames (configurado pelo slider) como limiar para considerar o ponto rosa 'estável'
+      if (pinkStableCounter >= stabilityFrames) {
         pinkLockedPixel = { x: lastDetectedPoints.redPt.x, y: lastDetectedPoints.redPt.y };
         if (calibration) {
           calibration.currentPoint = {
@@ -1120,9 +1030,7 @@ function processFrame() {
       if (calibration && calibration.currentPoint) calibration.currentPoint = null;
       setPinkState(PINK_STATE.IDLE);
     }
-  }
-
-  // update realtime quality indicator while CAPTURING
+  } // update realtime quality indicator while CAPTURING
   if (pinkState === PINK_STATE.CAPTURING && calibration && calibration.currentPoint) {
     const cp = calibration.currentPoint;
     const rays = cp.registeredRays || [];
@@ -1132,17 +1040,23 @@ function processFrame() {
       realtimeQualityBarFill.classList.remove('q-low','q-medium','q-high');
       realtimeQualityBarFill.classList.add('q-none');
     } else {
+      // estimate quality
       const est = estimateQualityFromRays(rays);
+      // update label
       realtimeQualityLabel.textContent = est.level === "Insuficiente" ? "Insuficiente" : est.level;
+      // set color class
       realtimeQualityBarFill.classList.remove('q-none','q-low','q-medium','q-high');
       if (est.level === "Alta") realtimeQualityBarFill.classList.add('q-high');
-      else if (est.level === "Média") realtimeQualityBarFill.classList.add('q-medium');
+      else if (est.level === "Média" || est.level === "Média".toLowerCase()) realtimeQualityBarFill.classList.add('q-medium');
       else realtimeQualityBarFill.classList.add('q-low');
+      // set width by score (0..100)
       const sc = Math.max(0, Math.min(100, (typeof est.score === 'number' ? est.score : 10)));
       realtimeQualityBarFill.style.width = `${sc}%`;
     }
     realtimeQualityBlock.style.display = "block";
   } else {
+    // hide handled in setPinkState, but ensure fill reset
+    // setPinkState will hide; keep safe fallback here
     if (realtimeQualityBlock.style.display !== "none" && pinkState !== PINK_STATE.CAPTURING) {
       realtimeQualityBlock.style.display = "none";
     }
@@ -1275,28 +1189,39 @@ function processFrame() {
         }));
         const X = triangulateFromRays(raysForTri);
         if (X) {
+          // average pixel for display
           let avgX = 0, avgY = 0;
           for (const r of subset) { avgX += (r.pixel && r.pixel.x) || 0; avgY += (r.pixel && r.pixel.y) || 0; }
           avgX /= subset.length; avgY /= subset.length;
           const tri = { x: X.x, y: X.y, z: X.z, pixel: { x: avgX, y: avgY } };
 
+          // --- NOVO: compute quality metrics for this triangulated point ---
           const quality = computePointQuality(raysForTri, tri);
           tri.quality = quality;
+          // store tri (with quality) in calibration
           calibration.triangulatedPoints.push(tri);
 
+          // update UI with quality message
           if (quality) {
             qualityBlock.style.display = "block";
             qualityNumRays.textContent = quality.numRays;
             qualityMeanDist.textContent = quality.meanDist;
             qualityMaxAngle.textContent = quality.maxAngleDeg;
             qualitySpread.textContent = quality.spread;
+
+            // set label and color class
             qualityLabel.textContent = quality.level;
             qualityLabel.classList.remove('quality-high','quality-medium','quality-low');
             if (quality.level === "Alta") qualityLabel.classList.add('quality-high');
             else if (quality.level === "Média") qualityLabel.classList.add('quality-medium');
             else qualityLabel.classList.add('quality-low');
+
+            // opcional: esconder mensagem após alguns segundos (8s)
             clearTimeout(qualityBlock._hideTO);
-            qualityBlock._hideTO = setTimeout(() => { qualityBlock.style.display = "none"; }, 8000);
+            qualityBlock._hideTO = setTimeout(() => {
+              // keep visible but fade out: simply hide
+              qualityBlock.style.display = "none";
+            }, 8000);
           }
 
           triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
@@ -1309,9 +1234,7 @@ function processFrame() {
         }
       }
     }
-  }
-
-  // draw persistent triangulated markers and mini cloud
+  } // draw persistent triangulated markers and mini cloud
   drawTriangulatedMarkers();
   drawMiniCloud();
 
@@ -1386,6 +1309,7 @@ function drawMiniCloud() {
     const sx = pad + ((p.x - minX) / (maxX - minX)) * w;
     const sy = pad + (1 - (p.y - minY) / (maxY - minY)) * h;
 
+    // if this point is selected, draw highlight larger
     const isSelected = selectedMiniIndices.indexOf(idx) !== -1;
     if (isSelected) {
       miniCtx.beginPath();
@@ -1433,11 +1357,13 @@ miniCanvas.addEventListener('click', (ev) => {
   if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) return;
 
   const rect = miniCanvas.getBoundingClientRect();
+  // account for CSS scaling
   const scaleX = miniCanvas.width / rect.width;
   const scaleY = miniCanvas.height / rect.height;
   const cx = (ev.clientX - rect.left) * scaleX;
   const cy = (ev.clientY - rect.top) * scaleY;
 
+  // same mapping used in drawMiniCloud
   const pts = calibration.triangulatedPoints;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of pts) {
@@ -1455,9 +1381,11 @@ miniCanvas.addEventListener('click', (ev) => {
   const w = miniCanvas.width - pad*2;
   const h = miniCanvas.height - pad*2;
 
+  // convert click position to world coords in same system used for plotting
   const worldX = minX + ((cx - pad) / w) * (maxX - minX);
   const worldY = minY + (1 - ( (cy - pad) / h )) * (maxY - minY);
 
+  // find nearest point index in XY plane
   let nearestIdx = -1;
   let bestDistSq = Infinity;
   for (let i=0;i<pts.length;i++) {
@@ -1474,28 +1402,33 @@ miniCanvas.addEventListener('click', (ev) => {
 
   if (nearestIdx === -1) return;
 
+  // threshold: if click is too far from nearest (in mini-canvas pixels), ignore
   const nearestP = pts[nearestIdx];
   const sx = pad + ((nearestP.x - minX) / (maxX - minX)) * w;
   const sy = pad + (1 - (nearestP.y - minY) / (maxY - minY)) * h;
   const dxPix = sx - cx;
   const dyPix = sy - cy;
   const distPix = Math.hypot(dxPix, dyPix);
-  const CLICK_THRESHOLD_PIX = 12;
+  const CLICK_THRESHOLD_PIX = 12; // pixels
   if (distPix > CLICK_THRESHOLD_PIX) {
+    // click not close enough to any point -> clear selection
     clearMiniSelection();
     drawMiniCloud();
     return;
   }
 
+  // selection logic:
   if (selectedMiniIndices.length === 0) {
     setMiniSelection(nearestIdx);
   } else if (selectedMiniIndices.length === 1) {
     if (selectedMiniIndices[0] === nearestIdx) {
+      // deselect
       clearMiniSelection();
     } else {
       setMiniSelection(selectedMiniIndices[0], nearestIdx);
     }
   } else {
+    // already had two -> start new selection with clicked
     setMiniSelection(nearestIdx);
   }
 
