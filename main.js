@@ -17,10 +17,13 @@ const blueSlider  = document.getElementById('blueSlider');
 const greenSlider = document.getElementById('greenSlider');
 // NOVO: slider para calibrar vermelho
 const redSlider   = document.getElementById('redSlider');
-// NOVO: slider para estabilidade
+// NOVO: slider para estabilidade (média móvel)
 const stabilitySlider = document.getElementById('stabilitySlider');
 // NOVO: slider para margem ignorada
 const marginSlider = document.getElementById('marginSlider');
+
+// NOVO: slider para estabilidade do ponto rosa
+const pinkStabilitySlider = document.getElementById('pinkStabilitySlider');
 
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
@@ -31,6 +34,8 @@ const redValue   = document.getElementById('redValue');
 const stabilityValue = document.getElementById('stabilityValue');
 // NOVO: display do valor da margem
 const marginValue = document.getElementById('marginValue');
+// NOVO: display do valor da estabilidade do ponto rosa
+const pinkStabilityValue = document.getElementById('pinkStabilityValue');
 
 const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
@@ -75,13 +80,16 @@ let greenThreshold = Number(greenSlider.value);
 let redThreshold   = Number(redSlider.value);
 
 // NOVO: estabilidade (n últimas posições para média)
-// agora também controla o número de frames necessários para considerar o ponto rosa estável
 let stabilityFrames = Number(stabilitySlider.value);
 stabilityValue.textContent = String(stabilityFrames);
 
 // NOVO: margem ignorada (percentual do menor lado)
 let marginPercent = Number(marginSlider.value);
 marginValue.textContent = `${marginPercent}%`;
+
+// NOVO: estabilidade do ponto rosa (frames necessários para considerar o ponto estável)
+let pinkStableFrames = Number(pinkStabilitySlider.value || 3);
+pinkStabilityValue.textContent = String(pinkStableFrames);
 
 // Históricos para média (origem = preto/orange, azul, verde). Não incluir ponto rosa.
 const blackHistory = []; // origin history
@@ -110,7 +118,7 @@ redSlider.addEventListener('input', () => {
   redThreshold = Number(redSlider.value);
   redValue.textContent = redThreshold;
 });
-// NOVO: listener do slider de estabilidade
+// NOVO: listener do slider de estabilidade (média móvel)
 stabilitySlider.addEventListener('input', () => {
   stabilityFrames = Number(stabilitySlider.value);
   stabilityValue.textContent = String(stabilityFrames);
@@ -123,6 +131,11 @@ stabilitySlider.addEventListener('input', () => {
 marginSlider.addEventListener('input', () => {
   marginPercent = Number(marginSlider.value);
   marginValue.textContent = `${marginPercent}%`;
+});
+// NOVO: listener do slider de estabilidade do ponto rosa
+pinkStabilitySlider.addEventListener('input', () => {
+  pinkStableFrames = Number(pinkStabilitySlider.value);
+  pinkStabilityValue.textContent = String(pinkStableFrames);
 });
 
 let orientationListenerAdded = false;
@@ -471,6 +484,8 @@ function invert3x3(M) {
 const DEFAULT_MIN_CAMERA_MOVE_MM = 5;
 const PARALLEL_ANGLE_DEG = 5;
 const PARALLEL_ANGLE_RAD = PARALLEL_ANGLE_DEG * Math.PI / 180;
+// const STABLE_FRAMES_FOR_ARM = 3; // mantido para compatibilidade, mas a lógica usa pinkStableFrames agora
+const STABLE_FRAMES_FOR_ARM = 3;
 
 let currentScalePxPerMm = null;
 let scaleLocked = false;
@@ -995,8 +1010,8 @@ function processFrame() {
   } else if (pinkState === PINK_STATE.ARMED) {
     if (pinkDetected) {
       pinkStableCounter++;
-      // usa stabilityFrames (configurado pelo slider) como limiar para considerar o ponto rosa 'estável'
-      if (pinkStableCounter >= stabilityFrames) {
+      // <-- aqui usa a configuração do usuário para estabilidade do ponto rosa -->
+      if (pinkStableCounter >= pinkStableFrames) {
         pinkLockedPixel = { x: lastDetectedPoints.redPt.x, y: lastDetectedPoints.redPt.y };
         if (calibration) {
           calibration.currentPoint = {
