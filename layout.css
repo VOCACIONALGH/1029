@@ -96,6 +96,17 @@ button {
 
 #pairDistance div { margin: 2px 0; }
 
+/* quality block */
+#qualityBlock { margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.04); }
+#qualityLabel {
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.quality-high { background: rgba(92, 184, 92, 0.15); color: #5cb85c; }
+.quality-medium { background: rgba(240, 173, 78, 0.12); color: #f0ad4e; }
+.quality-low { background: rgba(217, 83, 79, 0.12); color: #d9534f; }
+
 /* highlight for state */
 #pinkState {
   font-weight: 700;
