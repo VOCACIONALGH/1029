@@ -17,8 +17,9 @@ button {
   cursor: pointer;
 }
 
-#downloadBtn {
-  /* botão Download com aparência consistente */
+#downloadBtn,
+#downloadMeshBtn {
+  /* botões de download com aparência consistente */
   background: linear-gradient(#0b79d0, #0961a8);
   color: white;
   border: none;
@@ -26,7 +27,7 @@ button {
 }
 
 /* pequeno espaçamento caso apareça ao lado dos outros botões */
-#scanBtn, #calibrateBtn, #downloadBtn { vertical-align: middle; }
+#scanBtn, #calibrateBtn, #downloadBtn, #downloadMeshBtn { vertical-align: middle; }
 
 #calibration {
   margin-bottom: 10px;
