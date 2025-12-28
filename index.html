@@ -81,6 +81,14 @@
     <div>Pontos triangulados: <span id="triangulatedCount">0</span></div>
     <div>Estado ponto rosa: <span id="pinkState">IDLE</span></div>
 
+    <!-- Indicador de qualidade em tempo real (visível apenas em CAPTURING) -->
+    <div id="realtimeQuality" style="display:none; margin-top:6px;">
+      <div style="font-size:13px; margin-bottom:4px;">Qualidade (tempo real): <span id="realtimeQualityLabel">--</span></div>
+      <div class="realtime-quality-bar" aria-hidden="true">
+        <div id="realtimeQualityBarFill" class="q-fill q-none" style="width:0%"></div>
+      </div>
+    </div>
+
     <!-- Nova área: distância entre par selecionado (mini-cloud) -->
     <div id="pairDistance">
       <div><strong>Par selecionado:</strong> <span id="pairInfo">nenhum</span></div>
