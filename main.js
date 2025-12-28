@@ -18,11 +18,16 @@ const greenSlider = document.getElementById('greenSlider');
 // NOVO: slider para calibrar vermelho
 const redSlider   = document.getElementById('redSlider');
 
+// NOVO: slider para estabilidade
+const stabilitySlider = document.getElementById('stabilitySlider');
+
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
 const greenValue = document.getElementById('greenValue');
 // NOVO: display do valor do vermelho
 const redValue   = document.getElementById('redValue');
+// NOVO: display estabilidade
+const stabilityValue = document.getElementById('stabilityValue');
 
 const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
@@ -53,10 +58,14 @@ let greenThreshold = Number(greenSlider.value);
 // NOVO: threshold para vermelho
 let redThreshold   = Number(redSlider.value);
 
+// NOVO: estabilidade (número de frames a considerar para média móvel)
+let stabilityFrames = Math.max(1, Number(stabilitySlider.value));
+
 blackValue.textContent = blackThreshold;
 blueValue.textContent  = blueThreshold;
 greenValue.textContent = greenThreshold;
 redValue.textContent   = redThreshold;
+stabilityValue.textContent = stabilityFrames;
 
 blackSlider.addEventListener('input', () => {
   blackThreshold = Number(blackSlider.value);
@@ -74,6 +83,14 @@ greenSlider.addEventListener('input', () => {
 redSlider.addEventListener('input', () => {
   redThreshold = Number(redSlider.value);
   redValue.textContent = redThreshold;
+});
+// NOVO: listener do slider estabilidade
+stabilitySlider.addEventListener('input', () => {
+  const v = Math.max(1, parseInt(stabilitySlider.value, 10) || 1);
+  stabilityFrames = v;
+  stabilityValue.textContent = stabilityFrames;
+  // ajusta buffers de acordo com novo tamanho
+  trimAllBuffersTo(stabilityFrames);
 });
 
 let orientationListenerAdded = false;
@@ -304,63 +321,36 @@ function setPinkState(s) {
   pinkStateSpan.textContent = s;
 }
 
-// selection state for mini-cloud pair clicks
-let selectedMiniIndices = []; // up to 2 indices
+// --- NOVO: buffers de média móvel para estabilidade dos pontos ---
+// Cada buffer é um array de {x,y} (ou vazio). Mantemos buffers para:
+// black (origem), blue (+X), green (+Y) e red (ponto rosa).
+let bufBlack = [];
+let bufBlue = [];
+let bufGreen = [];
+let bufRed = [];
 
-function clearMiniSelection() {
-  selectedMiniIndices = [];
-  updatePairDistanceDisplay();
+function pushToBuf(buf, pt) {
+  if (!pt || typeof pt.x !== 'number' || typeof pt.y !== 'number') return;
+  buf.push({ x: pt.x, y: pt.y });
+  if (buf.length > stabilityFrames) buf.shift();
 }
-function setMiniSelection(firstIdx, secondIdx) {
-  selectedMiniIndices = [];
-  if (typeof firstIdx === 'number') selectedMiniIndices.push(firstIdx);
-  if (typeof secondIdx === 'number') selectedMiniIndices.push(secondIdx);
-  updatePairDistanceDisplay();
+function avgBuf(buf) {
+  if (!buf || buf.length === 0) return null;
+  let sx = 0, sy = 0;
+  for (const p of buf) { sx += p.x; sy += p.y; }
+  return { x: sx / buf.length, y: sy / buf.length };
 }
-
-function updatePairDistanceDisplay() {
-  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
-    pairInfoSpan.textContent = "nenhum";
-    dxValSpan.textContent = "--";
-    dyValSpan.textContent = "--";
-    dzValSpan.textContent = "--";
-    dMagValSpan.textContent = "--";
-    return;
+function trimBuf(buf, n) {
+  if (buf.length > n) {
+    // keep last n
+    buf.splice(0, buf.length - n);
   }
-  if (selectedMiniIndices.length === 0) {
-    pairInfoSpan.textContent = "nenhum";
-    dxValSpan.textContent = "--";
-    dyValSpan.textContent = "--";
-    dzValSpan.textContent = "--";
-    dMagValSpan.textContent = "--";
-  } else if (selectedMiniIndices.length === 1) {
-    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
-    pairInfoSpan.textContent = `1: idx ${selectedMiniIndices[0]}`;
-    dxValSpan.textContent = "--";
-    dyValSpan.textContent = "--";
-    dzValSpan.textContent = "--";
-    dMagValSpan.textContent = "--";
-  } else if (selectedMiniIndices.length === 2) {
-    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
-    const b = calibration.triangulatedPoints[selectedMiniIndices[1]];
-    if (!a || !b) {
-      pairInfoSpan.textContent = "nenhum";
-      dxValSpan.textContent = "--";
-      dyValSpan.textContent = "--";
-      dzValSpan.textContent = "--";
-      dMagValSpan.textContent = "--";
-      return;
-    }
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dz = b.z - a.z;
-    const mag = Math.hypot(dx, dy, dz);
-    pairInfoSpan.textContent = `idx ${selectedMiniIndices[0]} ↔ idx ${selectedMiniIndices[1]}`;
-    dxValSpan.textContent = dx.toFixed(4);
-    dyValSpan.textContent = dy.toFixed(4);
-    dzValSpan.textContent = dz.toFixed(4);
-    dMagValSpan.textContent = mag.toFixed(4);
-  }
+}
+function trimAllBuffersTo(n) {
+  trimBuf(bufBlack, n);
+  trimBuf(bufBlue, n);
+  trimBuf(bufGreen, n);
+  trimBuf(bufRed, n);
 }
 
 // start camera
@@ -600,7 +590,7 @@ calibrateBtn.addEventListener('click', () => {
   registered3DCountSpan.textContent = "0";
   triangulatedCountSpan.textContent = "0";
 
-  // limpa seleção mini-cloud ao iniciar uma nova calibração
+  // limpa seleção mini-cloud ao iniciar nova calibração
   clearMiniSelection();
 
   alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
@@ -640,15 +630,36 @@ function processFrame() {
     }
   }
 
+  // atualiza imagem processada no canvas
   ctx.putImageData(frame, 0, 0);
 
-  let origin = null, bluePt = null, greenPt = null, redPt = null;
-  if (countBlack) origin = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
-  if (countBlue)  bluePt = { x: sumBlueX / countBlue, y: sumBlueY / countBlue };
-  if (countGreen) greenPt = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
-  if (countRed)   redPt = { x: sumRedX / countRed, y: sumRedY / countRed, count: countRed };
+  // calculamos as posições detectadas neste frame (centróides)
+  let detectedBlack = null, detectedBlue = null, detectedGreen = null, detectedRed = null;
+  if (countBlack) detectedBlack = { x: sumBlackX / countBlack, y: sumBlackY / countBlack };
+  if (countBlue)  detectedBlue  = { x: sumBlueX / countBlue,  y: sumBlueY / countBlue };
+  if (countGreen) detectedGreen = { x: sumGreenX / countGreen, y: sumGreenY / countGreen };
+  if (countRed)   detectedRed   = { x: sumRedX / countRed,     y: sumRedY / countRed };
 
-  if (countRed) drawPoint(redPt.x, redPt.y, "#FF69B4");
+  // --- NOVO: empurra valores nos buffers de estabilidade somente quando detectados ---
+  if (detectedBlack) pushToBuf(bufBlack, detectedBlack);
+  if (detectedBlue)  pushToBuf(bufBlue, detectedBlue);
+  if (detectedGreen) pushToBuf(bufGreen, detectedGreen);
+  if (detectedRed)   pushToBuf(bufRed, detectedRed);
+
+  // calcula posições atuais como média dos buffers
+  const avgBlack = avgBuf(bufBlack);
+  const avgBlue  = avgBuf(bufBlue);
+  const avgGreen = avgBuf(bufGreen);
+  const avgRed   = avgBuf(bufRed);
+
+  // estas posições médias substituem as posições instantâneas para uso pelo resto do programa
+  let origin = avgBlack ? { x: avgBlack.x, y: avgBlack.y } : null;
+  let bluePt = avgBlue ? { x: avgBlue.x, y: avgBlue.y } : null;
+  let greenPt = avgGreen ? { x: avgGreen.x, y: avgGreen.y } : null;
+  let redPt = avgRed ? { x: avgRed.x, y: avgRed.y, count: bufRed.length } : null;
+
+  // desenha marcadores no overlay usando as posições médias (se houver)
+  if (redPt) drawPoint(redPt.x, redPt.y, "#FF69B4");
   lastDetectedPoints = { origin, bluePt, greenPt, redPt };
 
   // scale
@@ -1045,7 +1056,65 @@ function drawMiniCloud() {
   updatePairDistanceDisplay();
 }
 
-// enable clicking on mini canvas to select points (pair)
+// --- seleção/medição no mini canvas (mantido) ---
+let selectedMiniIndices = []; // up to 2 indices
+
+function clearMiniSelection() {
+  selectedMiniIndices = [];
+  updatePairDistanceDisplay();
+}
+function setMiniSelection(firstIdx, secondIdx) {
+  selectedMiniIndices = [];
+  if (typeof firstIdx === 'number') selectedMiniIndices.push(firstIdx);
+  if (typeof secondIdx === 'number') selectedMiniIndices.push(secondIdx);
+  updatePairDistanceDisplay();
+}
+
+function updatePairDistanceDisplay() {
+  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
+    pairInfoSpan.textContent = "nenhum";
+    dxValSpan.textContent = "--";
+    dyValSpan.textContent = "--";
+    dzValSpan.textContent = "--";
+    dMagValSpan.textContent = "--";
+    return;
+  }
+  if (selectedMiniIndices.length === 0) {
+    pairInfoSpan.textContent = "nenhum";
+    dxValSpan.textContent = "--";
+    dyValSpan.textContent = "--";
+    dzValSpan.textContent = "--";
+    dMagValSpan.textContent = "--";
+  } else if (selectedMiniIndices.length === 1) {
+    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
+    pairInfoSpan.textContent = `1: idx ${selectedMiniIndices[0]}`;
+    dxValSpan.textContent = "--";
+    dyValSpan.textContent = "--";
+    dzValSpan.textContent = "--";
+    dMagValSpan.textContent = "--";
+  } else if (selectedMiniIndices.length === 2) {
+    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
+    const b = calibration.triangulatedPoints[selectedMiniIndices[1]];
+    if (!a || !b) {
+      pairInfoSpan.textContent = "nenhum";
+      dxValSpan.textContent = "--";
+      dyValSpan.textContent = "--";
+      dzValSpan.textContent = "--";
+      dMagValSpan.textContent = "--";
+      return;
+    }
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dz = b.z - a.z;
+    const mag = Math.hypot(dx, dy, dz);
+    pairInfoSpan.textContent = `idx ${selectedMiniIndices[0]} ↔ idx ${selectedMiniIndices[1]}`;
+    dxValSpan.textContent = dx.toFixed(4);
+    dyValSpan.textContent = dy.toFixed(4);
+    dzValSpan.textContent = dz.toFixed(4);
+    dMagValSpan.textContent = mag.toFixed(4);
+  }
+}
+
 miniCanvas.addEventListener('click', (ev) => {
   if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) return;
 
