@@ -2,7 +2,7 @@
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const downloadBtn = document.getElementById('downloadBtn'); // novo botão
-const confirmPointBtn = document.getElementById('confirmPointBtn'); // novo botão confirmar ponto
+const confirmBtn = document.getElementById('confirmPointBtn'); // novo botão Confirmar Ponto
 const video = document.getElementById('camera');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
@@ -18,10 +18,13 @@ const blueSlider  = document.getElementById('blueSlider');
 const greenSlider = document.getElementById('greenSlider');
 // NOVO: slider para calibrar vermelho
 const redSlider   = document.getElementById('redSlider');
-// NOVO: slider para estabilidade
+// NOVO: slider para estabilidade (média móvel)
 const stabilitySlider = document.getElementById('stabilitySlider');
 // NOVO: slider para margem ignorada
 const marginSlider = document.getElementById('marginSlider');
+
+// NOVO: slider para estabilidade do ponto rosa
+const pinkStabilitySlider = document.getElementById('pinkStabilitySlider');
 
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
@@ -32,6 +35,8 @@ const redValue   = document.getElementById('redValue');
 const stabilityValue = document.getElementById('stabilityValue');
 // NOVO: display do valor da margem
 const marginValue = document.getElementById('marginValue');
+// NOVO: display do valor da estabilidade do ponto rosa
+const pinkStabilityValue = document.getElementById('pinkStabilityValue');
 
 const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
@@ -83,6 +88,10 @@ stabilityValue.textContent = String(stabilityFrames);
 let marginPercent = Number(marginSlider.value);
 marginValue.textContent = `${marginPercent}%`;
 
+// NOVO: estabilidade do ponto rosa (frames necessários para considerar o ponto estável)
+let pinkStableFrames = Number(pinkStabilitySlider.value || 3);
+pinkStabilityValue.textContent = String(pinkStableFrames);
+
 // Históricos para média (origem = preto/orange, azul, verde). Não incluir ponto rosa.
 const blackHistory = []; // origin history
 const blueHistory = [];  // +X
@@ -110,7 +119,7 @@ redSlider.addEventListener('input', () => {
   redThreshold = Number(redSlider.value);
   redValue.textContent = redThreshold;
 });
-// NOVO: listener do slider de estabilidade
+// NOVO: listener do slider de estabilidade (média móvel)
 stabilitySlider.addEventListener('input', () => {
   stabilityFrames = Number(stabilitySlider.value);
   stabilityValue.textContent = String(stabilityFrames);
@@ -123,6 +132,11 @@ stabilitySlider.addEventListener('input', () => {
 marginSlider.addEventListener('input', () => {
   marginPercent = Number(marginSlider.value);
   marginValue.textContent = `${marginPercent}%`;
+});
+// NOVO: listener do slider de estabilidade do ponto rosa
+pinkStabilitySlider.addEventListener('input', () => {
+  pinkStableFrames = Number(pinkStabilitySlider.value);
+  pinkStabilityValue.textContent = String(pinkStableFrames);
 });
 
 let orientationListenerAdded = false;
@@ -525,7 +539,16 @@ function setMiniSelection(firstIdx, secondIdx) {
 }
 
 function updatePairDistanceDisplay() {
-  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
+  if (!calibration) {
+    pairInfoSpan.textContent = "nenhum";
+    dxValSpan.textContent = "--";
+    dyValSpan.textContent = "--";
+    dzValSpan.textContent = "--";
+    dMagValSpan.textContent = "--";
+    return;
+  }
+  const combined = (calibration.idealPoints || []).concat(calibration.currentSamples || []);
+  if (!combined || combined.length === 0) {
     pairInfoSpan.textContent = "nenhum";
     dxValSpan.textContent = "--";
     dyValSpan.textContent = "--";
@@ -540,15 +563,15 @@ function updatePairDistanceDisplay() {
     dzValSpan.textContent = "--";
     dMagValSpan.textContent = "--";
   } else if (selectedMiniIndices.length === 1) {
-    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
+    const a = combined[selectedMiniIndices[0]];
     pairInfoSpan.textContent = `1: idx ${selectedMiniIndices[0]}`;
     dxValSpan.textContent = "--";
     dyValSpan.textContent = "--";
     dzValSpan.textContent = "--";
     dMagValSpan.textContent = "--";
   } else if (selectedMiniIndices.length === 2) {
-    const a = calibration.triangulatedPoints[selectedMiniIndices[0]];
-    const b = calibration.triangulatedPoints[selectedMiniIndices[1]];
+    const a = combined[selectedMiniIndices[0]];
+    const b = combined[selectedMiniIndices[1]];
     if (!a || !b) {
       pairInfoSpan.textContent = "nenhum";
       dxValSpan.textContent = "--";
@@ -607,19 +630,12 @@ scanBtn.addEventListener('click', async () => {
 }); // Download button handler: baixa apenas a nuvem de pontos triangulados (JSON)
 downloadBtn.addEventListener('click', () => {
   if (!calibration) {
-    alert("Nenhum dado de calibração disponível para download.");
+    alert("Nenhum ponto triangulado disponível para download.");
     return;
   }
-  // export ideal points (sampleSets) or triangulatedPoints if present
-  const cloud = {
-    sampleSets: (calibration.sampleSets || []).map(s => ({
-      x: s.point.x, y: s.point.y, z: s.point.z,
-      samples: s.samplesCount,
-      dispersion: s.dispersion
-    })),
-    currentSamples: (calibration.currentSamples || []).map(p => ({ x: p.x, y: p.y, z: p.z })),
-    triangulatedVisible: (calibration.triangulatedPoints || []).map(p => ({ x: p.x, y: p.y, z: p.z }))
-  };
+  // ensure combined snapshot
+  const combined = (calibration.idealPoints || []).concat(calibration.currentSamples || []);
+  const cloud = combined.map(p => ({ x: p.x, y: p.y, z: p.z }));
   const blob = new Blob([JSON.stringify(cloud, null, 2)], { type: "application/json" });
   const fname = `pointcloud-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
   const a = document.createElement('a');
@@ -629,21 +645,78 @@ downloadBtn.addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
-// calibrate button: starts/stops calibration (mantida), agora mostra/hide botão Download e Confirmar Ponto
+// Confirmar Ponto button handler (nova funcionalidade)
+confirmBtn.addEventListener('click', () => {
+  if (!isRecordingCalibration || !calibration) {
+    alert("Confirmar Ponto só pode ser usado durante calibração.");
+    return;
+  }
+  const samples = calibration.currentSamples || [];
+  if (!samples || samples.length === 0) {
+    alert("Nenhuma amostra disponível para confirmar.");
+    return;
+  }
+  // compute centroid (mean x,y,z)
+  let sx=0, sy=0, sz=0;
+  let spx=0, spy=0;
+  for (const s of samples) {
+    sx += s.x; sy += s.y; sz += s.z;
+    if (s.pixel) { spx += s.pixel.x; spy += s.pixel.y; }
+  }
+  const n = samples.length;
+  const cx = sx / n, cy = sy / n, cz = sz / n;
+  const avgPixel = (n>0) ? { x: spx / n, y: spy / n } : null;
+
+  // dispersion: average Euclidean distance from centroid
+  let sumd = 0;
+  for (const s of samples) {
+    const dx = s.x - cx, dy = s.y - cy, dz = s.z - cz;
+    sumd += Math.hypot(dx, dy, dz);
+  }
+  const avgDispersion = sumd / n;
+
+  // create ideal point object
+  const ideal = {
+    x: Number(cx),
+    y: Number(cy),
+    z: Number(cz),
+    pixel: avgPixel,
+    samplesCount: n,
+    dispersion: Number(avgDispersion.toFixed(6)),
+    isIdeal: true
+  };
+
+  // push into idealPoints
+  calibration.idealPoints.push(ideal);
+
+  // clear current samples (restart collection)
+  calibration.currentSamples = [];
+
+  // update combined triangulatedPoints and UI
+  updateCombinedTriangulatedPoints();
+
+  alert(`Ponto confirmado (#${calibration.idealPoints.length}). Amostras: ${n}. Dispersão média: ${ideal.dispersion} mm.`);
+
+  // if already two ideal points, you can optionally notify user that process is complete
+  if (calibration.idealPoints.length >= 2) {
+    alert("Dois pontos ideais confirmados.");
+  }
+});
+
+// calibrate button: starts/stops calibration (mantida), agora mostra/hide Download e Confirmar
 calibrateBtn.addEventListener('click', () => {
   if (isRecordingCalibration) {
     // finalizar calibração (mantida)
     isRecordingCalibration = false;
     calibrateBtn.textContent = "Calibrar";
     // monta json completo (mantido)
+    const combined = (calibration && calibration.idealPoints ? calibration.idealPoints.slice() : []).concat(calibration && calibration.currentSamples ? calibration.currentSamples.slice() : []);
     const data = {
       recordedAt: new Date().toISOString(),
       frames: calibrationFrames.slice(),
       rays: (calibration && calibration.rays) ? calibration.rays.slice() : [],
       registeredRays: (calibration && calibration.registeredRays) ? calibration.registeredRays.slice() : [],
-      triangulatedPoints: (calibration && calibration.triangulatedPoints) ? calibration.triangulatedPoints.slice() : [],
-      sampleSets: (calibration && calibration.sampleSets) ? calibration.sampleSets.slice() : [],
-      currentSamples: (calibration && calibration.currentSamples) ? calibration.currentSamples.slice() : []
+      triangulatedPoints: combined
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const fname = `calibration-recording-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -653,11 +726,11 @@ calibrateBtn.addEventListener('click', () => {
     a.click();
     URL.revokeObjectURL(a.href);
 
-    // esconde botão Download e Confirmar
+    // esconde botão Download e Confirmar ao finalizar calibração
     downloadBtn.style.display = "none";
-    confirmPointBtn.style.display = "none";
+    confirmBtn.style.display = "none";
 
-    // limpeza de buffers (mantida)
+    // limpeza de buffers (mantida) -- agora limpa idealPoints e currentSamples também
     calibrationFrames = [];
     if (calibration) {
       calibration.rays = [];
@@ -667,10 +740,8 @@ calibrateBtn.addEventListener('click', () => {
       calibration.currentPoint = null;
       calibration.lastAcceptedPos = null;
       calibration.lastAcceptedDir = null;
-      // também limpar amostragem sequencial
       calibration.currentSamples = [];
-      calibration.sampleSets = [];
-      calibration.collectionDone = false;
+      calibration.idealPoints = [];
     }
     raysCountSpan.textContent = "0";
     pinkDirectedCountSpan.textContent = "0";
@@ -798,18 +869,18 @@ calibrateBtn.addEventListener('click', () => {
     lastAcceptedPos: null,
     lastAcceptedDir: null,
     registeredRays: [],
-    triangulatedPoints: [], // will be used as visible set (confirmed ideal points + current samples)
+    // NOVO: amostras atuais (triangulações acumuladas para o próximo 'ideal' ponto)
+    currentSamples: [],
+    // NOVO: pontos ideais já confirmados
+    idealPoints: [],
+    triangulatedPoints: [], // será atualizado via updateCombinedTriangulatedPoints()
     numRaysNeeded,
-    currentPoint: null,
-    // novos campos para média sequencial:
-    currentSamples: [], // amostras coletadas para o ponto atual (cada item: {x,y,z,pixel:{x,y}})
-    sampleSets: [],     // pontos ideais confirmados (cada item: { point:{x,y,z}, pixel:{x,y}, samplesCount, dispersion })
-    collectionDone: false // true quando já houver 2 pontos ideais confirmados
+    currentPoint: null
   };
 
   // mostra botão Download e Confirmar enquanto calibração ativa
   downloadBtn.style.display = "inline-block";
-  confirmPointBtn.style.display = "inline-block";
+  confirmBtn.style.display = "inline-block";
 
   setPinkState(PINK_STATE.IDLE);
   pinkStableCounter = 0;
@@ -828,71 +899,15 @@ calibrateBtn.addEventListener('click', () => {
   // limpa seleção mini-cloud ao iniciar uma nova calibração
   clearMiniSelection();
 
-  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.\nUse 'Confirmar Ponto' para consolidar o conjunto atual de amostras em um ponto ideal.`);
+  alert(`Calibração iniciada.\nMIN_CAMERA_MOVE_MM = ${minMoveVal} mm.\nRaios necessários para triangulação = ${numRaysNeeded}.\nClique em 'Finalizar Calib.' para encerrar e baixar o .json.`);
 });
 
-// Confirmar Ponto: calcula centroide das amostras atuais, avalia dispersão e substitui amostras por ponto ideal
-confirmPointBtn.addEventListener('click', () => {
-  if (!calibration) { alert("Calibração não iniciada."); return; }
-  if (!isRecordingCalibration) { alert("Confirmar Ponto só disponível durante calibração."); return; }
-
-  const samples = calibration.currentSamples || [];
-  if (!samples || samples.length === 0) {
-    alert("Nenhuma amostra disponível para confirmar.");
-    return;
-  }
-
-  // calcula centroide
-  let sx = 0, sy = 0, sz = 0;
-  for (const s of samples) { sx += s.x; sy += s.y; sz += s.z; }
-  const cx = sx / samples.length;
-  const cy = sy / samples.length;
-  const cz = sz / samples.length;
-
-  // média do pixel (para exibição)
-  let spx = 0, spy = 0;
-  for (const s of samples) { if (s.pixel) { spx += s.pixel.x; spy += s.pixel.y; } }
-  const avgPixel = (samples[0] && samples[0].pixel) ? { x: spx / samples.length, y: spy / samples.length } : null;
-
-  // dispersão: média das distâncias amostra->centroide
-  let sumd = 0;
-  for (const s of samples) {
-    const dx = s.x - cx, dy = s.y - cy, dz = s.z - cz;
-    sumd += Math.hypot(dx, dy, dz);
-  }
-  const meanDist = (samples.length > 0) ? sumd / samples.length : 0;
-
-  // cria ponto ideal (sampleSet)
-  const ideal = {
-    point: { x: Number(cx), y: Number(cy), z: Number(cz) },
-    pixel: avgPixel ? { x: Number(avgPixel.x), y: Number(avgPixel.y) } : null,
-    samplesCount: samples.length,
-    dispersion: Number(meanDist.toFixed(6)),
-    timestamp: new Date().toISOString()
-  };
-
-  // adiciona aos sampleSets e limpa currentSamples para começar nova coleta
-  calibration.sampleSets.push(ideal);
-  calibration.currentSamples = [];
-
-  // atualizar triangulatedPoints visível: substitui amostras pelo(s) pontos ideais confirmados
-  calibration.triangulatedPoints = calibration.sampleSets.map(s => {
-    return { x: s.point.x, y: s.point.y, z: s.point.z, pixel: s.pixel || null, samplesCount: s.samplesCount, dispersion: s.dispersion };
-  });
-
-  // atualizar UI
+// update combined triangulatedPoints array and UI
+function updateCombinedTriangulatedPoints() {
+  if (!calibration) return;
+  calibration.triangulatedPoints = (calibration.idealPoints || []).concat(calibration.currentSamples || []);
   triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
-  drawTriangulatedMarkers();
-  drawMiniCloud();
-
-  // se já temos 2 pontos ideais, considerar a coleta finalizada (não acumular mais)
-  if (calibration.sampleSets.length >= 2) {
-    calibration.collectionDone = true;
-    alert("Dois pontos ideais confirmados. Coleta de amostras encerrada para preservar exatamente dois pontos ideais.");
-  } else {
-    alert(`Ponto confirmado: centroide (${ideal.point.x.toFixed(4)}, ${ideal.point.y.toFixed(4)}, ${ideal.point.z.toFixed(4)}), dispersion=${ideal.dispersion} mm. Coleta reiniciada para próximo ponto.`);
-  }
-});
+}
 
 // processFrame (mantido) — agora com suavização (média móvel) para origem/azul/verde (sem incluir ponto rosa)
 // E também ignora pixels nas bordas conforme marginPercent e pinta a área sombreada.
@@ -1080,7 +1095,8 @@ function processFrame() {
   } else if (pinkState === PINK_STATE.ARMED) {
     if (pinkDetected) {
       pinkStableCounter++;
-      if (pinkStableCounter >= STABLE_FRAMES_FOR_ARM) {
+      // <-- aqui usa a configuração do usuário para estabilidade do ponto rosa -->
+      if (pinkStableCounter >= pinkStableFrames) {
         pinkLockedPixel = { x: lastDetectedPoints.redPt.x, y: lastDetectedPoints.redPt.y };
         if (calibration) {
           calibration.currentPoint = {
@@ -1146,7 +1162,7 @@ function processFrame() {
     }
   }
 
-  // recording + capturing logic (mantido) — may produce rays and triangulate points
+  // recording + capturing logic (kept) — may produce rays and triangulate points
   if (isRecordingCalibration) {
     const ts = new Date().toISOString();
     const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
@@ -1283,25 +1299,11 @@ function processFrame() {
           const quality = computePointQuality(raysForTri, tri);
           tri.quality = quality;
 
-          // ----- AQUI: em vez de empurrar direto para triangulatedPoints, acumulamos em currentSamples -----
-          if (calibration && !calibration.collectionDone) {
-            // armazenar amostra para o ponto atual
-            calibration.currentSamples.push({ x: tri.x, y: tri.y, z: tri.z, pixel: tri.pixel, quality: tri.quality });
-            // atualizar a "visão" (triangulatedPoints) para incluir sampleSets (confirmados) + currentSamples (amostras correntes)
-            calibration.triangulatedPoints = calibration.sampleSets.map(s => {
-              return { x: s.point.x, y: s.point.y, z: s.point.z, pixel: s.pixel || null, samplesCount: s.samplesCount, dispersion: s.dispersion };
-            }).concat(calibration.currentSamples.map(s => ({ x: s.x, y: s.y, z: s.z, pixel: s.pixel || null })));
-          } else {
-            // se a coleta estiver finalizada (>=2 pontos ideais), não acumular mais amostras
-            // neste caso apenas atualizamos triangulatedPoints (já deve conter os sampleSets)
-            calibration.triangulatedPoints = calibration.sampleSets.map(s => {
-              return { x: s.point.x, y: s.point.y, z: s.point.z, pixel: s.pixel || null, samplesCount: s.samplesCount, dispersion: s.dispersion };
-            });
-          }
+          // --- NOVO: Instead of pushing directly to triangulatedPoints, accumulate as samples for the current ideal point ---
+          calibration.currentSamples.push(tri);
+          updateCombinedTriangulatedPoints();
 
-          // store tri também para registro geral (mantido)
-          calibration.triangulatedPoints = calibration.triangulatedPoints || [];
-          // update UI with quality message (kept)
+          // update UI with quality message (unchanged)
           if (quality) {
             qualityBlock.style.display = "block";
             qualityNumRays.textContent = quality.numRays;
@@ -1316,14 +1318,14 @@ function processFrame() {
             else if (quality.level === "Média") qualityLabel.classList.add('quality-medium');
             else qualityLabel.classList.add('quality-low');
 
+            // opcional: esconder mensagem após alguns segundos (8s)
             clearTimeout(qualityBlock._hideTO);
             qualityBlock._hideTO = setTimeout(() => {
+              // keep visible but fade out: simply hide
               qualityBlock.style.display = "none";
             }, 8000);
           }
 
-          // atualizar contadores
-          triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
           cp.triangulated = true;
           drawTriangulatedMarkers();
           drawMiniCloud();
@@ -1341,20 +1343,91 @@ function processFrame() {
 }
 
 // draw triangulated markers (dark pink) — persistent
+// agora desenha primeiro os pontos ideais (se houver) com destaque e depois as amostras
 function drawTriangulatedMarkers() {
-  if (!calibration || !calibration.triangulatedPoints) return;
-  for (const p of calibration.triangulatedPoints) {
-    if (p.pixel && Number.isFinite(p.pixel.x) && Number.isFinite(p.pixel.y)) {
-      ctx.beginPath();
-      ctx.fillStyle = "#8B1455"; // dark pink
-      ctx.strokeStyle = "#FF99C8";
-      ctx.lineWidth = 1;
-      ctx.arc(p.pixel.x, p.pixel.y, 6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+  if (!calibration) return;
+  // ideal points
+  if (Array.isArray(calibration.idealPoints)) {
+    for (const p of calibration.idealPoints) {
+      if (p.pixel && Number.isFinite(p.pixel.x) && Number.isFinite(p.pixel.y)) {
+        ctx.beginPath();
+        ctx.fillStyle = "#33cc99"; // cor diferenciada para ponto ideal
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 1;
+        ctx.arc(p.pixel.x, p.pixel.y, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+  }
+  // samples (menores e na cor original)
+  if (Array.isArray(calibration.currentSamples)) {
+    for (const p of calibration.currentSamples) {
+      if (p.pixel && Number.isFinite(p.pixel.x) && Number.isFinite(p.pixel.y)) {
+        ctx.beginPath();
+        ctx.fillStyle = "#8B1455"; // dark pink (amostra)
+        ctx.strokeStyle = "#FF99C8";
+        ctx.lineWidth = 1;
+        ctx.arc(p.pixel.x, p.pixel.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
     }
   }
 }
+
+// --- ADAPTED: remoção por clique agora manipula idealPoints ou currentSamples ---
+function removeTriangulatedIndex(idx) {
+  if (!calibration) return;
+  const idealCount = (calibration.idealPoints || []).length;
+  if (idx < 0) return;
+  if (idx < idealCount) {
+    // remove ideal
+    calibration.idealPoints.splice(idx, 1);
+  } else {
+    const sampleIdx = idx - idealCount;
+    if (calibration.currentSamples && sampleIdx >= 0 && sampleIdx < calibration.currentSamples.length) {
+      calibration.currentSamples.splice(sampleIdx, 1);
+    }
+  }
+  updateCombinedTriangulatedPoints();
+  drawTriangulatedMarkers();
+  drawMiniCloud();
+  updatePairDistanceDisplay();
+}
+
+// handler de clique no canvas principal
+canvas.addEventListener('click', (ev) => {
+  if (!calibration) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = (ev.clientX - rect.left) * scaleX;
+  const cy = (ev.clientY - rect.top) * scaleY;
+
+  // busca o ponto triangulado mais próximo (em pixels do canvas) — usa pixel de cada item no array combinado
+  const combined = (calibration.idealPoints || []).concat(calibration.currentSamples || []);
+  if (!combined || combined.length === 0) return;
+  let nearestIdx = -1;
+  let bestDistSq = Infinity;
+  for (let i = 0; i < combined.length; i++) {
+    const p = combined[i];
+    if (!p.pixel || !isFinite(p.pixel.x) || !isFinite(p.pixel.y)) continue;
+    const dx = p.pixel.x - cx;
+    const dy = p.pixel.y - cy;
+    const dsq = dx*dx + dy*dy;
+    if (dsq < bestDistSq) {
+      bestDistSq = dsq;
+      nearestIdx = i;
+    }
+  }
+  if (nearestIdx === -1) return;
+  const CLICK_DELETE_THRESHOLD_PX = 10; // raio de clique sensível (em pixels do canvas)
+  if (bestDistSq <= CLICK_DELETE_THRESHOLD_PX * CLICK_DELETE_THRESHOLD_PX) {
+    // excluir imediatamente (seletivo entre ideal ou amostra)
+    removeTriangulatedIndex(nearestIdx);
+  }
+});
 
 // mini cloud drawing (keeps showing triangulatedPoints)
 // agora também destaca pontos selecionados e desenha linha entre o par
@@ -1363,7 +1436,16 @@ function drawMiniCloud() {
   miniCtx.fillStyle = "rgba(0,0,0,0.02)";
   miniCtx.fillRect(0,0,miniCanvas.width,miniCanvas.height);
 
-  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
+  if (!calibration) {
+    miniCtx.fillStyle = "rgba(255,255,255,0.4)";
+    miniCtx.font = "12px system-ui, Arial";
+    miniCtx.fillText("Calibração inativa", 10, 18);
+    updatePairDistanceDisplay();
+    return;
+  }
+
+  const pts = (calibration.idealPoints || []).concat(calibration.currentSamples || []);
+  if (!pts || pts.length === 0) {
     miniCtx.fillStyle = "rgba(255,255,255,0.4)";
     miniCtx.font = "12px system-ui, Arial";
     miniCtx.fillText("Nuvem de pontos (vazia)", 10, 18);
@@ -1371,7 +1453,6 @@ function drawMiniCloud() {
     return;
   }
 
-  const pts = calibration.triangulatedPoints;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of pts) {
     if (!isFinite(p.x) || !isFinite(p.y)) continue;
@@ -1410,18 +1491,27 @@ function drawMiniCloud() {
 
     // if this point is selected, draw highlight larger
     const isSelected = selectedMiniIndices.indexOf(idx) !== -1;
+    // ideal points are drawn larger (first block in combined is idealPoints)
+    const idealCount = (calibration.idealPoints || []).length;
+    const isIdeal = idx < idealCount;
+
     if (isSelected) {
       miniCtx.beginPath();
       miniCtx.fillStyle = "#FF99C8";
-      miniCtx.arc(sx, sy, 5, 0, Math.PI*2);
+      miniCtx.arc(sx, sy, isIdeal ? 6 : 5, 0, Math.PI*2);
       miniCtx.fill();
       miniCtx.strokeStyle = "#FFFFFF";
       miniCtx.lineWidth = 1;
       miniCtx.stroke();
     } else {
       miniCtx.beginPath();
-      miniCtx.fillStyle = "#8B1455";
-      miniCtx.arc(sx, sy, 3, 0, Math.PI*2);
+      if (isIdeal) {
+        miniCtx.fillStyle = "#33cc99";
+        miniCtx.arc(sx, sy, 5, 0, Math.PI*2);
+      } else {
+        miniCtx.fillStyle = "#8B1455";
+        miniCtx.arc(sx, sy, 3, 0, Math.PI*2);
+      }
       miniCtx.fill();
     }
   }
@@ -1453,7 +1543,7 @@ function drawMiniCloud() {
 
 // enable clicking on mini canvas to select points (pair)
 miniCanvas.addEventListener('click', (ev) => {
-  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) return;
+  if (!calibration) return;
 
   const rect = miniCanvas.getBoundingClientRect();
   // account for CSS scaling
@@ -1462,8 +1552,9 @@ miniCanvas.addEventListener('click', (ev) => {
   const cx = (ev.clientX - rect.left) * scaleX;
   const cy = (ev.clientY - rect.top) * scaleY;
 
-  // same mapping used in drawMiniCloud
-  const pts = calibration.triangulatedPoints;
+  const pts = (calibration.idealPoints || []).concat(calibration.currentSamples || []);
+  if (!pts || pts.length === 0) return;
+
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of pts) {
     if (!isFinite(p.x) || !isFinite(p.y)) continue;
