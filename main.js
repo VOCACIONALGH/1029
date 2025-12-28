@@ -1,4 +1,4 @@
-// main.js — inclui slider para calibrar detecção do vermelho
+// main.js — inclui botão Download para baixar a nuvem de pontos triangulada (arquivo .json)
 const scanBtn = document.getElementById('scanBtn');
 const calibrateBtn = document.getElementById('calibrateBtn');
 const downloadBtn = document.getElementById('downloadBtn'); // novo botão
@@ -15,12 +15,14 @@ const scaleLockedLabel = document.getElementById('scaleLockedLabel');
 const blackSlider = document.getElementById('blackSlider');
 const blueSlider  = document.getElementById('blueSlider');
 const greenSlider = document.getElementById('greenSlider');
-const redSlider   = document.getElementById('redSlider'); // NOVO
+// NOVO: slider para calibrar vermelho
+const redSlider   = document.getElementById('redSlider');
 
 const blackValue = document.getElementById('blackValue');
 const blueValue  = document.getElementById('blueValue');
 const greenValue = document.getElementById('greenValue');
-const redValue   = document.getElementById('redValue'); // NOVO
+// NOVO: display do valor do vermelho
+const redValue   = document.getElementById('redValue');
 
 const pitchSpan = document.getElementById('pitchValue');
 const yawSpan   = document.getElementById('yawValue');
@@ -41,12 +43,13 @@ const pinkStateSpan = document.getElementById('pinkState');
 let blackThreshold = Number(blackSlider.value);
 let blueThreshold  = Number(blueSlider.value);
 let greenThreshold = Number(greenSlider.value);
-let redThreshold   = Number(redSlider.value); // NOVO
+// NOVO: threshold para vermelho
+let redThreshold   = Number(redSlider.value);
 
 blackValue.textContent = blackThreshold;
 blueValue.textContent  = blueThreshold;
 greenValue.textContent = greenThreshold;
-redValue.textContent   = redThreshold; // NOVO
+redValue.textContent   = redThreshold;
 
 blackSlider.addEventListener('input', () => {
   blackThreshold = Number(blackSlider.value);
@@ -60,7 +63,8 @@ greenSlider.addEventListener('input', () => {
   greenThreshold = Number(greenSlider.value);
   greenValue.textContent = greenThreshold;
 });
-redSlider.addEventListener('input', () => { // NOVO
+// NOVO: listener do slider vermelho
+redSlider.addEventListener('input', () => {
   redThreshold = Number(redSlider.value);
   redValue.textContent = redThreshold;
 });
@@ -558,7 +562,8 @@ function processFrame() {
     } else if (g > greenThreshold && r < greenThreshold && b < greenThreshold) {
       data[i]=128; data[i+1]=0; data[i+2]=128;
       sumGreenX += x; sumGreenY += y; countGreen++;
-    } else if (r > redThreshold && g < 100 && b < 100) { // USANDO redThreshold AQUI (mudança solicitada)
+    } else if (r > redThreshold && g < redThreshold && b < redThreshold) {
+      // usa o redThreshold configurado pelo usuário
       sumRedX += x; sumRedY += y; countRed++;
     }
   }
@@ -574,20 +579,364 @@ function processFrame() {
   if (countRed) drawPoint(redPt.x, redPt.y, "#FF69B4");
   lastDetectedPoints = { origin, bluePt, greenPt, redPt };
 
-  // ... resto do código permanece idêntico (não alterado) ...
-  // (cálculo de escala, desenho do plano, máquina de estados, registro de raios,
-  // triangulação, desenho de triangulados e mini-cloud)
-  // Para manter a resposta compacta, o restante do script segue exatamente como
-  // estava antes desta modificação — sem alterações além do uso de redThreshold acima.
+  // scale
+  if (origin && bluePt) {
+    const dx = bluePt.x - origin.x, dy = bluePt.y - origin.y;
+    const lenPx = Math.hypot(dx,dy);
+    if (!scaleLocked) {
+      currentScalePxPerMm = lenPx / 100;
+      scaleValue.textContent = currentScalePxPerMm.toFixed(3);
+    } else {
+      currentScalePxPerMm = lockedScalePxPerMm;
+      scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
+    }
+  } else {
+    if (!scaleLocked) { scaleValue.textContent="--"; currentScalePxPerMm=null; }
+    else scaleValue.textContent = lockedScalePxPerMm.toFixed(3);
+  }
 
-  // Para evitar repetição extensa, chamamos o loop principal que já existe:
-  // (o código restante continua igual ao que estava implementado anteriormente,
-  // incluindo criação de raios, triângulação, armazenamento em calibration.triangulatedPoints,
-  // desenho dos marcadores triangulados e atualização da mini-cloud.)
+  // draw plane
+  if (calibration && origin && bluePt && greenPt) {
+    const cornerA = origin;
+    const cornerB = bluePt;
+    const cornerD = greenPt;
+    const cornerC = { x: bluePt.x + (greenPt.x - origin.x), y: bluePt.y + (greenPt.y - origin.y) };
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cornerA.x, cornerA.y);
+    ctx.lineTo(cornerB.x, cornerB.y);
+    ctx.lineTo(cornerC.x, cornerC.y);
+    ctx.lineTo(cornerD.x, cornerD.y);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(173,216,230,0.35)';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  if (origin) drawPoint(origin.x, origin.y, "#FFFFFF");
+  if (bluePt) drawPoint(bluePt.x, bluePt.y, "#0000FF");
+  if (greenPt) drawPoint(greenPt.x, greenPt.y, "#00FF00");
+  if (origin && bluePt) drawArrow(origin.x, origin.y, bluePt.x, bluePt.y, "#0000FF");
+  if (origin && greenPt) drawArrow(origin.x, origin.y, greenPt.x, greenPt.y, "#00FF00");
+
+  // cam Z, X, Y (kept)
+  let camZ_mm = NaN;
+  if (calibration && origin && calibration.lockedScalePxPerMm) {
+    if (origin && lastDetectedPoints.bluePt) {
+      const blueNow = lastDetectedPoints.bluePt;
+      const dx_px_now = blueNow.x - origin.x, dy_px_now = blueNow.y - origin.y;
+      const dx_mm_now = dx_px_now / calibration.lockedScalePxPerMm;
+      const dy_mm_now = dy_px_now / calibration.lockedScalePxPerMm;
+      const vCamNow = [dx_mm_now, dy_mm_now, 0];
+      const orientNow = lastOrientation;
+      const Rnow = rotationMatrixFromAlphaBetaGamma(orientNow.alpha, orientNow.beta, orientNow.gamma);
+      const vWorldNow = applyMat3(Rnow, vCamNow);
+      const worldLenNow = Math.hypot(vWorldNow[0], vWorldNow[1], vWorldNow[2]);
+      if (worldLenNow > 1e-6 && calibration.worldLenCal > 1e-6) {
+        camZ_mm = calibration.zCalMm * (calibration.worldLenCal / worldLenNow);
+        zSpan.textContent = camZ_mm.toFixed(2);
+      } else { zSpan.textContent = "--"; camZ_mm = NaN; }
+    } else { zSpan.textContent = "--"; }
+  } else { zSpan.textContent = "--"; }
+
+  let camX_mm = NaN, camY_mm = NaN;
+  if (calibration && calibration.lockedScalePxPerMm && calibration.originPixelCal && origin) {
+    const originCalPx = calibration.originPixelCal;
+    const dx_px = origin.x - originCalPx.x, dy_px = origin.y - originCalPx.y;
+    const dx_mm = dx_px / calibration.lockedScalePxPerMm, dy_mm = dy_px / calibration.lockedScalePxPerMm;
+    const vCamForXY = [-dx_mm, dy_mm, 0];
+    const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+    const vWorld = applyMat3(Rnow, vCamForXY);
+    camX_mm = vWorld[0]; camY_mm = vWorld[1];
+    xSpan.textContent = camX_mm.toFixed(2);
+    ySpan.textContent = camY_mm.toFixed(2);
+  } else { xSpan.textContent="--"; ySpan.textContent="--"; }
+
+  if (calibration && calibration.camMatrixCal && calibration.invCamMatrixCal) {
+    const camZval = (zSpan.textContent !== "--") ? parseFloat(zSpan.textContent) : NaN;
+    if (!Number.isNaN(camX_mm) && !Number.isNaN(camY_mm) && !Number.isNaN(camZval)) {
+      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+      const tNow = [camX_mm, camY_mm, camZval];
+      const TcamNow = buildHomogeneousMatrix(Rnow, tNow);
+      const Ttrans = multiply4x4(calibration.invCamMatrixCal, TcamNow);
+      lastTransformedMatrix = Ttrans;
+    } else lastTransformedMatrix = null;
+  } else lastTransformedMatrix = null;
+
+  // state machine for pink point (kept)
+  const pinkDetected = !!(lastDetectedPoints && lastDetectedPoints.redPt);
+  if (pinkState === PINK_STATE.IDLE) {
+    if (pinkDetected) {
+      pinkStableCounter = 1;
+      setPinkState(PINK_STATE.ARMED);
+    } else {
+      pinkStableCounter = 0;
+    }
+  } else if (pinkState === PINK_STATE.ARMED) {
+    if (pinkDetected) {
+      pinkStableCounter++;
+      if (pinkStableCounter >= STABLE_FRAMES_FOR_ARM) {
+        pinkLockedPixel = { x: lastDetectedPoints.redPt.x, y: lastDetectedPoints.redPt.y };
+        if (calibration) {
+          calibration.currentPoint = {
+            lockedPixel: { ...pinkLockedPixel },
+            registeredRays: [],
+            acceptedRays: [],
+            lastAcceptedPos: null,
+            lastAcceptedDir: null,
+            triangulated: false
+          };
+        }
+        setPinkState(PINK_STATE.CAPTURING);
+      }
+    } else {
+      pinkStableCounter = 0;
+      setPinkState(PINK_STATE.IDLE);
+    }
+  } else if (pinkState === PINK_STATE.CAPTURING) {
+    if (!pinkDetected) {
+      pinkStableCounter = 0;
+      pinkLockedPixel = null;
+      if (calibration && calibration.currentPoint) calibration.currentPoint = null;
+      setPinkState(PINK_STATE.IDLE);
+    }
+  } else if (pinkState === PINK_STATE.TRIANGULATING) {
+    // handled during triangulation
+  } else if (pinkState === PINK_STATE.LOCKED) {
+    if (!pinkDetected) {
+      pinkStableCounter = 0;
+      pinkLockedPixel = null;
+      if (calibration && calibration.currentPoint) calibration.currentPoint = null;
+      setPinkState(PINK_STATE.IDLE);
+    }
+  }
+
+  // recording + capturing logic (kept) — may produce rays and triangulate points
+  if (isRecordingCalibration) {
+    const ts = new Date().toISOString();
+    const pitch = (lastOrientation.beta != null) ? lastOrientation.beta : null;
+    const yaw = (lastOrientation.alpha != null) ? lastOrientation.alpha : null;
+    const roll = (lastOrientation.gamma != null) ? lastOrientation.gamma : null;
+
+    const rec = {
+      timestamp: ts,
+      x_mm: Number.isFinite(camX_mm) ? Number(camX_mm.toFixed(4)) : null,
+      y_mm: Number.isFinite(camY_mm) ? Number(camY_mm.toFixed(4)) : null,
+      z_mm: Number.isFinite(camZ_mm) ? Number(camZ_mm.toFixed(4)) : null,
+      pitch_deg: (pitch != null) ? Number(pitch.toFixed(4)) : null,
+      yaw_deg: (yaw != null) ? Number(yaw.toFixed(4)) : null,
+      roll_deg: (roll != null) ? Number(roll.toFixed(4)) : null
+    };
+    calibrationFrames.push(rec);
+
+    if (pinkState === PINK_STATE.CAPTURING && lastDetectedPoints && lastDetectedPoints.redPt && calibration && calibration.lockedScalePxPerMm) {
+      const px = lastDetectedPoints.redPt.x;
+      const py = lastDetectedPoints.redPt.y;
+      const cx = canvas.width / 2, cy = canvas.height / 2;
+
+      let f_px = Math.max(canvas.width, canvas.height);
+      try {
+        if (calibration && calibration.lenPxCal && calibration.worldLenCal && calibration.zCalMm) {
+          if (calibration.worldLenCal > 1e-6) {
+            f_px = (calibration.lenPxCal * calibration.zCalMm) / calibration.worldLenCal;
+            if (!isFinite(f_px) || f_px <= 1e-3) f_px = Math.max(canvas.width, canvas.height);
+          }
+        }
+      } catch (e) { f_px = Math.max(canvas.width, canvas.height); }
+
+      const x_norm = (px - cx) / f_px;
+      const y_norm = (py - cy) / f_px;
+      let dirCam = [x_norm, y_norm, 1.0];
+      const lenDirCam = Math.hypot(dirCam[0], dirCam[1], dirCam[2]);
+      if (lenDirCam <= 0) { requestAnimationFrame(processFrame); return; }
+      dirCam = [dirCam[0]/lenDirCam, dirCam[1]/lenDirCam, dirCam[2]/lenDirCam];
+
+      const Rnow = rotationMatrixFromAlphaBetaGamma(lastOrientation.alpha, lastOrientation.beta, lastOrientation.gamma);
+      const dirWorld = applyMat3(Rnow, dirCam);
+
+      const originWorld = (Number.isFinite(camX_mm) && Number.isFinite(camY_mm) && Number.isFinite(camZ_mm))
+        ? [Number(camX_mm.toFixed(4)), Number(camY_mm.toFixed(4)), Number(camZ_mm.toFixed(4))] : null;
+
+      const rayEntry = {
+        timestamp: ts,
+        origin: originWorld,
+        dir_world: [Number(dirWorld[0].toFixed(6)), Number(dirWorld[1].toFixed(6)), Number(dirWorld[2].toFixed(6))],
+        dir_rotated: null,
+        accepted: false,
+        pixel: { x: px, y: py }
+      };
+
+      calibration.rays.push(rayEntry);
+      raysCountSpan.textContent = String(calibration.rays.length);
+      pinkDirectedCountSpan.textContent = String(calibration.rays.length);
+
+      if (calibration && calibration.basisMatrixT) {
+        const dirRot = mul3x3Vec(calibration.basisMatrixT, dirWorld);
+        const dirRotNorm = norm(dirRot);
+        rayEntry.dir_rotated = [Number(dirRotNorm[0].toFixed(6)), Number(dirRotNorm[1].toFixed(6)), Number(dirRotNorm[2].toFixed(6))];
+        rotatedCountSpan.textContent = String(calibration.rays.filter(r => r.dir_rotated !== null).length);
+      }
+
+      let accepted = false;
+      const minMove = (calibration && calibration.minCameraMoveMm != null) ? calibration.minCameraMoveMm : DEFAULT_MIN_CAMERA_MOVE_MM;
+      const cp = calibration.currentPoint;
+      if (originWorld && cp) {
+        if (cp.lastAcceptedPos == null) {
+          accepted = true;
+        } else {
+          const dx = originWorld[0] - cp.lastAcceptedPos[0];
+          const dy = originWorld[1] - cp.lastAcceptedPos[1];
+          const dz = originWorld[2] - cp.lastAcceptedPos[2];
+          const dist = Math.hypot(dx, dy, dz);
+          let notParallel = true;
+          if (cp.lastAcceptedDir) {
+            const a = cp.lastAcceptedDir;
+            const b = dirWorld;
+            const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+            const la = Math.hypot(a[0],a[1],a[2]);
+            const lb = Math.hypot(b[0],b[1],b[2]);
+            if (la > 1e-9 && lb > 1e-9) {
+              const cosang = Math.max(-1, Math.min(1, dot / (la*lb)));
+              const ang = Math.acos(cosang);
+              if (ang < PARALLEL_ANGLE_RAD) notParallel = false;
+            }
+          }
+          if (dist >= minMove && notParallel) accepted = true;
+        }
+      } else {
+        accepted = false;
+      }
+
+      if (accepted && cp) {
+        rayEntry.accepted = true;
+        cp.acceptedRays.push(rayEntry);
+        cp.lastAcceptedPos = originWorld ? [originWorld[0], originWorld[1], originWorld[2]] : null;
+        cp.lastAcceptedDir = [dirWorld[0], dirWorld[1], dirWorld[2]];
+        if (rayEntry.dir_rotated && originWorld) {
+          const reg = {
+            origin: { x: originWorld[0], y: originWorld[1], z: originWorld[2] },
+            direction: { dx: rayEntry.dir_rotated[0], dy: rayEntry.dir_rotated[1], dz: rayEntry.dir_rotated[2] },
+            pixel: { x: rayEntry.pixel.x, y: rayEntry.pixel.y }
+          };
+          cp.registeredRays.push(reg);
+          calibration.registeredRays.push(reg);
+          registered3DCountSpan.textContent = String((calibration.registeredRays || []).length);
+        }
+        acceptedCountSpan.textContent = String((cp.acceptedRays || []).length);
+      } else {
+        rayEntry.accepted = false;
+      }
+
+      // triangulation attempt if enough rays
+      if (cp && cp.registeredRays.length >= calibration.numRaysNeeded && !cp.triangulated) {
+        setPinkState(PINK_STATE.TRIANGULATING);
+        const subset = cp.registeredRays.slice(-calibration.numRaysNeeded);
+        const raysForTri = subset.map(r => ({
+          origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
+          direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
+        }));
+        const X = triangulateFromRays(raysForTri);
+        if (X) {
+          // average pixel for display
+          let avgX = 0, avgY = 0;
+          for (const r of subset) { avgX += (r.pixel && r.pixel.x) || 0; avgY += (r.pixel && r.pixel.y) || 0; }
+          avgX /= subset.length; avgY /= subset.length;
+          const tri = { x: X.x, y: X.y, z: X.z, pixel: { x: avgX, y: avgY } };
+          calibration.triangulatedPoints.push(tri);
+          triangulatedCountSpan.textContent = String(calibration.triangulatedPoints.length);
+          cp.triangulated = true;
+          drawTriangulatedMarkers();
+          drawMiniCloud();
+          setPinkState(PINK_STATE.LOCKED);
+        } else {
+          setPinkState(PINK_STATE.CAPTURING);
+        }
+      }
+    }
+  }
+
+  // draw persistent triangulated markers and mini cloud
+  drawTriangulatedMarkers();
+  drawMiniCloud();
+
   requestAnimationFrame(processFrame);
 }
 
-// drawing helpers (mantidos)
+// draw triangulated markers (dark pink) — persistent
+function drawTriangulatedMarkers() {
+  if (!calibration || !calibration.triangulatedPoints) return;
+  for (const p of calibration.triangulatedPoints) {
+    if (p.pixel && Number.isFinite(p.pixel.x) && Number.isFinite(p.pixel.y)) {
+      ctx.beginPath();
+      ctx.fillStyle = "#8B1455"; // dark pink
+      ctx.strokeStyle = "#FF99C8";
+      ctx.lineWidth = 1;
+      ctx.arc(p.pixel.x, p.pixel.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+}
+
+// mini cloud drawing (keeps showing triangulatedPoints)
+function drawMiniCloud() {
+  miniCtx.clearRect(0,0,miniCanvas.width,miniCanvas.height);
+  miniCtx.fillStyle = "rgba(0,0,0,0.02)";
+  miniCtx.fillRect(0,0,miniCanvas.width,miniCanvas.height);
+
+  if (!calibration || !calibration.triangulatedPoints || calibration.triangulatedPoints.length === 0) {
+    miniCtx.fillStyle = "rgba(255,255,255,0.4)";
+    miniCtx.font = "12px system-ui, Arial";
+    miniCtx.fillText("Nuvem de pontos (vazia)", 10, 18);
+    return;
+  }
+
+  const pts = calibration.triangulatedPoints;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (minX === Infinity) return;
+  if (Math.abs(maxX - minX) < 1e-6) { minX -= 1; maxX += 1; }
+  if (Math.abs(maxY - minY) < 1e-6) { minY -= 1; maxY += 1; }
+
+  const pad = 6;
+  const w = miniCanvas.width - pad*2;
+  const h = miniCanvas.height - pad*2;
+
+  miniCtx.strokeStyle = "rgba(255,255,255,0.06)";
+  miniCtx.lineWidth = 1;
+  miniCtx.beginPath();
+  for (let i=1;i<=3;i++) {
+    const gx = pad + (w/4)*i;
+    miniCtx.moveTo(gx, pad);
+    miniCtx.lineTo(gx, pad + h);
+    const gy = pad + (h/4)*i;
+    miniCtx.moveTo(pad, gy);
+    miniCtx.lineTo(pad + w, gy);
+  }
+  miniCtx.stroke();
+
+  for (const p of pts) {
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    const sx = pad + ((p.x - minX) / (maxX - minX)) * w;
+    const sy = pad + (1 - (p.y - minY) / (maxY - minY)) * h;
+    miniCtx.fillStyle = "#8B1455";
+    miniCtx.beginPath();
+    miniCtx.arc(sx, sy, 3, 0, Math.PI*2);
+    miniCtx.fill();
+  }
+
+  miniCtx.strokeStyle = "rgba(255,255,255,0.12)";
+  miniCtx.lineWidth = 1;
+  miniCtx.strokeRect(0.5,0.5,miniCanvas.width-1,miniCanvas.height-1);
+}
+
+// small drawing helpers (kept)
 function drawPoint(x, y, color) {
   ctx.fillStyle = color;
   ctx.beginPath();
