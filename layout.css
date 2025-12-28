@@ -18,18 +18,20 @@ button {
 }
 
 #downloadBtn {
+  /* botão Download com aparência consistente */
   background: linear-gradient(#0b79d0, #0961a8);
   color: white;
   border: none;
   border-radius: 6px;
 }
 
+/* pequeno espaçamento caso apareça ao lado dos outros botões */
 #scanBtn, #calibrateBtn, #downloadBtn { vertical-align: middle; }
 
 #calibration {
   margin-bottom: 10px;
   width: 80%;
-  max-width: 420px;
+  max-width: 400px;
   text-align: center;
 }
 
@@ -83,6 +85,7 @@ button {
 
 #zxyInfo div { margin: 4px 0; }
 
+/* highlight for state */
 #pinkState {
   font-weight: 700;
   color: #ffd54f;
@@ -100,7 +103,7 @@ canvas {
   width: 100%;
   height: auto;
   max-height: 100vh;
-  display: none;
+  display: none; /* shown once camera starts */
 }
 
 #overlay {
