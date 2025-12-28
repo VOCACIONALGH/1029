@@ -85,6 +85,17 @@ button {
 
 #zxyInfo div { margin: 4px 0; }
 
+/* pair distance block */
+#pairDistance {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255,255,255,0.04);
+  font-size: 13px;
+  color: #eaeaea;
+}
+
+#pairDistance div { margin: 2px 0; }
+
 /* highlight for state */
 #pinkState {
   font-weight: 700;
@@ -127,6 +138,7 @@ canvas {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-direction: column;
 }
 
 /* mini canvas itself */
@@ -138,61 +150,14 @@ canvas {
   border-radius: 4px;
 }
 
-/* --- NEW: mini planes (outside camera) --- */
-#miniPlanesSection {
-  margin-top: 12px;
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  justify-content: center;
-  width: 100%;
-  max-width: 1040px;
-  padding: 6px;
-  box-sizing: border-box;
+/* hint text under mini canvas */
+#miniHint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
 }
 
-.miniPlane {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  background: rgba(255,255,255,0.02);
-  padding: 6px;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.04);
-  box-sizing: border-box;
-  width: 320px;
+/* selected point highlight (drawn by canvas, but keep some CSS fallback) */
+.selected-point {
+  box-shadow: 0 0 6px rgba(255,153,200,0.6);
 }
-
-.miniPlaneLabel {
-  font-size: 13px;
-  margin-bottom: 6px;
-  color: #e6eef8;
-}
-
-/* the 3 plane canvases */
-#miniXY, #miniXZ, #miniYZ {
-  width: 100%;
-  height: auto;
-  background: rgba(0,0,0,0.02);
-  image-rendering: pixelated;
-  cursor: crosshair;
-  border-radius: 4px;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.02) inset;
-}
-
-/* selection / distance info */
-#distanceInfo {
-  margin-top: 10px;
-  font-size: 14px;
-  width: 80%;
-  max-width: 1040px;
-  text-align: left;
-  background: rgba(255,255,255,0.01);
-  padding: 8px 10px;
-  border-radius: 6px;
-  box-sizing: border-box;
-  border: 1px solid rgba(255,255,255,0.02);
-}
-
-#selectedPairInfo { margin-top: 6px; }
-#deltaInfo { margin-top: 6px; font-weight: 600; color: #ffd9e8; }
