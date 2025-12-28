@@ -48,6 +48,11 @@ const registered3DCountSpan = document.getElementById('registered3DCount');
 const triangulatedCountSpan = document.getElementById('triangulatedCount');
 const pinkStateSpan = document.getElementById('pinkState');
 
+// realtime quality UI
+const realtimeQualityBlock = document.getElementById('realtimeQuality');
+const realtimeQualityLabel = document.getElementById('realtimeQualityLabel');
+const realtimeQualityBarFill = document.getElementById('realtimeQualityBarFill');
+
 // elementos da nova UI de distância entre pares
 const pairInfoSpan = document.getElementById('pairInfo');
 const dxValSpan = document.getElementById('dxVal');
@@ -55,7 +60,7 @@ const dyValSpan = document.getElementById('dyVal');
 const dzValSpan = document.getElementById('dzVal');
 const dMagValSpan = document.getElementById('dMagVal');
 
-// elementos da nova UI de qualidade
+// elementos da nova UI de qualidade (último ponto)
 const qualityBlock = document.getElementById('qualityBlock');
 const qualityLabel = document.getElementById('qualityLabel');
 const qualityNumRays = document.getElementById('qualityNumRays');
@@ -158,7 +163,7 @@ function averageHistory(histArr) {
   return { x: sx / histArr.length, y: sy / histArr.length };
 }
 
-// --- Quality computation helper (NOVO) ---
+// --- Quality computation helper (kept) ---
 // subset: array of registered rays { origin:{x,y,z}, direction:{dx,dy,dz}, pixel:{x,y} }
 // X: triangulated point {x,y,z}
 function computePointQuality(subset, X) {
@@ -222,6 +227,77 @@ function computePointQuality(subset, X) {
     spread: Number(spread.toFixed(4)),
     numRays: n
   };
+}
+
+// --- helper that estimates quality from rays even without triangulated X ---
+// tries triangulation first; if fails, uses heuristic from directions/origins
+function estimateQualityFromRays(rays) {
+  if (!rays || rays.length === 0) return { level: "Insuficiente", score: 0, details: null };
+
+  // try triangulation
+  try {
+    const raysForTri = rays.map(r => ({
+      origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z },
+      direction: { dx: r.direction.dx, dy: r.direction.dy, dz: r.direction.dz }
+    }));
+    const X = triangulateFromRays(raysForTri);
+    if (X) {
+      const q = computePointQuality(raysForTri, X);
+      if (q) {
+        // compute a score 0..100 combining numRays, angle and spread and inverse meanDist
+        const nScore = Math.min(1, q.numRays / 6); // upto 6 rays
+        const angleScore = Math.min(1, q.maxAngleDeg / 60);
+        const spreadScore = Math.min(1, q.spread / 30);
+        const distScore = Math.max(0, 1 - (q.meanDist / 10)); // best when <=0
+        const score = Math.round(100 * (0.25*nScore + 0.3*angleScore + 0.25*spreadScore + 0.2*distScore));
+        return { level: q.level, score, details: q };
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // fallback heuristic (no triangulation or X not available)
+  // compute number of rays, max pair angle between directions and spread of origins
+  const n = rays.length;
+  const dirs = [];
+  const origins = [];
+  for (const r of rays) {
+    const d = [r.direction.dx, r.direction.dy, r.direction.dz];
+    const ld = Math.hypot(d[0],d[1],d[2]);
+    dirs.push(ld > 1e-9 ? [d[0]/ld, d[1]/ld, d[2]/ld] : [0,0,0]);
+    origins.push([r.origin.x, r.origin.y, r.origin.z]);
+  }
+  // max angle
+  let maxAngRad = 0;
+  for (let i=0;i<dirs.length;i++) for (let j=i+1;j<dirs.length;j++) {
+    const a = dirs[i], b = dirs[j];
+    const dot = Math.max(-1, Math.min(1, a[0]*b[0] + a[1]*b[1] + a[2]*b[2]));
+    const ang = Math.acos(dot);
+    if (ang > maxAngRad) maxAngRad = ang;
+  }
+  const maxAngleDeg = maxAngRad * 180 / Math.PI;
+  // spread
+  let cx=0, cy=0, cz=0;
+  for (const o of origins) { cx += o[0]; cy += o[1]; cz += o[2]; }
+  cx /= origins.length; cy /= origins.length; cz /= origins.length;
+  let sumd = 0;
+  for (const o of origins) sumd += Math.hypot(o[0]-cx, o[1]-cy, o[2]-cz);
+  const spread = sumd / origins.length;
+
+  // decide level heuristically (conservative without meanDist)
+  let level = "Baixa";
+  if (n >= 4 && maxAngleDeg >= 20 && spread >= 12) level = "Alta";
+  else if (n >= 3 && maxAngleDeg >= 8 && spread >= 6) level = "Média";
+  else level = "Baixa";
+
+  // score composition
+  const nScore = Math.min(1, n / 6);
+  const angleScore = Math.min(1, maxAngleDeg / 60);
+  const spreadScore = Math.min(1, spread / 30);
+  const score = Math.round(100 * (0.5*nScore + 0.35*angleScore + 0.15*spreadScore));
+
+  return { level, score, details: { numRays: n, maxAngleDeg: Number(maxAngleDeg.toFixed(2)), spread: Number(spread.toFixed(4)) } };
 }
 
 // --- helper math functions (kept) ---
@@ -424,6 +500,17 @@ let pinkLockedPixel = null;
 function setPinkState(s) {
   pinkState = s;
   pinkStateSpan.textContent = s;
+  // show/hide realtime quality block depending on state
+  if (s === PINK_STATE.CAPTURING) {
+    realtimeQualityBlock.style.display = "block";
+  } else {
+    realtimeQualityBlock.style.display = "none";
+    // reset bar
+    realtimeQualityBarFill.style.width = "0%";
+    realtimeQualityBarFill.classList.remove('q-low','q-medium','q-high');
+    realtimeQualityBarFill.classList.add('q-none');
+    realtimeQualityLabel.textContent = "--";
+  }
 }
 
 // selection state for mini-cloud pair clicks
@@ -729,7 +816,7 @@ calibrateBtn.addEventListener('click', () => {
 });
 
 // processFrame (mantido) — agora com suavização (média móvel) para origem/azul/verde (sem incluir ponto rosa)
-// E também ignora pixels nas bordas conforme marginPercent e pinta a área sombreada na tela.
+// E também ignora pixels nas bordas conforme marginPercent e pinta a área sombreada.
 function processFrame() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -949,6 +1036,38 @@ function processFrame() {
       pinkLockedPixel = null;
       if (calibration && calibration.currentPoint) calibration.currentPoint = null;
       setPinkState(PINK_STATE.IDLE);
+    }
+  }
+
+  // update realtime quality indicator while CAPTURING
+  if (pinkState === PINK_STATE.CAPTURING && calibration && calibration.currentPoint) {
+    const cp = calibration.currentPoint;
+    const rays = cp.registeredRays || [];
+    if (!rays || rays.length === 0) {
+      realtimeQualityLabel.textContent = "Insuficiente";
+      realtimeQualityBarFill.style.width = "6%";
+      realtimeQualityBarFill.classList.remove('q-low','q-medium','q-high');
+      realtimeQualityBarFill.classList.add('q-none');
+    } else {
+      // estimate quality
+      const est = estimateQualityFromRays(rays);
+      // update label
+      realtimeQualityLabel.textContent = est.level === "Insuficiente" ? "Insuficiente" : est.level;
+      // set color class
+      realtimeQualityBarFill.classList.remove('q-none','q-low','q-medium','q-high');
+      if (est.level === "Alta") realtimeQualityBarFill.classList.add('q-high');
+      else if (est.level === "Média" || est.level === "Média".toLowerCase()) realtimeQualityBarFill.classList.add('q-medium');
+      else realtimeQualityBarFill.classList.add('q-low');
+      // set width by score (0..100)
+      const sc = Math.max(0, Math.min(100, (typeof est.score === 'number' ? est.score : 10)));
+      realtimeQualityBarFill.style.width = `${sc}%`;
+    }
+    realtimeQualityBlock.style.display = "block";
+  } else {
+    // hide handled in setPinkState, but ensure fill reset
+    // setPinkState will hide; keep safe fallback here
+    if (realtimeQualityBlock.style.display !== "none" && pinkState !== PINK_STATE.CAPTURING) {
+      realtimeQualityBlock.style.display = "none";
     }
   }
 
