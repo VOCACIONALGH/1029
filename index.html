@@ -53,24 +53,15 @@
     <div>Pontos rosas com direção: <span id="pinkDirectedCount">0</span></div>
     <div>Vetores rotacionados: <span id="rotatedCount">0</span></div>
     <div>Raios aceitos (triangulação): <span id="acceptedCount">0</span></div>
-    <div>Pontos rosas com raios 3D registrados: <span id="registered3DCount">0</span></div>
+    <div>Raios 3D registrados: <span id="registered3DCount">0</span></div>
 
-    <div>Pontos rosas com posição 3D determinada: <span id="triangulatedCount">0</span></div>
-
-    <div id="triangulatedPos">
-      Posição 3D atual:
-      X: <span id="triX">--</span> mm,
-      Y: <span id="triY">--</span> mm,
-      Z: <span id="triZ">--</span> mm
-    </div>
+    <div>Pontos triangulados: <span id="triangulatedCount">0</span></div>
+    <div>Estado ponto rosa: <span id="pinkState">IDLE</span></div>
   </div>
 
   <div id="viewer">
     <video id="camera" autoplay playsinline></video>
     <canvas id="overlay"></canvas>
-
-    <!-- MINI CLOUD: visualização rápida da nuvem triangulada -->
-    <canvas id="miniCloud" width="220" height="160" aria-hidden="true"></canvas>
   </div>
 
   <script src="main.js"></script>
