@@ -25,9 +25,9 @@ button {
   border-radius: 6px;
 }
 
-/* estilo do botão Confirmar Ponto (visível só durante calibração) */
+/* estilo do botão Confirmar Ponto (visível somente em calibração) */
 #confirmPointBtn {
-  background: linear-gradient(#3a8c3a, #2f6e2f);
+  background: linear-gradient(#2a9d8f, #1f7d6d);
   color: white;
   border: none;
   border-radius: 6px;
