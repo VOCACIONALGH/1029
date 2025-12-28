@@ -150,6 +150,7 @@ canvas {
   position: absolute;
   top: 0;
   left: 0;
+  cursor: pointer; /* indica que canvas é interativo (click para apagar ponto) */
 }
 
 /* mini cloud wrapper in bottom-right of viewer */
